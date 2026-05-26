@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import platform
 import subprocess
 import sys
 from datetime import datetime
@@ -223,6 +224,7 @@ def env_info() -> dict[str, Any]:
     return {
         "python": sys.executable,
         "version": sys.version,
+        "platform": platform.platform(),
         "venv": sys.prefix != sys.base_prefix,
         "prefix": sys.prefix,
         "base_prefix": sys.base_prefix,
@@ -346,7 +348,7 @@ def save_history_item(summary: dict[str, Any]) -> None:
 def build_path_suggestions(raw_path: str) -> dict[str, Any]:
     raw_path = raw_path.strip().strip('"')
     if not raw_path:
-        return {"base": "", "query": "", "items": list_windows_drives()}
+        return {"base": "", "query": "", "items": list_path_roots()}
 
     expanded = os.path.expanduser(raw_path)
     is_trailing_separator = expanded.endswith(("\\", "/"))
@@ -393,6 +395,12 @@ def build_path_suggestions(raw_path: str) -> dict[str, Any]:
     return {"base": str(parent), "query": query, "items": items}
 
 
+def list_path_roots() -> list[dict[str, Any]]:
+    if os.name == "nt":
+        return list_windows_drives()
+    return list_posix_start_points()
+
+
 def list_windows_drives() -> list[dict[str, Any]]:
     drives = []
     for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
@@ -400,6 +408,29 @@ def list_windows_drives() -> list[dict[str, Any]]:
         if drive.exists():
             drives.append({"name": f"{letter}:\\", "path": str(drive), "has_dataset_marker": False})
     return drives
+
+
+def list_posix_start_points() -> list[dict[str, Any]]:
+    candidates = [Path.home(), APP_ROOT, Path.cwd(), Path("/")]
+    items = []
+    seen = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if resolved in seen or not resolved.exists() or not resolved.is_dir():
+            continue
+        seen.add(resolved)
+        name = str(resolved) if resolved == Path("/") else resolved.name or str(resolved)
+        items.append(
+            {
+                "name": name,
+                "path": str(resolved),
+                "has_dataset_marker": (resolved / "meta" / "info.json").exists(),
+            }
+        )
+    return items
 
 
 def is_numeric_feature(feature: dict[str, Any]) -> bool:

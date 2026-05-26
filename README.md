@@ -23,7 +23,9 @@ lerobot-viewer/
 │   ├── __init__.py
 │   └── main.py
 ├── scripts/
+│   ├── setup_venv.sh
 │   ├── setup_venv.ps1
+│   ├── start_backend.sh
 │   └── start_backend.ps1
 ├── web/
 │   ├── index.html
@@ -167,6 +169,114 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
+## Ubuntu 24.04 环境准备
+
+### 1. 安装系统依赖
+
+Ubuntu 24.04 默认提供 Python 3.12。先安装 Python venv、pip、Git 和 SSH 客户端：
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip git openssh-client
+```
+
+如果后续遇到某些 Python 包需要本地编译，再安装编译工具：
+
+```bash
+sudo apt install -y build-essential
+```
+
+一般情况下，本项目依赖的 `numpy`、`pandas`、`pyarrow` 在 Ubuntu 24.04 + Python 3.12 下会直接安装 manylinux wheel，不需要本地编译。
+
+### 2. 克隆项目
+
+```bash
+git clone git@github.com:jetaimezsh/lerobot-viewer.git
+cd lerobot-viewer
+```
+
+如果你没有配置 GitHub SSH key，也可以使用 HTTPS 克隆：
+
+```bash
+git clone https://github.com/jetaimezsh/lerobot-viewer.git
+cd lerobot-viewer
+```
+
+### 3. 创建虚拟环境并安装依赖
+
+推荐使用项目自带 Linux/macOS 脚本：
+
+```bash
+bash scripts/setup_venv.sh
+```
+
+这个脚本会在项目根目录创建 `.venv`，并安装 `requirements.txt` 中的依赖。
+
+也可以手动执行：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+### 4. 启动服务
+
+推荐使用：
+
+```bash
+bash scripts/start_backend.sh
+```
+
+启动成功后打开：
+
+```text
+http://127.0.0.1:8000
+```
+
+如果要换端口：
+
+```bash
+PORT=8001 bash scripts/start_backend.sh
+```
+
+然后打开：
+
+```text
+http://127.0.0.1:8001
+```
+
+也可以手动启动：
+
+```bash
+source .venv/bin/activate
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+开发时自动重载：
+
+```bash
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+### 5. Ubuntu 路径输入
+
+Ubuntu 下数据集路径通常类似：
+
+```text
+/home/your-user/datasets/my_lerobot_dataset
+```
+
+路径补全在 Linux 下会从以下入口开始：
+
+- 当前用户 home 目录，例如 `/home/your-user`
+- 项目目录
+- 当前工作目录
+- 根目录 `/`
+
+候选目录如果包含 `meta/info.json`，页面会显示 `dataset` 标记。
+
 ## 使用方式
 
 1. 打开 `http://127.0.0.1:8000`。
@@ -198,6 +308,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 
 - 输入 `D:\` 会列出 D 盘下的文件夹。
 - 输入 `D:\data\ro` 会列出 `D:\data` 下以 `ro` 开头的文件夹。
+- 在 Ubuntu 上输入 `/home/`、`~/` 或数据集路径前缀，会列出匹配的文件夹。
 - 如果候选目录包含 `meta/info.json`，会显示 `dataset` 标记。
 
 ## 本地样例数据
@@ -272,6 +383,27 @@ uvicorn app.main:app --host 127.0.0.1 --port 8001
 
 ```text
 http://127.0.0.1:8001
+```
+
+Ubuntu 下也可以这样换端口：
+
+```bash
+PORT=8001 bash scripts/start_backend.sh
+```
+
+### Ubuntu 上创建 venv 失败
+
+如果出现 `ensurepip is not available` 或类似错误，通常是没有安装 `python3-venv`：
+
+```bash
+sudo apt update
+sudo apt install -y python3-venv python3-pip
+```
+
+然后重新执行：
+
+```bash
+bash scripts/setup_venv.sh
 ```
 
 ## 不会提交到 Git 的内容
