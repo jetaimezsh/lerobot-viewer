@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LeRobot Dataset v3.0 Viewer</title>
+  <link rel="stylesheet" href="/static/styles.css?v=20260527-value-table">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">L3</div>
+        <div>
+          <h1>LeRobot Viewer</h1>
+          <p>Dataset v3.0 local inspector</p>
+        </div>
+      </div>
+
+      <section class="load-panel">
+        <label for="datasetPath">数据集根目录</label>
+        <div class="load-row">
+          <div class="path-field">
+            <input id="datasetPath" type="text" autocomplete="off" placeholder="D:\datasets\my_lerobot_dataset">
+            <div id="pathSuggestions" class="path-suggestions"></div>
+          </div>
+          <button id="loadDataset">加载</button>
+        </div>
+        <div id="loadError" class="error"></div>
+      </section>
+
+      <section class="history-panel">
+        <div class="side-title">最近打开</div>
+        <div id="historyList" class="history-list empty">暂无历史记录</div>
+      </section>
+
+      <nav class="nav">
+        <button class="nav-button active" data-view="overviewView">总览</button>
+        <button class="nav-button" data-view="episodeView">Episode 播放</button>
+        <button class="nav-button" data-view="envView">Python 环境</button>
+      </nav>
+
+      <section class="side-section">
+        <div class="side-title">Episodes</div>
+        <div id="episodeList" class="episode-list empty">加载数据集后显示 episode</div>
+      </section>
+    </aside>
+
+    <main class="main">
+      <header class="top-header">
+        <div>
+          <div class="eyebrow">Local dataset</div>
+          <h2 id="pageTitle">等待加载 LeRobot v3.0 数据集</h2>
+        </div>
+        <div id="statusPill" class="status-pill">未加载</div>
+      </header>
+
+      <section id="overviewView" class="view active">
+        <div class="overview-grid">
+          <section class="surface intro-surface">
+            <div class="section-kicker">Dataset Overview</div>
+            <h3>先加载数据集，再选择 episode 进入同步播放。</h3>
+            <p>读取严格 v3.0 的 metadata、episode 边界、共享 Parquet 和多视角视频文件。</p>
+          </section>
+          <section class="surface">
+            <div class="section-kicker">Core Metrics</div>
+            <div id="datasetSummary" class="summary-grid"></div>
+          </section>
+        </div>
+
+        <div class="overview-grid lower">
+          <section class="surface">
+            <div class="section-kicker">Features</div>
+            <div id="featureList" class="feature-list empty">暂无特征信息</div>
+          </section>
+          <section class="surface">
+            <div class="section-kicker">Tasks</div>
+            <div id="taskList" class="task-list empty">暂无任务信息</div>
+          </section>
+        </div>
+      </section>
+
+      <section id="episodeView" class="view">
+        <div class="episode-header">
+          <div>
+            <div class="section-kicker">Episode Playback</div>
+            <h3 id="episodeTitle">未选择 episode</h3>
+            <p id="episodeMeta">从左侧 episode 列表选择一条记录。</p>
+          </div>
+          <div class="play-controls">
+            <button id="playPause">播放</button>
+            <label>
+              倍速
+              <select id="speed">
+                <option value="0.25">0.25x</option>
+                <option value="0.5">0.5x</option>
+                <option value="1" selected>1x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2x</option>
+                <option value="4">4x</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <section class="surface video-surface">
+          <div class="video-head">
+            <div>
+              <div class="section-kicker">视频播放区</div>
+              <h3>多视角视频同步播放</h3>
+            </div>
+            <div id="videoCount" class="status-pill">0 个视角</div>
+          </div>
+          <div id="videoGrid" class="video-grid">
+            <div class="empty-state">选择 episode 后，这里会显示该 episode 的所有视频视角。</div>
+          </div>
+          <div class="timeline-row">
+            <span id="currentTime">0.000s</span>
+            <input id="timeSlider" type="range" min="0" max="0" step="0.001" value="0">
+            <span id="duration">0.000s</span>
+          </div>
+        </section>
+
+        <div class="analysis-grid">
+          <section class="surface chart-surface">
+            <div class="chart-toolbar">
+              <div>
+                <div class="section-kicker">Numeric Time Series</div>
+                <h3>state / action 时序图</h3>
+              </div>
+              <div class="series-dropdown" id="seriesDropdown">
+                <button id="seriesToggle" class="series-toggle" type="button">
+                  <span id="seriesSummary">选择要绘制的数据对象</span>
+                  <span class="chevron">▾</span>
+                </button>
+                <div id="seriesMenu" class="series-menu">
+                  <div class="series-menu-actions">
+                    <button type="button" data-series-action="all">全选</button>
+                    <button type="button" data-series-action="none">清空</button>
+                  </div>
+                  <div id="seriesOptions" class="series-options"></div>
+                </div>
+              </div>
+            </div>
+            <canvas id="chart" width="1100" height="460"></canvas>
+          </section>
+
+          <section class="surface value-surface">
+            <div class="section-kicker">Current Frame</div>
+            <h3>当前时刻数值</h3>
+            <div id="episodeInfo" class="episode-info empty">选择 episode 后显示 episode 信息。</div>
+            <div id="currentValues" class="value-table empty">选择 episode 后显示当前 state/action。</div>
+          </section>
+        </div>
+      </section>
+
+      <section id="envView" class="view">
+        <section class="surface env-surface">
+          <div>
+            <div class="section-kicker">Python Environment</div>
+            <h3>虚拟环境和依赖</h3>
+            <p>用于检查当前后端运行的 Python、venv 和核心包版本。</p>
+          </div>
+          <button id="installRequirements">安装 requirements.txt</button>
+        </section>
+        <section class="surface">
+          <div id="envInfo" class="env-info"></div>
+          <pre id="installOutput" class="log"></pre>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/app.js?v=20260527-series-dropdown"></script>
+</body>
+</html>
