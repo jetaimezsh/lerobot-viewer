@@ -1,5 +1,6 @@
 .venv/
 sample_datasets/
+tmp_multiview_dataset/
 .viewer_history.json
 __pycache__/
 *.py[cod]

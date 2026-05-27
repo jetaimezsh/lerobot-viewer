@@ -177,7 +177,7 @@ class DatasetCache:
             to_col = f"{prefix}/to_timestamp"
             if from_col not in episode or to_col not in episode:
                 continue
-        segments.append(
+            segments.append(
                 {
                     "key": video_key,
                     "from_timestamp": as_float(episode[from_col]),
