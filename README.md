@@ -169,6 +169,20 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
+## 本地验证
+
+如果本地已经有 `sample_datasets/pusht` 和 `tmp_multiview_dataset`，可以运行 smoke test 验证后端能正确读取 v3.0 metadata、episode 边界、数值序列和多视角视频索引：
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\smoke_test.py
+```
+
+也可以指定数据集路径：
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\smoke_test.py --pusht D:\lerobot\sample_datasets\pusht --multiview D:\lerobot\tmp_multiview_dataset
+```
+
 ## Ubuntu 24.04 环境准备
 
 ### 1. 安装系统依赖
