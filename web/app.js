@@ -11,6 +11,9 @@ const state = {
   selectedSeries: [],
   currentElapsed: 0,
   duration: 0,
+  chartStart: 0,
+  chartEnd: 0,
+  panMode: false,
   playing: false,
   primaryVideo: null,
   videos: [],
@@ -43,6 +46,11 @@ const els = {
   currentTime: document.getElementById("currentTime"),
   duration: document.getElementById("duration"),
   chart: document.getElementById("chart"),
+  chartWindowLabel: document.getElementById("chartWindowLabel"),
+  zoomIn: document.getElementById("zoomIn"),
+  zoomOut: document.getElementById("zoomOut"),
+  resetZoom: document.getElementById("resetZoom"),
+  panMode: document.getElementById("panMode"),
   seriesDropdown: document.getElementById("seriesDropdown"),
   seriesToggle: document.getElementById("seriesToggle"),
   seriesSummary: document.getElementById("seriesSummary"),
@@ -76,6 +84,70 @@ function fmt(value, digits = 3) {
   if (value === null || value === undefined || Number.isNaN(value)) return "-";
   if (typeof value === "number") return value.toFixed(digits);
   return String(value);
+}
+
+function minChartWindow() {
+  if (!state.duration) return 0.001;
+  return Math.max(0.05, state.duration / 500);
+}
+
+function resetChartWindow() {
+  state.chartStart = 0;
+  state.chartEnd = Math.max(state.duration, 0);
+  updateChartWindowLabel();
+}
+
+function chartSpan() {
+  return Math.max(state.chartEnd - state.chartStart, minChartWindow());
+}
+
+function clampChartWindow() {
+  const duration = Math.max(state.duration, 0);
+  if (!duration) {
+    state.chartStart = 0;
+    state.chartEnd = 0;
+    updateChartWindowLabel();
+    return;
+  }
+
+  let span = Math.min(Math.max(chartSpan(), minChartWindow()), duration);
+  if (state.chartStart < 0) state.chartStart = 0;
+  if (state.chartStart + span > duration) state.chartStart = duration - span;
+  state.chartEnd = state.chartStart + span;
+  updateChartWindowLabel();
+}
+
+function updateChartWindowLabel() {
+  if (!els.chartWindowLabel) return;
+  els.chartWindowLabel.textContent = `${fmt(state.chartStart)}s - ${fmt(state.chartEnd)}s`;
+}
+
+function zoomChart(factor, anchorElapsed = null) {
+  if (!state.duration) return;
+  const currentSpan = chartSpan();
+  const nextSpan = Math.min(Math.max(currentSpan * factor, minChartWindow()), state.duration);
+  const anchor = anchorElapsed ?? (state.chartStart + currentSpan / 2);
+  const ratio = currentSpan > 0 ? (anchor - state.chartStart) / currentSpan : 0.5;
+  state.chartStart = anchor - nextSpan * Math.min(Math.max(ratio, 0), 1);
+  state.chartEnd = state.chartStart + nextSpan;
+  clampChartWindow();
+  drawChart();
+}
+
+function panChart(deltaSeconds) {
+  if (!state.duration) return;
+  state.chartStart += deltaSeconds;
+  state.chartEnd += deltaSeconds;
+  clampChartWindow();
+  drawChart();
+}
+
+function chartElapsedFromEvent(event) {
+  const rect = els.chart.getBoundingClientRect();
+  const pad = { left: 52, right: 18 };
+  const x = Math.max(pad.left, Math.min(event.clientX - rect.left, rect.width - pad.right));
+  const ratio = (x - pad.left) / Math.max(rect.width - pad.left - pad.right, 1);
+  return state.chartStart + ratio * chartSpan();
 }
 
 function setView(viewId) {
@@ -296,6 +368,7 @@ function resetEpisodeView() {
   state.selectedSeries = [];
   state.currentElapsed = 0;
   state.duration = 0;
+  resetChartWindow();
   state.videos = [];
   state.primaryVideo = null;
   els.episodeTitle.textContent = "未选择 episode";
@@ -329,6 +402,7 @@ async function loadEpisode(index) {
   })));
   state.duration = Math.max(timelineDuration, videoDuration);
   state.currentElapsed = 0;
+  resetChartWindow();
 
   for (const item of els.episodeList.querySelectorAll(".episode-item")) {
     item.classList.toggle("active", Number(item.dataset.episode) === index);
@@ -498,7 +572,10 @@ function drawChart() {
     ctx.stroke();
   }
 
-  const duration = Math.max(state.duration, 0.001);
+  clampChartWindow();
+  const visibleStart = state.chartStart;
+  const visibleEnd = state.chartEnd || Math.max(state.duration, 0.001);
+  const visibleSpan = Math.max(visibleEnd - visibleStart, 0.001);
   const series = selectedSeries();
 
   if (!state.elapsed.length || !series.length) {
@@ -518,12 +595,17 @@ function drawChart() {
     ctx.beginPath();
     let started = false;
     for (let i = 0; i < state.elapsed.length; i++) {
+      const elapsed = state.elapsed[i];
+      if (elapsed < visibleStart || elapsed > visibleEnd) {
+        started = false;
+        continue;
+      }
       const value = item.values[i];
       if (value === null || !Number.isFinite(value)) {
         started = false;
         continue;
       }
-      const x = pad.left + (state.elapsed[i] / duration) * plotW;
+      const x = pad.left + ((elapsed - visibleStart) / visibleSpan) * plotW;
       const y = pad.top + (1 - (value - min) / span) * plotH;
       if (!started) {
         ctx.moveTo(x, y);
@@ -535,18 +617,20 @@ function drawChart() {
     ctx.stroke();
   });
 
-  const playheadX = pad.left + (Math.min(state.currentElapsed, duration) / duration) * plotW;
-  ctx.strokeStyle = "#111827";
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.moveTo(playheadX, pad.top);
-  ctx.lineTo(playheadX, height - pad.bottom);
-  ctx.stroke();
+  if (state.currentElapsed >= visibleStart && state.currentElapsed <= visibleEnd) {
+    const playheadX = pad.left + ((state.currentElapsed - visibleStart) / visibleSpan) * plotW;
+    ctx.strokeStyle = "#111827";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(playheadX, pad.top);
+    ctx.lineTo(playheadX, height - pad.bottom);
+    ctx.stroke();
+  }
 
   ctx.fillStyle = "#64717f";
   ctx.font = "12px Segoe UI";
-  ctx.fillText("0s", pad.left, height - 13);
-  ctx.fillText(`${fmt(state.duration)}s`, Math.max(pad.left + 24, width - pad.right - 62), height - 13);
+  ctx.fillText(`${fmt(visibleStart)}s`, pad.left, height - 13);
+  ctx.fillText(`${fmt(visibleEnd)}s`, Math.max(pad.left + 24, width - pad.right - 72), height - 13);
 }
 
 function currentFrameIndex() {
@@ -670,6 +754,18 @@ els.speed.addEventListener("change", () => {
   for (const video of state.videos) video.playbackRate = Number(els.speed.value);
 });
 els.timeSlider.addEventListener("input", () => setElapsed(Number(els.timeSlider.value)));
+els.zoomIn.addEventListener("click", () => zoomChart(0.5));
+els.zoomOut.addEventListener("click", () => zoomChart(2));
+els.resetZoom.addEventListener("click", () => {
+  resetChartWindow();
+  drawChart();
+});
+els.panMode.addEventListener("click", () => {
+  state.panMode = !state.panMode;
+  els.panMode.classList.toggle("active", state.panMode);
+  els.panMode.setAttribute("aria-pressed", String(state.panMode));
+  els.chart.classList.toggle("pan-active", state.panMode);
+});
 els.seriesToggle.addEventListener("click", () => {
   els.seriesDropdown.classList.toggle("open");
 });
@@ -686,25 +782,41 @@ document.addEventListener("click", (event) => {
 });
 
 let chartDragging = false;
+let chartLastX = 0;
 function chartSeek(event) {
   if (!state.duration) return;
-  const rect = els.chart.getBoundingClientRect();
-  const left = 52;
-  const right = 18;
-  const x = Math.max(left, Math.min(event.clientX - rect.left, rect.width - right));
-  const ratio = (x - left) / Math.max(rect.width - left - right, 1);
-  setElapsed(ratio * state.duration);
+  setElapsed(chartElapsedFromEvent(event));
 }
 els.chart.addEventListener("mousedown", (event) => {
   chartDragging = true;
+  chartLastX = event.clientX;
+  if (state.panMode || event.shiftKey) {
+    event.preventDefault();
+    return;
+  }
   chartSeek(event);
 });
 window.addEventListener("mousemove", (event) => {
-  if (chartDragging) chartSeek(event);
+  if (!chartDragging) return;
+  if (state.panMode || event.shiftKey) {
+    const rect = els.chart.getBoundingClientRect();
+    const deltaPixels = event.clientX - chartLastX;
+    chartLastX = event.clientX;
+    const secondsPerPixel = chartSpan() / Math.max(rect.width - 70, 1);
+    panChart(-deltaPixels * secondsPerPixel);
+  } else {
+    chartSeek(event);
+  }
 });
 window.addEventListener("mouseup", () => {
   chartDragging = false;
 });
+els.chart.addEventListener("wheel", (event) => {
+  if (!state.duration) return;
+  event.preventDefault();
+  const factor = event.deltaY < 0 ? 0.8 : 1.25;
+  zoomChart(factor, chartElapsedFromEvent(event));
+}, { passive: false });
 window.addEventListener("resize", drawChart);
 
 loadEnv().catch((error) => {

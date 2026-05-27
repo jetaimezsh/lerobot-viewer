@@ -540,10 +540,42 @@ h3 {
 
 .chart-toolbar {
   display: grid;
-  grid-template-columns: 1fr minmax(220px, 380px);
+  grid-template-columns: minmax(220px, 1fr) minmax(320px, 460px);
   align-items: start;
   gap: 14px;
   margin-bottom: 12px;
+}
+
+.chart-window-label {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  font-weight: 700;
+  margin-top: 6px;
+}
+
+.chart-toolbar-right {
+  display: grid;
+  gap: 8px;
+}
+
+.chart-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.chart-controls button {
+  height: 32px;
+  padding: 0 10px;
+  background: #334155;
+  font-size: 12px;
+}
+
+.chart-controls button.active,
+.chart-controls button[aria-pressed="true"] {
+  background: var(--accent);
 }
 
 .series-dropdown {
@@ -651,6 +683,16 @@ h3 {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #fbfcfd;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+#chart.pan-active {
+  cursor: grab;
+}
+
+#chart.pan-active:active {
+  cursor: grabbing;
 }
 
 .value-table {

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LeRobot Dataset v3.0 Viewer</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260527-value-table">
+  <link rel="stylesheet" href="/static/styles.css?v=20260527-chart-zoom">
 </head>
 <body>
   <div class="shell">
@@ -127,18 +127,27 @@
               <div>
                 <div class="section-kicker">Numeric Time Series</div>
                 <h3>state / action 时序图</h3>
+                <div id="chartWindowLabel" class="chart-window-label">0.000s - 0.000s</div>
               </div>
-              <div class="series-dropdown" id="seriesDropdown">
-                <button id="seriesToggle" class="series-toggle" type="button">
-                  <span id="seriesSummary">选择要绘制的数据对象</span>
-                  <span class="chevron">▾</span>
-                </button>
-                <div id="seriesMenu" class="series-menu">
-                  <div class="series-menu-actions">
-                    <button type="button" data-series-action="all">全选</button>
-                    <button type="button" data-series-action="none">清空</button>
+              <div class="chart-toolbar-right">
+                <div class="chart-controls">
+                  <button id="zoomIn" type="button">放大</button>
+                  <button id="zoomOut" type="button">缩小</button>
+                  <button id="resetZoom" type="button">重置</button>
+                  <button id="panMode" type="button" aria-pressed="false">平移</button>
+                </div>
+                <div class="series-dropdown" id="seriesDropdown">
+                  <button id="seriesToggle" class="series-toggle" type="button">
+                    <span id="seriesSummary">选择要绘制的数据对象</span>
+                    <span class="chevron">▾</span>
+                  </button>
+                  <div id="seriesMenu" class="series-menu">
+                    <div class="series-menu-actions">
+                      <button type="button" data-series-action="all">全选</button>
+                      <button type="button" data-series-action="none">清空</button>
+                    </div>
+                    <div id="seriesOptions" class="series-options"></div>
                   </div>
-                  <div id="seriesOptions" class="series-options"></div>
                 </div>
               </div>
             </div>
@@ -171,6 +180,6 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260527-series-dropdown"></script>
+  <script src="/static/app.js?v=20260527-chart-zoom"></script>
 </body>
 </html>
