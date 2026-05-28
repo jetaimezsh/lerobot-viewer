@@ -69,6 +69,7 @@ const els = {
   markTrimEpisode: document.getElementById("markTrimEpisode"),
   trimDraft: document.getElementById("trimDraft"),
   editOperationList: document.getElementById("editOperationList"),
+  checkEditTools: document.getElementById("checkEditTools"),
   runEditDryRun: document.getElementById("runEditDryRun"),
   applyEditPlan: document.getElementById("applyEditPlan"),
   editOutputPath: document.getElementById("editOutputPath"),
@@ -819,6 +820,42 @@ async function runEditDryRun() {
   }
 }
 
+async function checkEditTools() {
+  els.editDryRunOutput.textContent = "正在检测...";
+  try {
+    const options = { method: "POST", body: "{}" };
+    if (state.summary) {
+      options.body = JSON.stringify({ path: state.summary.root });
+    }
+    const result = await api("/api/edit/tool-status", options);
+    els.editDryRunOutput.textContent = formatToolStatus(result);
+  } catch (error) {
+    els.editDryRunOutput.textContent = error.message;
+  }
+}
+
+function formatToolStatus(result) {
+  const lines = [];
+  lines.push(`无视频数据编辑: ${result.ready_for_no_video_edits ? "可用" : "不可用"}`);
+  lines.push(`含视频数据编辑: ${result.ready_for_video_edits ? "可用" : "不可用"}`);
+  if (result.dataset) {
+    lines.push("");
+    lines.push(`当前数据集: ${result.dataset.path}`);
+    lines.push(`视频字段: ${result.dataset.has_video ? result.dataset.video_keys.join(", ") : "无"}`);
+    lines.push(`当前数据集执行状态: ${result.dataset.can_apply_now ? "可生成新目录" : "暂不可落盘编辑"}`);
+    lines.push(`原因: ${result.dataset.reason}`);
+  }
+  lines.push("");
+  lines.push("检查项:");
+  for (const check of result.checks || []) {
+    const required = check.required_for_video
+      ? check.required_for_no_video ? "必需" : "视频必需"
+      : "可选";
+    lines.push(`- ${check.ok ? "OK" : "FAIL"} ${check.label} (${required}): ${check.detail}`);
+  }
+  return lines.join("\n");
+}
+
 async function applyEditPlan() {
   if (!state.summary) {
     els.editDryRunOutput.textContent = "请先加载数据集。";
@@ -945,6 +982,7 @@ els.markDeleteEpisode.addEventListener("click", markDeleteCurrentEpisode);
 els.setTrimStart.addEventListener("click", () => setTrimPoint("start"));
 els.setTrimEnd.addEventListener("click", () => setTrimPoint("end"));
 els.markTrimEpisode.addEventListener("click", markTrimCurrentEpisode);
+els.checkEditTools.addEventListener("click", checkEditTools);
 els.runEditDryRun.addEventListener("click", runEditDryRun);
 els.applyEditPlan.addEventListener("click", applyEditPlan);
 els.zoomIn.addEventListener("click", () => zoomChart(0.5));

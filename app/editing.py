@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 import json
 import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -28,8 +30,45 @@ class EditApplyRequest(EditDryRunRequest):
     overwrite: bool = False
 
 
+class EditToolStatusRequest(BaseModel):
+    path: str | None = None
+
+
 class MergeValidationRequest(BaseModel):
     paths: list[str] = Field(default_factory=list)
+
+
+def editing_tool_status(cache: Any | None = None) -> dict[str, Any]:
+    checks = [
+        python_package_check("pandas", pd.__version__),
+        python_package_check("pyarrow"),
+        python_package_check("numpy", np.__version__),
+        filesystem_write_check(),
+        ffmpeg_check(),
+    ]
+    dataset = None
+    if cache is not None:
+        has_video = bool(cache.video_keys)
+        dataset = {
+            "path": str(cache.root),
+            "has_video": has_video,
+            "video_keys": cache.video_keys,
+            "can_apply_now": not has_video,
+            "reason": (
+                "当前数据集不含视频，可执行删除/裁剪并生成新目录"
+                if not has_video
+                else "当前数据集包含视频，需安装并接入 ffmpeg 后才能执行落盘编辑"
+            ),
+        }
+
+    required_ok = all(check["ok"] for check in checks if check["required_for_no_video"])
+    ffmpeg_ok = next((check["ok"] for check in checks if check["id"] == "ffmpeg"), False)
+    return {
+        "ready_for_no_video_edits": required_ok,
+        "ready_for_video_edits": required_ok and ffmpeg_ok,
+        "checks": checks,
+        "dataset": dataset,
+    }
 
 
 def validate_edit_plan(cache: Any, operations: list[EditOperation]) -> dict[str, Any]:
@@ -212,7 +251,7 @@ def apply_edit_plan(cache: Any, operations: list[EditOperation], output_path: Pa
     if cache.video_keys:
         return {
             "ok": False,
-            "errors": ["当前执行版本暂不支持含视频数据集的落盘编辑；需要先接入 ffmpeg 视频裁剪/重写"],
+            "errors": ["当前执行版本暂不支持含视频数据集的落盘编辑；需要先安装并接入 ffmpeg 视频裁剪/重写"],
             "warnings": plan["warnings"],
             "dry_run": plan,
         }
@@ -413,6 +452,95 @@ def clean_json_value(value: Any) -> Any:
     if isinstance(value, float) and not math.isfinite(value):
         return None
     return value
+
+
+def python_package_check(name: str, version: str | None = None) -> dict[str, Any]:
+    if version is None:
+        try:
+            module = __import__(name)
+            version = getattr(module, "__version__", "installed")
+        except Exception as exc:
+            return {
+                "id": name,
+                "label": f"Python package: {name}",
+                "ok": False,
+                "required_for_no_video": True,
+                "required_for_video": True,
+                "detail": str(exc),
+            }
+    return {
+        "id": name,
+        "label": f"Python package: {name}",
+        "ok": True,
+        "required_for_no_video": True,
+        "required_for_video": True,
+        "detail": version,
+    }
+
+
+def filesystem_write_check() -> dict[str, Any]:
+    try:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            path = Path(directory) / "write_test.txt"
+            path.write_text("ok", encoding="utf-8")
+            ok = path.read_text(encoding="utf-8") == "ok"
+    except Exception as exc:
+        return {
+            "id": "filesystem_write",
+            "label": "输出目录写入能力",
+            "ok": False,
+            "required_for_no_video": True,
+            "required_for_video": True,
+            "detail": str(exc),
+        }
+    return {
+        "id": "filesystem_write",
+        "label": "输出目录写入能力",
+        "ok": ok,
+        "required_for_no_video": True,
+        "required_for_video": True,
+        "detail": f"cwd={Path.cwd()}",
+    }
+
+
+def ffmpeg_check() -> dict[str, Any]:
+    executable = shutil.which("ffmpeg")
+    if not executable:
+        return {
+            "id": "ffmpeg",
+            "label": "ffmpeg 视频处理工具",
+            "ok": False,
+            "required_for_no_video": False,
+            "required_for_video": True,
+            "detail": "未在 PATH 中找到 ffmpeg",
+        }
+    try:
+        result = subprocess.run(
+            [executable, "-version"],
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        first_line = (result.stdout or result.stderr).splitlines()[0] if (result.stdout or result.stderr) else executable
+        ok = result.returncode == 0
+    except Exception as exc:
+        return {
+            "id": "ffmpeg",
+            "label": "ffmpeg 视频处理工具",
+            "ok": False,
+            "required_for_no_video": False,
+            "required_for_video": True,
+            "detail": str(exc),
+        }
+    return {
+        "id": "ffmpeg",
+        "label": "ffmpeg 视频处理工具",
+        "ok": ok,
+        "required_for_no_video": False,
+        "required_for_video": True,
+        "detail": first_line,
+    }
 
 
 def canonical_features(features: dict[str, dict[str, Any]]) -> dict[str, Any]:

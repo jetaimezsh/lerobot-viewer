@@ -21,9 +21,11 @@ from pydantic import BaseModel
 from app.editing import (
     EditApplyRequest,
     EditDryRunRequest,
+    EditToolStatusRequest,
     MergeValidationRequest,
     apply_edit_plan,
     dataset_validation_summary,
+    editing_tool_status,
     resolve_dataset_path,
     validate_edit_plan,
     validate_merge_compatibility,
@@ -303,6 +305,17 @@ def edit_apply(request: EditApplyRequest) -> dict[str, Any]:
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result)
     return result
+
+
+@app.post("/api/edit/tool-status")
+def edit_tool_status(request: EditToolStatusRequest | None = None) -> dict[str, Any]:
+    if request is None or not request.path:
+        return editing_tool_status()
+    root = resolve_dataset_path(request.path)
+    if not root.exists() or not root.is_dir():
+        raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
+    cache = DatasetCache(root)
+    return editing_tool_status(cache)
 
 
 @app.post("/api/datasets/validate")
