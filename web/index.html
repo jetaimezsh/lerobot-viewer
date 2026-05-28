@@ -216,6 +216,26 @@
             <pre id="editDryRunOutput" class="edit-output">尚未运行预估。</pre>
           </section>
         </div>
+
+        <div class="merge-grid">
+          <section class="surface">
+            <div class="section-kicker">Dataset Merge</div>
+            <h3>合并数据集</h3>
+            <p>把多个 schema 兼容的无视频 v3.0 数据集合并到一个新的输出目录。含视频数据集当前会被阻止落盘。</p>
+            <div class="merge-controls">
+              <button id="addCurrentDatasetToMerge" type="button">加入当前数据集</button>
+              <button id="clearMergeList" type="button">清空合并列表</button>
+              <button id="validateMerge" type="button">检查合并合法性</button>
+              <button id="applyMerge" type="button">生成合并数据集</button>
+            </div>
+            <textarea id="mergePaths" rows="7" placeholder="每行一个数据集路径"></textarea>
+          </section>
+
+          <section class="surface">
+            <div class="section-kicker">Merge Result</div>
+            <pre id="mergeOutput" class="edit-output">尚未检查合并。</pre>
+          </section>
+        </div>
       </section>
 
       <section id="envView" class="view">

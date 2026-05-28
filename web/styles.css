@@ -546,6 +546,29 @@ h3 {
   margin-bottom: 16px;
 }
 
+.merge-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.merge-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0 10px;
+}
+
+#mergePaths {
+  width: 100%;
+  min-height: 160px;
+  resize: vertical;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 10px;
+  font: inherit;
+}
+
 .system-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(360px, 0.9fr);
@@ -1058,6 +1081,7 @@ h3 {
   .overview-grid.lower,
   .analysis-grid,
   .edit-grid,
+  .merge-grid,
   .system-grid {
     grid-template-columns: 1fr;
   }

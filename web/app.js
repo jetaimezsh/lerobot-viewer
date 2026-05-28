@@ -77,6 +77,12 @@ const els = {
   editOverwrite: document.getElementById("editOverwrite"),
   editDryRunOutput: document.getElementById("editDryRunOutput"),
   toolStatusReport: document.getElementById("toolStatusReport"),
+  addCurrentDatasetToMerge: document.getElementById("addCurrentDatasetToMerge"),
+  clearMergeList: document.getElementById("clearMergeList"),
+  validateMerge: document.getElementById("validateMerge"),
+  applyMerge: document.getElementById("applyMerge"),
+  mergePaths: document.getElementById("mergePaths"),
+  mergeOutput: document.getElementById("mergeOutput"),
 };
 
 const palette = ["#087f8c", "#b76e00", "#2f6fbb", "#7a5195", "#2f9e44", "#c92a2a", "#5f6c72", "#805ad5"];
@@ -950,6 +956,76 @@ async function applyEditPlan() {
   }
 }
 
+function mergePathList() {
+  return els.mergePaths.value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function setMergePathList(paths) {
+  els.mergePaths.value = Array.from(new Set(paths)).join("\n");
+}
+
+function addCurrentDatasetToMerge() {
+  if (!state.summary) {
+    els.mergeOutput.textContent = "请先加载数据集。";
+    return;
+  }
+  setMergePathList([...mergePathList(), state.summary.root]);
+  els.mergeOutput.textContent = `已加入当前数据集: ${state.summary.root}`;
+}
+
+function clearMergeList() {
+  els.mergePaths.value = "";
+  els.mergeOutput.textContent = "已清空合并列表。";
+}
+
+async function validateMergePlan() {
+  const paths = mergePathList();
+  if (paths.length < 2) {
+    els.mergeOutput.textContent = "至少需要 2 个数据集路径。";
+    return;
+  }
+  els.mergeOutput.textContent = "正在检查合并合法性...";
+  try {
+    const result = await api("/api/merge/validate", {
+      method: "POST",
+      body: JSON.stringify({ paths }),
+    });
+    els.mergeOutput.textContent = JSON.stringify(result, null, 2);
+  } catch (error) {
+    els.mergeOutput.textContent = error.message;
+  }
+}
+
+async function applyMergePlan() {
+  const paths = mergePathList();
+  if (paths.length < 2) {
+    els.mergeOutput.textContent = "至少需要 2 个数据集路径。";
+    return;
+  }
+  const outputPath = els.editOutputPath.value.trim();
+  if (!outputPath) {
+    els.mergeOutput.textContent = "请在上方填写输出目录。";
+    return;
+  }
+  els.mergeOutput.textContent = "正在生成合并数据集...";
+  try {
+    const result = await api("/api/merge/apply", {
+      method: "POST",
+      body: JSON.stringify({
+        paths,
+        output_path: outputPath,
+        overwrite: els.editOverwrite.checked,
+      }),
+    });
+    els.mergeOutput.textContent = JSON.stringify(result, null, 2);
+  } catch (error) {
+    els.mergeOutput.textContent = error.message;
+  }
+}
+
 function setElapsed(elapsed, seekVideos = true) {
   state.currentElapsed = Math.max(0, Math.min(elapsed, state.duration));
   if (seekVideos) seekTo(state.currentElapsed);
@@ -1048,6 +1124,10 @@ els.markTrimEpisode.addEventListener("click", markTrimCurrentEpisode);
 els.checkEditTools.addEventListener("click", checkEditTools);
 els.runEditDryRun.addEventListener("click", runEditDryRun);
 els.applyEditPlan.addEventListener("click", applyEditPlan);
+els.addCurrentDatasetToMerge.addEventListener("click", addCurrentDatasetToMerge);
+els.clearMergeList.addEventListener("click", clearMergeList);
+els.validateMerge.addEventListener("click", validateMergePlan);
+els.applyMerge.addEventListener("click", applyMergePlan);
 els.zoomIn.addEventListener("click", () => zoomChart(0.5));
 els.zoomOut.addEventListener("click", () => zoomChart(2));
 els.resetZoom.addEventListener("click", () => {

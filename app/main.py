@@ -22,7 +22,9 @@ from app.editing import (
     EditApplyRequest,
     EditDryRunRequest,
     EditToolStatusRequest,
+    MergeApplyRequest,
     MergeValidationRequest,
+    apply_merge_plan,
     apply_edit_plan,
     dataset_validation_summary,
     editing_tool_status,
@@ -338,6 +340,26 @@ def validate_merge(request: MergeValidationRequest) -> dict[str, Any]:
             raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
         caches.append(DatasetCache(root))
     return validate_merge_compatibility(caches)
+
+
+@app.post("/api/merge/apply")
+def apply_merge(request: MergeApplyRequest) -> dict[str, Any]:
+    if not request.paths:
+        raise HTTPException(status_code=400, detail="请提供要合并的数据集路径")
+    caches = []
+    for raw_path in request.paths:
+        root = resolve_dataset_path(raw_path)
+        if not root.exists() or not root.is_dir():
+            raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
+        caches.append(DatasetCache(root))
+    result = apply_merge_plan(
+        caches=caches,
+        output_path=resolve_dataset_path(request.output_path),
+        overwrite=request.overwrite,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
 
 
 @app.get("/api/path/suggest")

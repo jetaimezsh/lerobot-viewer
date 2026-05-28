@@ -38,6 +38,11 @@ class MergeValidationRequest(BaseModel):
     paths: list[str] = Field(default_factory=list)
 
 
+class MergeApplyRequest(MergeValidationRequest):
+    output_path: str
+    overwrite: bool = False
+
+
 def editing_tool_status(cache: Any | None = None) -> dict[str, Any]:
     checks = [
         python_package_check("pandas", pd.__version__),
@@ -249,6 +254,52 @@ def validate_merge_compatibility(caches: list[Any]) -> dict[str, Any]:
     }
 
 
+def apply_merge_plan(caches: list[Any], output_path: Path, overwrite: bool = False) -> dict[str, Any]:
+    validation = validate_merge_compatibility(caches)
+    if not validation["valid"]:
+        return {"ok": False, "errors": validation["errors"], "warnings": validation["warnings"], "validation": validation}
+    if any(cache.video_keys for cache in caches):
+        return {
+            "ok": False,
+            "errors": ["当前执行版本暂不支持含视频数据集的合并落盘；需要先安装并接入 ffmpeg 视频拼接/重写"],
+            "warnings": validation["warnings"],
+            "validation": validation,
+        }
+
+    output_path = output_path.resolve()
+    source_roots = {cache.root.resolve() for cache in caches}
+    if output_path in source_roots:
+        return {"ok": False, "errors": ["输出目录不能等于任一源数据集目录"], "warnings": [], "validation": validation}
+    if output_path.exists():
+        if not overwrite:
+            return {"ok": False, "errors": [f"输出目录已存在: {output_path}"], "warnings": [], "validation": validation}
+        if not output_path.is_dir():
+            return {"ok": False, "errors": [f"输出路径不是目录: {output_path}"], "warnings": [], "validation": validation}
+        shutil.rmtree(output_path)
+
+    merged = build_merged_dataset(caches)
+    write_dataset(
+        cache=caches[0],
+        frames=merged["frames"],
+        episodes=merged["episodes"],
+        output_path=output_path,
+        tasks_df=merged["tasks"],
+    )
+    return {
+        "ok": True,
+        "output_path": str(output_path),
+        "validation": validation,
+        "summary": {
+            "datasets": len(caches),
+            "episodes": int(len(merged["episodes"])),
+            "frames": int(len(merged["frames"])),
+            "tasks": int(len(merged["tasks"])),
+            "data_file": str(output_path / "data/chunk-000/file-000.parquet"),
+            "episodes_file": str(output_path / "meta/episodes/chunk-000/file-000.parquet"),
+        },
+    }
+
+
 def apply_edit_plan(cache: Any, operations: list[EditOperation], output_path: Path, overwrite: bool = False) -> dict[str, Any]:
     plan = validate_edit_plan(cache, operations)
     if not plan["valid"]:
@@ -287,6 +338,92 @@ def apply_edit_plan(cache: Any, operations: list[EditOperation], output_path: Pa
             "episodes_file": str(output_path / "meta/episodes/chunk-000/file-000.parquet"),
         },
     }
+
+
+def build_merged_dataset(caches: list[Any]) -> dict[str, pd.DataFrame]:
+    tasks_df, task_maps = build_merged_tasks(caches)
+    first = caches[0]
+    fps = float(first.info["fps"])
+    merged_frames: list[pd.DataFrame] = []
+    merged_episodes: list[dict[str, Any]] = []
+    global_index = 0
+    next_episode_index = 0
+
+    for cache_index, cache in enumerate(caches):
+        task_map = task_maps[cache_index]
+        for _, episode in cache.episodes.sort_values("episode_index").iterrows():
+            frame_df = read_episode_frames(cache, episode).copy()
+            if "task_index" in frame_df.columns:
+                frame_df["task_index"] = frame_df["task_index"].map(lambda value: task_map.get(int(value), int(value)))
+            frame_df = normalize_frame_columns(frame_df, next_episode_index, global_index, fps)
+            length = len(frame_df)
+
+            row = base_episode_row(episode)
+            if "task_index" in row and row["task_index"] is not None:
+                row["task_index"] = task_map.get(int(row["task_index"]), int(row["task_index"]))
+            row.update(
+                {
+                    "episode_index": next_episode_index,
+                    "data/chunk_index": 0,
+                    "data/file_index": 0,
+                    "dataset_from_index": global_index,
+                    "dataset_to_index": global_index + length,
+                    "length": length,
+                    "meta/episodes/chunk_index": 0,
+                    "meta/episodes/file_index": 0,
+                }
+            )
+            row.update(flatten_stats_for_episode(frame_df, first.features))
+            merged_frames.append(frame_df)
+            merged_episodes.append(row)
+            global_index += length
+            next_episode_index += 1
+
+    if not merged_frames:
+        raise ValueError("合并后没有 episode")
+    return {
+        "frames": pd.concat(merged_frames, ignore_index=True),
+        "episodes": pd.DataFrame(merged_episodes),
+        "tasks": tasks_df,
+    }
+
+
+def build_merged_tasks(caches: list[Any]) -> tuple[pd.DataFrame, list[dict[int, int]]]:
+    task_to_index: dict[str, int] = {}
+    task_maps: list[dict[int, int]] = []
+    for cache in caches:
+        tasks = read_tasks_table(cache.root)
+        cache_map: dict[int, int] = {}
+        for row in tasks.to_dict(orient="records"):
+            task_text = task_text_from_record(row)
+            old_index = int(row.get("task_index", len(cache_map)))
+            if task_text not in task_to_index:
+                task_to_index[task_text] = len(task_to_index)
+            cache_map[old_index] = task_to_index[task_text]
+        task_maps.append(cache_map)
+
+    ordered_tasks = sorted(task_to_index.items(), key=lambda item: item[1])
+    return (
+        pd.DataFrame(
+            {"task_index": [index for _, index in ordered_tasks]},
+            index=pd.Index([task for task, _ in ordered_tasks], name="task"),
+        ),
+        task_maps,
+    )
+
+
+def read_tasks_table(root: Path) -> pd.DataFrame:
+    df = pd.read_parquet(root / "meta/tasks.parquet")
+    if df.index.name == "task":
+        df = df.reset_index()
+    return df
+
+
+def task_text_from_record(record: dict[str, Any]) -> str:
+    for key in ["task", "name", "text"]:
+        if key in record and record[key] is not None:
+            return str(record[key])
+    return json.dumps(clean_json_value(record), ensure_ascii=False, sort_keys=True)
 
 
 def build_edited_dataset(cache: Any, normalized_operations: list[dict[str, Any]]) -> dict[str, pd.DataFrame]:
@@ -384,17 +521,29 @@ def base_episode_row(episode: pd.Series) -> dict[str, Any]:
     }
 
 
-def write_dataset(cache: Any, frames: pd.DataFrame, episodes: pd.DataFrame, output_path: Path) -> None:
+def write_dataset(
+    cache: Any,
+    frames: pd.DataFrame,
+    episodes: pd.DataFrame,
+    output_path: Path,
+    tasks_df: pd.DataFrame | None = None,
+) -> None:
     (output_path / "data/chunk-000").mkdir(parents=True, exist_ok=True)
     (output_path / "meta/episodes/chunk-000").mkdir(parents=True, exist_ok=True)
 
     frames.to_parquet(output_path / "data/chunk-000/file-000.parquet", index=False)
     episodes.to_parquet(output_path / "meta/episodes/chunk-000/file-000.parquet", index=False)
-    shutil.copy2(cache.root / "meta/tasks.parquet", output_path / "meta/tasks.parquet")
+    if tasks_df is None:
+        shutil.copy2(cache.root / "meta/tasks.parquet", output_path / "meta/tasks.parquet")
+        total_tasks = int(cache.info.get("total_tasks", len(cache.tasks)))
+    else:
+        tasks_df.to_parquet(output_path / "meta/tasks.parquet")
+        total_tasks = int(len(tasks_df))
 
     info = dict(cache.info)
     info["total_episodes"] = int(len(episodes))
     info["total_frames"] = int(len(frames))
+    info["total_tasks"] = total_tasks
     info["splits"] = {"train": f"0:{len(episodes)}"}
     info["data_path"] = "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"
     if "video_path" in info:
@@ -623,14 +772,14 @@ def build_edit_capabilities(checks: list[dict[str, Any]]) -> dict[str, dict[str,
         "merge_no_video": {
             "id": "merge_no_video",
             "name": "合并多个数据集（无视频）",
-            "available": False,
-            "blocked_by": ["功能待实现"] if not base_missing else base_missing + ["功能待实现"],
+            "available": not base_missing,
+            "blocked_by": base_missing,
         },
         "merge_video": {
             "id": "merge_video",
             "name": "合并多个数据集（含视频）",
             "available": False,
-            "blocked_by": (video_missing + ["功能待实现"]) if video_missing else ["功能待实现"],
+            "blocked_by": (video_missing + ["视频合并功能待实现"]) if video_missing else ["视频合并功能待实现"],
         },
     }
 
