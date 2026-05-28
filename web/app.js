@@ -69,12 +69,14 @@ const els = {
   markTrimEpisode: document.getElementById("markTrimEpisode"),
   trimDraft: document.getElementById("trimDraft"),
   editOperationList: document.getElementById("editOperationList"),
+  editOperationBadge: document.getElementById("editOperationBadge"),
   checkEditTools: document.getElementById("checkEditTools"),
   runEditDryRun: document.getElementById("runEditDryRun"),
   applyEditPlan: document.getElementById("applyEditPlan"),
   editOutputPath: document.getElementById("editOutputPath"),
   editOverwrite: document.getElementById("editOverwrite"),
   editDryRunOutput: document.getElementById("editDryRunOutput"),
+  toolStatusReport: document.getElementById("toolStatusReport"),
 };
 
 const palette = ["#087f8c", "#b76e00", "#2f6fbb", "#7a5195", "#2f9e44", "#c92a2a", "#5f6c72", "#805ad5"];
@@ -177,6 +179,10 @@ function setView(viewId) {
     button.classList.toggle("active", button.dataset.view === viewId);
   });
   if (viewId === "episodeView") requestAnimationFrame(drawChart);
+}
+
+function goToDatasetEditor() {
+  setView("datasetEditView");
 }
 
 function currentEpisodeIndex() {
@@ -694,6 +700,10 @@ function clearEditPlan() {
   state.trimDraftEnd = null;
   renderEditPanel();
   if (els.editDryRunOutput) els.editDryRunOutput.textContent = "尚未运行预估。";
+  if (els.toolStatusReport) {
+    els.toolStatusReport.classList.add("empty");
+    els.toolStatusReport.textContent = "尚未检测数据修改工具。";
+  }
 }
 
 function renderEditPanel() {
@@ -708,6 +718,7 @@ function renderEditPanel() {
   }
   updateTrimDraftLabel();
   renderEditOperations();
+  updateEditOperationBadge();
 }
 
 function updateTrimDraftLabel() {
@@ -740,6 +751,7 @@ function renderEditOperations() {
   if (!state.editOperations.length) {
     els.editOperationList.classList.add("empty");
     els.editOperationList.innerHTML = "暂无待应用修改";
+    updateEditOperationBadge();
     return;
   }
   els.editOperationList.classList.remove("empty");
@@ -768,12 +780,20 @@ function renderEditOperations() {
       if (els.editDryRunOutput) els.editDryRunOutput.textContent = "编辑计划已变化，请重新运行预估。";
     });
   }
+  updateEditOperationBadge();
+}
+
+function updateEditOperationBadge() {
+  if (!els.editOperationBadge) return;
+  const count = state.editOperations.length;
+  els.editOperationBadge.textContent = `${count} 个待处理操作`;
 }
 
 function markDeleteCurrentEpisode() {
   const episodeIndex = currentEpisodeIndex();
   if (episodeIndex === null) return;
   upsertEditOperation({ type: "delete_episode", episode_index: episodeIndex });
+  els.editEpisodeMeta.textContent = `已把 Episode ${episodeIndex} 加入删除计划。到“数据集编辑”页面可查看队列并生成新数据集。`;
 }
 
 function setTrimPoint(kind) {
@@ -798,6 +818,7 @@ function markTrimCurrentEpisode() {
     start_time: start,
     end_time: end,
   });
+  els.editEpisodeMeta.textContent = `已把 Episode ${episodeIndex} 的保留区间加入编辑计划。到“数据集编辑”页面可查看队列并生成新数据集。`;
 }
 
 async function runEditDryRun() {
@@ -821,39 +842,81 @@ async function runEditDryRun() {
 }
 
 async function checkEditTools() {
-  els.editDryRunOutput.textContent = "正在检测...";
+  els.toolStatusReport.textContent = "正在检测...";
+  els.toolStatusReport.classList.remove("empty");
   try {
     const options = { method: "POST", body: "{}" };
     if (state.summary) {
       options.body = JSON.stringify({ path: state.summary.root });
     }
     const result = await api("/api/edit/tool-status", options);
-    els.editDryRunOutput.textContent = formatToolStatus(result);
+    els.toolStatusReport.innerHTML = formatToolStatus(result);
   } catch (error) {
-    els.editDryRunOutput.textContent = error.message;
+    els.toolStatusReport.textContent = error.message;
   }
 }
 
 function formatToolStatus(result) {
-  const lines = [];
-  lines.push(`无视频数据编辑: ${result.ready_for_no_video_edits ? "可用" : "不可用"}`);
-  lines.push(`含视频数据编辑: ${result.ready_for_video_edits ? "可用" : "不可用"}`);
+  const statusRows = [
+    ["无视频数据编辑", result.ready_for_no_video_edits ? "可用" : "不可用"],
+    ["含视频数据编辑", result.ready_for_video_edits ? "可用" : "不可用"],
+  ];
   if (result.dataset) {
-    lines.push("");
-    lines.push(`当前数据集: ${result.dataset.path}`);
-    lines.push(`视频字段: ${result.dataset.has_video ? result.dataset.video_keys.join(", ") : "无"}`);
-    lines.push(`当前数据集执行状态: ${result.dataset.can_apply_now ? "可生成新目录" : "暂不可落盘编辑"}`);
-    lines.push(`原因: ${result.dataset.reason}`);
+    statusRows.push(["当前数据集", result.dataset.path]);
+    statusRows.push(["视频字段", result.dataset.has_video ? result.dataset.video_keys.join(", ") : "无"]);
+    statusRows.push(["当前数据集落盘编辑", result.dataset.can_apply_now ? "可用" : "暂不可用"]);
+    statusRows.push(["原因", result.dataset.reason]);
   }
-  lines.push("");
-  lines.push("检查项:");
-  for (const check of result.checks || []) {
-    const required = check.required_for_video
-      ? check.required_for_no_video ? "必需" : "视频必需"
-      : "可选";
-    lines.push(`- ${check.ok ? "OK" : "FAIL"} ${check.label} (${required}): ${check.detail}`);
-  }
-  return lines.join("\n");
+
+  const missing = result.missing || [];
+  const checks = result.checks || [];
+  const capabilities = result.capabilities || [];
+  const recommendations = result.recommendations || [];
+  return `
+    <div class="tool-report-section">
+      <h4>总体状态</h4>
+      ${statusRows.map(([label, value]) => `
+        <div class="tool-report-row">
+          <strong>${escapeHtml(label)}</strong>
+          <span>${escapeHtml(value)}</span>
+        </div>
+      `).join("")}
+    </div>
+    <div class="tool-report-section">
+      <h4>缺失项</h4>
+      ${missing.length ? missing.map((item) => `
+        <div class="tool-missing-item">
+          <strong>${escapeHtml(item.name)}</strong>
+          <span>影响：${escapeHtml(item.impact)}</span>
+          <span>原因：${escapeHtml(item.reason)}</span>
+          <span>解决：${escapeHtml(item.fix)}</span>
+          <small>${escapeHtml(item.raw_detail)}</small>
+        </div>
+      `).join("") : "<div class=\"tool-ok\">没有缺失项。</div>"}
+    </div>
+    <div class="tool-report-section">
+      <h4>已通过检查</h4>
+      ${checks.filter((check) => check.ok).map((check) => `
+        <div class="tool-check ok">
+          <strong>${escapeHtml(check.label)}</strong>
+          <span>${escapeHtml(check.detail)}</span>
+        </div>
+      `).join("") || "<div class=\"empty\">暂无通过项。</div>"}
+    </div>
+    <div class="tool-report-section">
+      <h4>功能可用性</h4>
+      ${capabilities.map((item) => `
+        <div class="tool-check ${item.available ? "ok" : "fail"}">
+          <strong>${escapeHtml(item.name)}</strong>
+          <span>${item.available ? "可用" : `不可用，缺少：${escapeHtml((item.blocked_by || []).join(", "))}`}</span>
+        </div>
+      `).join("")}
+    </div>
+    <div class="tool-report-section">
+      <h4>建议</h4>
+      ${recommendations.map((item) => `<div class="tool-recommendation">${escapeHtml(item)}</div>`).join("")}
+    </div>
+  `;
 }
 
 async function applyEditPlan() {

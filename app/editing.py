@@ -46,14 +46,17 @@ def editing_tool_status(cache: Any | None = None) -> dict[str, Any]:
         filesystem_write_check(),
         ffmpeg_check(),
     ]
+    missing = build_missing_items(checks)
+    capabilities = build_edit_capabilities(checks)
     dataset = None
     if cache is not None:
         has_video = bool(cache.video_keys)
+        dataset_can_apply = not has_video and capabilities["delete_episode_no_video"]["available"] and capabilities["trim_episode_no_video"]["available"]
         dataset = {
             "path": str(cache.root),
             "has_video": has_video,
             "video_keys": cache.video_keys,
-            "can_apply_now": not has_video,
+            "can_apply_now": dataset_can_apply,
             "reason": (
                 "当前数据集不含视频，可执行删除/裁剪并生成新目录"
                 if not has_video
@@ -63,10 +66,14 @@ def editing_tool_status(cache: Any | None = None) -> dict[str, Any]:
 
     required_ok = all(check["ok"] for check in checks if check["required_for_no_video"])
     ffmpeg_ok = next((check["ok"] for check in checks if check["id"] == "ffmpeg"), False)
+    recommendations = build_recommendations(missing)
     return {
         "ready_for_no_video_edits": required_ok,
         "ready_for_video_edits": required_ok and ffmpeg_ok,
         "checks": checks,
+        "missing": missing,
+        "capabilities": list(capabilities.values()),
+        "recommendations": recommendations,
         "dataset": dataset,
     }
 
@@ -541,6 +548,100 @@ def ffmpeg_check() -> dict[str, Any]:
         "required_for_video": True,
         "detail": first_line,
     }
+
+
+def build_missing_items(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    missing = []
+    for check in checks:
+        if check["ok"]:
+            continue
+        if check["id"] == "ffmpeg":
+            missing.append(
+                {
+                    "id": "ffmpeg",
+                    "name": "ffmpeg",
+                    "impact": "无法对包含视频的数据集执行删除 episode、裁剪 episode 后生成合法 v3.0 输出目录",
+                    "reason": "视频文件必须和 Parquet frame、episode metadata 同步裁剪/重写，否则视频时间轴会与数据不一致",
+                    "fix": "安装 ffmpeg，并确保 ffmpeg.exe 可以在 PowerShell 中直接运行",
+                    "raw_detail": check["detail"],
+                }
+            )
+        elif check["id"] == "filesystem_write":
+            missing.append(
+                {
+                    "id": "filesystem_write",
+                    "name": "输出目录写入能力",
+                    "impact": "无法生成新的数据集目录",
+                    "reason": "编辑操作会写入新的 data、meta 和 stats 文件",
+                    "fix": "换一个有写入权限的项目目录或输出目录",
+                    "raw_detail": check["detail"],
+                }
+            )
+        elif check["id"] in {"pandas", "pyarrow", "numpy"}:
+            missing.append(
+                {
+                    "id": check["id"],
+                    "name": check["id"],
+                    "impact": "无法读取、修改或写入 LeRobot v3.0 的 Parquet/数组数据",
+                    "reason": f"{check['id']} 是数据修改流程的必需 Python 包",
+                    "fix": "运行 requirements.txt 安装，或在 System环境 页面点击安装 requirements.txt",
+                    "raw_detail": check["detail"],
+                }
+            )
+    return missing
+
+
+def build_edit_capabilities(checks: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    ok_by_id = {check["id"]: bool(check["ok"]) for check in checks}
+    base_missing = [item for item in ["pandas", "pyarrow", "numpy", "filesystem_write"] if not ok_by_id.get(item)]
+    video_missing = base_missing + ([] if ok_by_id.get("ffmpeg") else ["ffmpeg"])
+    return {
+        "delete_episode_no_video": {
+            "id": "delete_episode_no_video",
+            "name": "删除 episode（无视频数据集）",
+            "available": not base_missing,
+            "blocked_by": base_missing,
+        },
+        "trim_episode_no_video": {
+            "id": "trim_episode_no_video",
+            "name": "裁剪 episode（无视频数据集）",
+            "available": not base_missing,
+            "blocked_by": base_missing,
+        },
+        "delete_episode_video": {
+            "id": "delete_episode_video",
+            "name": "删除 episode（含视频数据集）",
+            "available": not video_missing,
+            "blocked_by": video_missing,
+        },
+        "trim_episode_video": {
+            "id": "trim_episode_video",
+            "name": "裁剪 episode（含视频数据集）",
+            "available": not video_missing,
+            "blocked_by": video_missing,
+        },
+        "merge_no_video": {
+            "id": "merge_no_video",
+            "name": "合并多个数据集（无视频）",
+            "available": False,
+            "blocked_by": ["功能待实现"] if not base_missing else base_missing + ["功能待实现"],
+        },
+        "merge_video": {
+            "id": "merge_video",
+            "name": "合并多个数据集（含视频）",
+            "available": False,
+            "blocked_by": (video_missing + ["功能待实现"]) if video_missing else ["功能待实现"],
+        },
+    }
+
+
+def build_recommendations(missing: list[dict[str, Any]]) -> list[str]:
+    if not missing:
+        return ["当前环境已具备无视频和含视频数据编辑所需工具。"]
+    recommendations = []
+    for item in missing:
+        recommendations.append(f"{item['name']}: {item['fix']}")
+    return recommendations
 
 
 def canonical_features(features: dict[str, dict[str, Any]]) -> dict[str, Any]:
