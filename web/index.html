@@ -37,6 +37,7 @@
       <nav class="nav">
         <button class="nav-button active" data-view="overviewView">总览</button>
         <button class="nav-button" data-view="episodeView">Episode 播放</button>
+        <button class="nav-button" data-view="editView">数据编辑</button>
         <button class="nav-button" data-view="envView">Python 环境</button>
       </nav>
 
@@ -161,6 +162,42 @@
             <div id="currentValues" class="value-table empty">选择 episode 后显示当前 state/action。</div>
           </section>
         </div>
+      </section>
+
+      <section id="editView" class="view">
+        <section class="surface edit-surface">
+          <div>
+            <div class="section-kicker">Dataset Editor v2</div>
+            <h3>边查看边标记删除和裁剪</h3>
+            <p>当前版本先生成编辑计划并做 dry-run 校验，后续迭代会把计划应用到新的合法 v3.0 数据集目录。</p>
+          </div>
+          <button id="runEditDryRun" type="button">预估修改结果</button>
+        </section>
+
+        <div class="edit-grid">
+          <section class="surface">
+            <div class="section-kicker">Current Episode</div>
+            <h3 id="editEpisodeTitle">未选择 episode</h3>
+            <p id="editEpisodeMeta">在 Episode 播放页选择一条记录后，可以在这里添加编辑操作。</p>
+            <div class="edit-actions">
+              <button id="markDeleteEpisode" type="button">标记删除当前 episode</button>
+              <button id="setTrimStart" type="button">当前时刻设为起点</button>
+              <button id="setTrimEnd" type="button">当前时刻设为终点</button>
+              <button id="markTrimEpisode" type="button">标记保留区间</button>
+            </div>
+            <div id="trimDraft" class="edit-draft">裁剪区间未设置</div>
+          </section>
+
+          <section class="surface">
+            <div class="section-kicker">Pending Operations</div>
+            <div id="editOperationList" class="edit-operation-list empty">暂无待应用修改</div>
+          </section>
+        </div>
+
+        <section class="surface">
+          <div class="section-kicker">Dry-run Result</div>
+          <pre id="editDryRunOutput" class="edit-output">尚未运行预估。</pre>
+        </section>
       </section>
 
       <section id="envView" class="view">

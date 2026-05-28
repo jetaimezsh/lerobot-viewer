@@ -19,6 +19,9 @@ const state = {
   videos: [],
   raf: null,
   currentView: "overviewView",
+  editOperations: [],
+  trimDraftStart: null,
+  trimDraftEnd: null,
 };
 
 const els = {
@@ -58,6 +61,16 @@ const els = {
   seriesOptions: document.getElementById("seriesOptions"),
   episodeInfo: document.getElementById("episodeInfo"),
   currentValues: document.getElementById("currentValues"),
+  editEpisodeTitle: document.getElementById("editEpisodeTitle"),
+  editEpisodeMeta: document.getElementById("editEpisodeMeta"),
+  markDeleteEpisode: document.getElementById("markDeleteEpisode"),
+  setTrimStart: document.getElementById("setTrimStart"),
+  setTrimEnd: document.getElementById("setTrimEnd"),
+  markTrimEpisode: document.getElementById("markTrimEpisode"),
+  trimDraft: document.getElementById("trimDraft"),
+  editOperationList: document.getElementById("editOperationList"),
+  runEditDryRun: document.getElementById("runEditDryRun"),
+  editDryRunOutput: document.getElementById("editDryRunOutput"),
 };
 
 const palette = ["#087f8c", "#b76e00", "#2f6fbb", "#7a5195", "#2f9e44", "#c92a2a", "#5f6c72", "#805ad5"];
@@ -161,6 +174,10 @@ function setView(viewId) {
   if (viewId === "episodeView") requestAnimationFrame(drawChart);
 }
 
+function currentEpisodeIndex() {
+  return state.episode ? Number(state.episode.episode_index) : null;
+}
+
 async function loadEnv() {
   const env = await api("/api/env");
   const rows = [
@@ -201,6 +218,7 @@ async function openDataset() {
     state.summary = summary;
     state.episodes = await api(`/api/datasets/${state.datasetId}/episodes`);
     state.episode = null;
+    clearEditPlan();
     renderSummary();
     renderFeatures();
     renderTasks();
@@ -417,6 +435,7 @@ async function loadEpisode(index) {
   renderVideos(detail.videos || []);
   renderSeriesPicker();
   renderEpisodeInfo(detail);
+  renderEditPanel();
   setView("episodeView");
   drawChart();
   updateCurrentValues();
@@ -661,6 +680,139 @@ function updateCurrentValues() {
   els.currentValues.innerHTML = rows.join("") || "<div class=\"empty\">未选择数值字段。</div>";
   els.currentTime.textContent = `${fmt(state.currentElapsed)}s`;
   els.timeSlider.value = String(Math.min(state.currentElapsed, state.duration));
+  updateTrimDraftLabel();
+}
+
+function clearEditPlan() {
+  state.editOperations = [];
+  state.trimDraftStart = null;
+  state.trimDraftEnd = null;
+  renderEditPanel();
+  if (els.editDryRunOutput) els.editDryRunOutput.textContent = "尚未运行预估。";
+}
+
+function renderEditPanel() {
+  if (!els.editEpisodeTitle) return;
+  const episodeIndex = currentEpisodeIndex();
+  if (episodeIndex === null) {
+    els.editEpisodeTitle.textContent = "未选择 episode";
+    els.editEpisodeMeta.textContent = "在 Episode 播放页选择一条记录后，可以在这里添加编辑操作。";
+  } else {
+    els.editEpisodeTitle.textContent = `Episode ${episodeIndex}`;
+    els.editEpisodeMeta.textContent = `${state.episode.length || state.elapsed.length} frames · 当前 ${fmt(state.currentElapsed)}s / ${fmt(state.duration)}s`;
+  }
+  updateTrimDraftLabel();
+  renderEditOperations();
+}
+
+function updateTrimDraftLabel() {
+  if (!els.trimDraft) return;
+  const start = state.trimDraftStart;
+  const end = state.trimDraftEnd;
+  if (start === null && end === null) {
+    els.trimDraft.textContent = "裁剪区间未设置";
+  } else {
+    els.trimDraft.textContent = `保留区间: ${start === null ? "未设置" : `${fmt(start)}s`} - ${end === null ? "未设置" : `${fmt(end)}s`}`;
+  }
+  if (els.editEpisodeMeta && state.episode) {
+    els.editEpisodeMeta.textContent = `${state.episode.length || state.elapsed.length} frames · 当前 ${fmt(state.currentElapsed)}s / ${fmt(state.duration)}s`;
+  }
+}
+
+function operationKey(operation) {
+  return `${operation.type}:${operation.episode_index}`;
+}
+
+function upsertEditOperation(operation) {
+  state.editOperations = state.editOperations.filter((item) => item.episode_index !== operation.episode_index);
+  state.editOperations.push(operation);
+  renderEditOperations();
+  if (els.editDryRunOutput) els.editDryRunOutput.textContent = "编辑计划已变化，请重新运行预估。";
+}
+
+function renderEditOperations() {
+  if (!els.editOperationList) return;
+  if (!state.editOperations.length) {
+    els.editOperationList.classList.add("empty");
+    els.editOperationList.innerHTML = "暂无待应用修改";
+    return;
+  }
+  els.editOperationList.classList.remove("empty");
+  els.editOperationList.innerHTML = state.editOperations.map((operation) => {
+    const title = operation.type === "delete_episode"
+      ? `删除 Episode ${operation.episode_index}`
+      : `裁剪 Episode ${operation.episode_index}`;
+    const detail = operation.type === "delete_episode"
+      ? "应用后该 episode 会被移除，后续 episode 重新编号。"
+      : `保留 ${fmt(operation.start_time)}s - ${fmt(operation.end_time)}s。`;
+    return `
+      <div class="edit-operation-item" data-operation-key="${escapeAttr(operationKey(operation))}">
+        <div>
+          <strong>${escapeHtml(title)}</strong>
+          <span>${escapeHtml(detail)}</span>
+        </div>
+        <button type="button" data-remove-operation="${escapeAttr(operationKey(operation))}">撤销</button>
+      </div>
+    `;
+  }).join("");
+  for (const button of els.editOperationList.querySelectorAll("[data-remove-operation]")) {
+    button.addEventListener("click", () => {
+      const key = button.dataset.removeOperation;
+      state.editOperations = state.editOperations.filter((item) => operationKey(item) !== key);
+      renderEditOperations();
+      if (els.editDryRunOutput) els.editDryRunOutput.textContent = "编辑计划已变化，请重新运行预估。";
+    });
+  }
+}
+
+function markDeleteCurrentEpisode() {
+  const episodeIndex = currentEpisodeIndex();
+  if (episodeIndex === null) return;
+  upsertEditOperation({ type: "delete_episode", episode_index: episodeIndex });
+}
+
+function setTrimPoint(kind) {
+  if (!state.episode) return;
+  if (kind === "start") state.trimDraftStart = state.currentElapsed;
+  if (kind === "end") state.trimDraftEnd = state.currentElapsed;
+  updateTrimDraftLabel();
+}
+
+function markTrimCurrentEpisode() {
+  const episodeIndex = currentEpisodeIndex();
+  if (episodeIndex === null) return;
+  const start = state.trimDraftStart;
+  const end = state.trimDraftEnd;
+  if (start === null || end === null || end <= start) {
+    els.editDryRunOutput.textContent = "裁剪区间无效：请先设置起点和终点，且终点必须大于起点。";
+    return;
+  }
+  upsertEditOperation({
+    type: "trim_episode",
+    episode_index: episodeIndex,
+    start_time: start,
+    end_time: end,
+  });
+}
+
+async function runEditDryRun() {
+  if (!state.summary) {
+    els.editDryRunOutput.textContent = "请先加载数据集。";
+    return;
+  }
+  els.editDryRunOutput.textContent = "正在预估...";
+  try {
+    const result = await api("/api/edit/dry-run", {
+      method: "POST",
+      body: JSON.stringify({
+        path: state.summary.root,
+        operations: state.editOperations,
+      }),
+    });
+    els.editDryRunOutput.textContent = JSON.stringify(result, null, 2);
+  } catch (error) {
+    els.editDryRunOutput.textContent = error.message;
+  }
 }
 
 function setElapsed(elapsed, seekVideos = true) {
@@ -754,6 +906,11 @@ els.speed.addEventListener("change", () => {
   for (const video of state.videos) video.playbackRate = Number(els.speed.value);
 });
 els.timeSlider.addEventListener("input", () => setElapsed(Number(els.timeSlider.value)));
+els.markDeleteEpisode.addEventListener("click", markDeleteCurrentEpisode);
+els.setTrimStart.addEventListener("click", () => setTrimPoint("start"));
+els.setTrimEnd.addEventListener("click", () => setTrimPoint("end"));
+els.markTrimEpisode.addEventListener("click", markTrimCurrentEpisode);
+els.runEditDryRun.addEventListener("click", runEditDryRun);
 els.zoomIn.addEventListener("click", () => zoomChart(0.5));
 els.zoomOut.addEventListener("click", () => zoomChart(2));
 els.resetZoom.addEventListener("click", () => {

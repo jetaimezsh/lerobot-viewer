@@ -18,6 +18,15 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from app.editing import (
+    EditDryRunRequest,
+    MergeValidationRequest,
+    dataset_validation_summary,
+    resolve_dataset_path,
+    validate_edit_plan,
+    validate_merge_compatibility,
+)
+
 
 APP_ROOT = Path(__file__).resolve().parent.parent
 WEB_ROOT = APP_ROOT / "web"
@@ -266,6 +275,37 @@ def open_dataset(request: OpenDatasetRequest) -> dict[str, Any]:
 @app.get("/api/history")
 def dataset_history() -> list[dict[str, Any]]:
     return load_history()
+
+
+@app.post("/api/edit/dry-run")
+def edit_dry_run(request: EditDryRunRequest) -> dict[str, Any]:
+    root = resolve_dataset_path(request.path)
+    if not root.exists() or not root.is_dir():
+        raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
+    cache = DatasetCache(root)
+    return validate_edit_plan(cache, request.operations)
+
+
+@app.post("/api/datasets/validate")
+def validate_dataset(request: OpenDatasetRequest) -> dict[str, Any]:
+    root = resolve_dataset_path(request.path)
+    if not root.exists() or not root.is_dir():
+        raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
+    cache = DatasetCache(root)
+    return dataset_validation_summary(cache)
+
+
+@app.post("/api/merge/validate")
+def validate_merge(request: MergeValidationRequest) -> dict[str, Any]:
+    if not request.paths:
+        raise HTTPException(status_code=400, detail="请提供要合并的数据集路径")
+    caches = []
+    for raw_path in request.paths:
+        root = resolve_dataset_path(raw_path)
+        if not root.exists() or not root.is_dir():
+            raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
+        caches.append(DatasetCache(root))
+    return validate_merge_compatibility(caches)
 
 
 @app.get("/api/path/suggest")
