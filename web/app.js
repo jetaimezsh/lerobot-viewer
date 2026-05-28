@@ -70,6 +70,9 @@ const els = {
   trimDraft: document.getElementById("trimDraft"),
   editOperationList: document.getElementById("editOperationList"),
   runEditDryRun: document.getElementById("runEditDryRun"),
+  applyEditPlan: document.getElementById("applyEditPlan"),
+  editOutputPath: document.getElementById("editOutputPath"),
+  editOverwrite: document.getElementById("editOverwrite"),
   editDryRunOutput: document.getElementById("editDryRunOutput"),
 };
 
@@ -85,6 +88,7 @@ async function api(path, options = {}) {
     try {
       const body = await response.json();
       message = body.detail || message;
+      if (typeof message !== "string") message = JSON.stringify(message, null, 2);
     } catch (_) {
       message = await response.text();
     }
@@ -815,6 +819,37 @@ async function runEditDryRun() {
   }
 }
 
+async function applyEditPlan() {
+  if (!state.summary) {
+    els.editDryRunOutput.textContent = "请先加载数据集。";
+    return;
+  }
+  if (!state.editOperations.length) {
+    els.editDryRunOutput.textContent = "没有待应用的编辑操作。";
+    return;
+  }
+  const outputPath = els.editOutputPath.value.trim();
+  if (!outputPath) {
+    els.editDryRunOutput.textContent = "请填写输出目录。";
+    return;
+  }
+  els.editDryRunOutput.textContent = "正在生成新数据集...";
+  try {
+    const result = await api("/api/edit/apply", {
+      method: "POST",
+      body: JSON.stringify({
+        path: state.summary.root,
+        output_path: outputPath,
+        overwrite: els.editOverwrite.checked,
+        operations: state.editOperations,
+      }),
+    });
+    els.editDryRunOutput.textContent = JSON.stringify(result, null, 2);
+  } catch (error) {
+    els.editDryRunOutput.textContent = error.message;
+  }
+}
+
 function setElapsed(elapsed, seekVideos = true) {
   state.currentElapsed = Math.max(0, Math.min(elapsed, state.duration));
   if (seekVideos) seekTo(state.currentElapsed);
@@ -911,6 +946,7 @@ els.setTrimStart.addEventListener("click", () => setTrimPoint("start"));
 els.setTrimEnd.addEventListener("click", () => setTrimPoint("end"));
 els.markTrimEpisode.addEventListener("click", markTrimCurrentEpisode);
 els.runEditDryRun.addEventListener("click", runEditDryRun);
+els.applyEditPlan.addEventListener("click", applyEditPlan);
 els.zoomIn.addEventListener("click", () => zoomChart(0.5));
 els.zoomOut.addEventListener("click", () => zoomChart(2));
 els.resetZoom.addEventListener("click", () => {

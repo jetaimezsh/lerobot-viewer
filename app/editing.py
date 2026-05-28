@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import math
+import json
+import shutil
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+import pandas as pd
 from pydantic import BaseModel, Field
 
 
@@ -17,6 +21,11 @@ class EditOperation(BaseModel):
 class EditDryRunRequest(BaseModel):
     path: str
     operations: list[EditOperation] = Field(default_factory=list)
+
+
+class EditApplyRequest(EditDryRunRequest):
+    output_path: str
+    overwrite: bool = False
 
 
 class MergeValidationRequest(BaseModel):
@@ -192,6 +201,218 @@ def validate_merge_compatibility(caches: list[Any]) -> dict[str, Any]:
             "dataset_count": len(caches),
         },
     }
+
+
+def apply_edit_plan(cache: Any, operations: list[EditOperation], output_path: Path, overwrite: bool = False) -> dict[str, Any]:
+    plan = validate_edit_plan(cache, operations)
+    if not plan["valid"]:
+        return {"ok": False, "errors": plan["errors"], "warnings": plan["warnings"], "dry_run": plan}
+    if not plan["operations"]:
+        return {"ok": False, "errors": ["没有待应用的编辑操作"], "warnings": plan["warnings"], "dry_run": plan}
+    if cache.video_keys:
+        return {
+            "ok": False,
+            "errors": ["当前执行版本暂不支持含视频数据集的落盘编辑；需要先接入 ffmpeg 视频裁剪/重写"],
+            "warnings": plan["warnings"],
+            "dry_run": plan,
+        }
+
+    output_path = output_path.resolve()
+    if output_path == cache.root.resolve():
+        return {"ok": False, "errors": ["输出目录不能等于源数据集目录"], "warnings": [], "dry_run": plan}
+    if output_path.exists():
+        if not overwrite:
+            return {"ok": False, "errors": [f"输出目录已存在: {output_path}"], "warnings": [], "dry_run": plan}
+        if not output_path.is_dir():
+            return {"ok": False, "errors": [f"输出路径不是目录: {output_path}"], "warnings": [], "dry_run": plan}
+        shutil.rmtree(output_path)
+
+    edited = build_edited_dataset(cache, plan["operations"])
+    write_dataset(cache, edited["frames"], edited["episodes"], output_path)
+
+    return {
+        "ok": True,
+        "output_path": str(output_path),
+        "dry_run": plan,
+        "summary": {
+            "episodes": int(len(edited["episodes"])),
+            "frames": int(len(edited["frames"])),
+            "data_file": str(output_path / "data/chunk-000/file-000.parquet"),
+            "episodes_file": str(output_path / "meta/episodes/chunk-000/file-000.parquet"),
+        },
+    }
+
+
+def build_edited_dataset(cache: Any, normalized_operations: list[dict[str, Any]]) -> dict[str, pd.DataFrame]:
+    operations_by_episode = {int(op["episode_index"]): op for op in normalized_operations}
+    fps = float(cache.info["fps"])
+    new_frames: list[pd.DataFrame] = []
+    new_episode_rows: list[dict[str, Any]] = []
+    global_index = 0
+    new_episode_index = 0
+
+    for _, episode in cache.episodes.sort_values("episode_index").iterrows():
+        source_episode_index = int(episode["episode_index"])
+        operation = operations_by_episode.get(source_episode_index)
+        if operation and operation["type"] == "delete_episode":
+            continue
+
+        frame_df = read_episode_frames(cache, episode)
+        old_length = len(frame_df)
+        if operation and operation["type"] == "trim_episode":
+            frame_df = frame_df.iloc[int(operation["start_frame"]): int(operation["end_frame"])].copy()
+        else:
+            frame_df = frame_df.copy()
+
+        new_length = len(frame_df)
+        if new_length <= 0:
+            continue
+
+        frame_df = normalize_frame_columns(frame_df, new_episode_index, global_index, fps)
+        row = base_episode_row(episode)
+        row.update(
+            {
+                "episode_index": new_episode_index,
+                "data/chunk_index": 0,
+                "data/file_index": 0,
+                "dataset_from_index": global_index,
+                "dataset_to_index": global_index + new_length,
+                "length": new_length,
+                "meta/episodes/chunk_index": 0,
+                "meta/episodes/file_index": 0,
+            }
+        )
+        row.update(flatten_stats_for_episode(frame_df, cache.features))
+
+        new_frames.append(frame_df)
+        new_episode_rows.append(row)
+        global_index += new_length
+        new_episode_index += 1
+
+    if not new_frames:
+        raise ValueError("编辑后没有剩余 episode")
+
+    return {
+        "frames": pd.concat(new_frames, ignore_index=True),
+        "episodes": pd.DataFrame(new_episode_rows),
+    }
+
+
+def read_episode_frames(cache: Any, episode: pd.Series) -> pd.DataFrame:
+    df = pd.read_parquet(cache.data_file_for_episode(episode))
+    if "dataset_from_index" in episode and "dataset_to_index" in episode and "index" in df.columns:
+        start = int(episode["dataset_from_index"])
+        end = int(episode["dataset_to_index"])
+        sliced = df[(df["index"] >= start) & (df["index"] < end)].copy()
+        if not sliced.empty:
+            return sliced.reset_index(drop=True)
+    if "episode_index" in df.columns:
+        sliced = df[df["episode_index"] == int(episode["episode_index"])].copy()
+        if not sliced.empty:
+            return sliced.reset_index(drop=True)
+    length = int(episode.get("length", len(df)))
+    return df.head(length).copy().reset_index(drop=True)
+
+
+def normalize_frame_columns(df: pd.DataFrame, episode_index: int, global_start: int, fps: float) -> pd.DataFrame:
+    length = len(df)
+    if "episode_index" in df.columns:
+        df["episode_index"] = episode_index
+    if "frame_index" in df.columns:
+        df["frame_index"] = np.arange(length, dtype=np.int64)
+    if "index" in df.columns:
+        df["index"] = np.arange(global_start, global_start + length, dtype=np.int64)
+    if "timestamp" in df.columns:
+        df["timestamp"] = np.arange(length, dtype=np.float32) / np.float32(fps)
+    if "next.done" in df.columns:
+        df["next.done"] = False
+        df.loc[df.index[-1], "next.done"] = True
+    return df
+
+
+def base_episode_row(episode: pd.Series) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in episode.to_dict().items()
+        if not key.startswith("stats/") and not key.startswith("videos/")
+    }
+
+
+def write_dataset(cache: Any, frames: pd.DataFrame, episodes: pd.DataFrame, output_path: Path) -> None:
+    (output_path / "data/chunk-000").mkdir(parents=True, exist_ok=True)
+    (output_path / "meta/episodes/chunk-000").mkdir(parents=True, exist_ok=True)
+
+    frames.to_parquet(output_path / "data/chunk-000/file-000.parquet", index=False)
+    episodes.to_parquet(output_path / "meta/episodes/chunk-000/file-000.parquet", index=False)
+    shutil.copy2(cache.root / "meta/tasks.parquet", output_path / "meta/tasks.parquet")
+
+    info = dict(cache.info)
+    info["total_episodes"] = int(len(episodes))
+    info["total_frames"] = int(len(frames))
+    info["splits"] = {"train": f"0:{len(episodes)}"}
+    info["data_path"] = "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"
+    if "video_path" in info:
+        info.pop("video_path")
+    with (output_path / "meta/info.json").open("w", encoding="utf-8") as f:
+        json.dump(clean_json_value(info), f, ensure_ascii=False, indent=2)
+
+    stats = global_stats(frames, cache.features)
+    with (output_path / "meta/stats.json").open("w", encoding="utf-8") as f:
+        json.dump(clean_json_value(stats), f, ensure_ascii=False, indent=2)
+
+
+def flatten_stats_for_episode(df: pd.DataFrame, features: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    result = {}
+    for key, stats in global_stats(df, features).items():
+        for stat_name, value in stats.items():
+            result[f"stats/{key}/{stat_name}"] = value
+    return result
+
+
+def global_stats(df: pd.DataFrame, features: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    stats = {}
+    for key, feature in features.items():
+        if key not in df.columns or feature.get("dtype") == "video":
+            continue
+        values = column_values(df[key])
+        if values.size == 0:
+            continue
+        stats[key] = {
+            "min": clean_json_value(np.nanmin(values, axis=0).tolist()),
+            "max": clean_json_value(np.nanmax(values, axis=0).tolist()),
+            "mean": clean_json_value(np.nanmean(values, axis=0).tolist()),
+            "std": clean_json_value(np.nanstd(values, axis=0).tolist()),
+            "count": [int(values.shape[0])],
+        }
+    return stats
+
+
+def column_values(series: pd.Series) -> np.ndarray:
+    rows = []
+    for value in series:
+        if isinstance(value, np.ndarray):
+            rows.append(value.reshape(-1))
+        elif isinstance(value, (list, tuple)):
+            rows.append(np.array(value, dtype=object).reshape(-1))
+        else:
+            rows.append(np.array([value], dtype=object))
+    if not rows:
+        return np.array([])
+    return np.array(rows, dtype=np.float64)
+
+
+def clean_json_value(value: Any) -> Any:
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return clean_json_value(value.tolist())
+    if isinstance(value, dict):
+        return {key: clean_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [clean_json_value(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
 
 
 def canonical_features(features: dict[str, dict[str, Any]]) -> dict[str, Any]:

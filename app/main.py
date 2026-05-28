@@ -19,8 +19,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app.editing import (
+    EditApplyRequest,
     EditDryRunRequest,
     MergeValidationRequest,
+    apply_edit_plan,
     dataset_validation_summary,
     resolve_dataset_path,
     validate_edit_plan,
@@ -284,6 +286,23 @@ def edit_dry_run(request: EditDryRunRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
     cache = DatasetCache(root)
     return validate_edit_plan(cache, request.operations)
+
+
+@app.post("/api/edit/apply")
+def edit_apply(request: EditApplyRequest) -> dict[str, Any]:
+    root = resolve_dataset_path(request.path)
+    if not root.exists() or not root.is_dir():
+        raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
+    cache = DatasetCache(root)
+    result = apply_edit_plan(
+        cache=cache,
+        operations=request.operations,
+        output_path=resolve_dataset_path(request.output_path),
+        overwrite=request.overwrite,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
 
 
 @app.post("/api/datasets/validate")
