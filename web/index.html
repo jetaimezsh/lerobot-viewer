@@ -125,7 +125,7 @@
           <div>
             <div class="section-kicker">Dataset Editor v2</div>
             <h3>边看边标记删除和裁剪</h3>
-            <p>当前版本先生成编辑计划并做 dry-run 校验，后续迭代会把计划应用到新的合法 v3.0 数据集目录。</p>
+            <p>无视频数据集可直接生成新的合法 v3.0 输出目录；含视频数据集当前先做 dry-run，待接入 ffmpeg 后再支持同步裁剪/重写视频。</p>
           </div>
           <div class="edit-run-controls">
             <input id="editOutputPath" type="text" placeholder="输出目录，例如 D:\datasets\edited_dataset">
