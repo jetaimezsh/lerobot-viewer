@@ -201,6 +201,11 @@ async function loadEnv() {
     ["Python", env.python],
     ["venv", env.venv ? "是" : "否"],
     ["prefix", env.prefix],
+    ["conda", env.conda?.active ? "是" : "否"],
+    ["conda env", env.conda?.env_name || "-"],
+    ["conda prefix", env.conda?.prefix || "-"],
+    ["conda command", env.conda?.command || env.conda?.exe || (env.conda?.available ? "可用" : "未检测到")],
+    ["conda version", env.conda?.version || "-"],
     ["requirements", env.requirements],
   ];
   for (const [name, version] of Object.entries(env.packages)) {

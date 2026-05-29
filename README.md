@@ -131,6 +131,15 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
+如果你习惯使用 conda，也可以用 conda 环境运行本项目：
+
+```powershell
+conda create -n lerobot-viewer python=3.12 -y
+conda activate lerobot-viewer
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
 依赖包包括：
 
 - `fastapi`
@@ -160,6 +169,13 @@ http://127.0.0.1:8000
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+conda 环境下手动启动：
+
+```powershell
+conda activate lerobot-viewer
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -235,6 +251,15 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
+也可以使用 conda：
+
+```bash
+conda create -n lerobot-viewer python=3.12 -y
+conda activate lerobot-viewer
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
 ### 4. 启动服务
 
 推荐使用：
@@ -265,6 +290,13 @@ http://127.0.0.1:8001
 
 ```bash
 source .venv/bin/activate
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+conda 环境下手动启动：
+
+```bash
+conda activate lerobot-viewer
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -307,6 +339,19 @@ Ubuntu 下数据集路径通常类似：
 7. 时间轴、视频、时序图、当前帧数值会同步。
 8. `Numeric Time Series` 区域可通过下拉框选择或取消要绘制的数值字段。
 9. `Current Frame` 区域会显示 episode 静态信息和当前时刻的数值。
+
+## System 环境检测
+
+`System环境` 页面会显示当前后端使用的 Python、venv 状态、conda 状态、核心依赖版本，以及数据修改工具检测结果。
+
+conda 检测包括：
+
+- 当前服务是否运行在 conda 环境中。
+- conda 环境名和环境前缀。
+- `conda` 命令是否可用。
+- `conda --version` 返回的版本信息。
+
+数据修改工具检测会说明当前环境是否支持无视频数据集编辑、含视频数据集编辑，以及缺少的工具和修复建议。
 
 ## 最近打开和路径补全
 

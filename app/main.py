@@ -243,9 +243,47 @@ def env_info() -> dict[str, Any]:
         "venv": sys.prefix != sys.base_prefix,
         "prefix": sys.prefix,
         "base_prefix": sys.base_prefix,
+        "conda": conda_info(),
         "requirements": str(APP_ROOT / "requirements.txt"),
         "packages": packages,
     }
+
+
+def conda_info() -> dict[str, Any]:
+    conda_prefix = os.environ.get("CONDA_PREFIX")
+    conda_default_env = os.environ.get("CONDA_DEFAULT_ENV")
+    conda_exe = os.environ.get("CONDA_EXE")
+    command_path = shutil_which_conda()
+    version = None
+    executable = conda_exe or command_path
+    if executable:
+        try:
+            result = subprocess.run(
+                [executable, "--version"],
+                text=True,
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+            if result.returncode == 0:
+                version = (result.stdout or result.stderr).strip()
+        except Exception:
+            version = None
+    return {
+        "active": bool(conda_prefix),
+        "env_name": conda_default_env,
+        "prefix": conda_prefix,
+        "exe": conda_exe,
+        "command": command_path,
+        "available": bool(executable),
+        "version": version,
+    }
+
+
+def shutil_which_conda() -> str | None:
+    from shutil import which
+
+    return which("conda")
 
 
 @app.post("/api/env/install-requirements")
