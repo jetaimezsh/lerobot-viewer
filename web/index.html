@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LeRobot Dataset v3.0 Viewer</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260528-editor-scope">
+  <link rel="stylesheet" href="/static/styles.css?v=20260529-episode-nav-results">
 </head>
 <body>
   <div class="shell">
@@ -89,6 +89,10 @@
             <p id="episodeMeta">从左侧 episode 列表选择一条记录。</p>
           </div>
           <div class="play-controls">
+            <div class="episode-nav-controls">
+              <button id="prevEpisode" type="button">上一个 episode</button>
+              <button id="nextEpisode" type="button">下一个 episode</button>
+            </div>
             <button id="playPause">播放</button>
             <label>
               倍速
@@ -214,7 +218,7 @@
 
           <section class="surface edit-result-surface">
             <div class="section-kicker">Dry-run / Apply Result</div>
-            <pre id="editDryRunOutput" class="edit-output">尚未运行预估。</pre>
+            <div id="editDryRunOutput" class="edit-output empty">尚未运行预估。</div>
           </section>
         </div>
 
@@ -266,6 +270,6 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260528-editor-scope"></script>
+  <script src="/static/app.js?v=20260529-episode-nav-results"></script>
 </body>
 </html>

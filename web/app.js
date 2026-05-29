@@ -43,6 +43,8 @@ const els = {
   episodeMeta: document.getElementById("episodeMeta"),
   videoGrid: document.getElementById("videoGrid"),
   videoCount: document.getElementById("videoCount"),
+  prevEpisode: document.getElementById("prevEpisode"),
+  nextEpisode: document.getElementById("nextEpisode"),
   playPause: document.getElementById("playPause"),
   speed: document.getElementById("speed"),
   timeSlider: document.getElementById("timeSlider"),
@@ -194,6 +196,12 @@ function goToDatasetEditor() {
 
 function currentEpisodeIndex() {
   return state.episode ? Number(state.episode.episode_index) : null;
+}
+
+function currentEpisodePosition() {
+  const episodeIndex = currentEpisodeIndex();
+  if (episodeIndex === null) return -1;
+  return state.episodes.findIndex((episode) => Number(episode.episode_index) === episodeIndex);
 }
 
 async function loadEnv() {
@@ -400,6 +408,7 @@ function renderEpisodes() {
   for (const item of els.episodeList.querySelectorAll(".episode-item")) {
     item.addEventListener("click", () => loadEpisode(Number(item.dataset.episode)));
   }
+  renderEpisodeNavigation();
 }
 
 function resetEpisodeView() {
@@ -425,7 +434,24 @@ function resetEpisodeView() {
   els.episodeInfo.innerHTML = "选择 episode 后显示 episode 信息。";
   els.episodeInfo.classList.add("empty");
   els.currentValues.innerHTML = "选择 episode 后显示当前 state/action。";
+  renderEpisodeNavigation();
   drawChart();
+}
+
+function renderEpisodeNavigation() {
+  if (!els.prevEpisode || !els.nextEpisode) return;
+  const position = currentEpisodePosition();
+  const hasEpisode = position >= 0;
+  els.prevEpisode.disabled = !hasEpisode || position === 0;
+  els.nextEpisode.disabled = !hasEpisode || position >= state.episodes.length - 1;
+}
+
+async function loadAdjacentEpisode(delta) {
+  const position = currentEpisodePosition();
+  if (position < 0) return;
+  const next = state.episodes[position + delta];
+  if (!next) return;
+  await loadEpisode(Number(next.episode_index));
 }
 
 async function loadEpisode(index) {
@@ -459,6 +485,7 @@ async function loadEpisode(index) {
   renderSeriesPicker();
   renderEpisodeInfo(detail);
   renderEditPanel();
+  renderEpisodeNavigation();
   setView("episodeView");
   drawChart();
   updateCurrentValues();
@@ -836,9 +863,10 @@ function markTrimCurrentEpisode() {
 async function runEditDryRun() {
   if (!state.summary) {
     els.editDryRunOutput.textContent = "请先加载数据集。";
+    els.editDryRunOutput.classList.add("empty");
     return;
   }
-  els.editDryRunOutput.textContent = "正在预估...";
+  setEditOutputLoading("正在预估修改结果...");
   try {
     const result = await api("/api/edit/dry-run", {
       method: "POST",
@@ -847,26 +875,27 @@ async function runEditDryRun() {
         operations: state.editOperations,
       }),
     });
-    els.editDryRunOutput.textContent = JSON.stringify(result, null, 2);
+    renderEditResult(result, "dry-run");
   } catch (error) {
-    els.editDryRunOutput.textContent = error.message;
+    renderEditError(error.message);
   }
 }
 
 async function strictValidateCurrentDataset() {
   if (!state.summary) {
     els.editDryRunOutput.textContent = "请先加载数据集。";
+    els.editDryRunOutput.classList.add("empty");
     return;
   }
-  els.editDryRunOutput.textContent = "正在进行严格校验...";
+  setEditOutputLoading("正在进行严格校验...");
   try {
     const result = await api("/api/datasets/strict-validate", {
       method: "POST",
       body: JSON.stringify({ path: state.summary.root }),
     });
-    els.editDryRunOutput.textContent = JSON.stringify(result, null, 2);
+    renderEditResult(result, "strict-validation");
   } catch (error) {
-    els.editDryRunOutput.textContent = error.message;
+    renderEditError(error.message);
   }
 }
 
@@ -948,21 +977,195 @@ function formatToolStatus(result) {
   `;
 }
 
+function setEditOutputLoading(message) {
+  els.editDryRunOutput.classList.remove("empty");
+  els.editDryRunOutput.innerHTML = `<div class="result-loading">${escapeHtml(message)}</div>`;
+}
+
+function renderEditError(message) {
+  els.editDryRunOutput.classList.remove("empty");
+  els.editDryRunOutput.innerHTML = `
+    <div class="result-section result-error">
+      <h4>执行失败</h4>
+      <p>${escapeHtml(message)}</p>
+    </div>
+  `;
+}
+
+function renderEditResult(result, mode) {
+  els.editDryRunOutput.classList.remove("empty");
+  if (mode === "strict-validation") {
+    els.editDryRunOutput.innerHTML = formatValidationResult(result, "当前数据集严格校验");
+    return;
+  }
+  const plan = result.dry_run || result;
+  const title = mode === "apply" ? "生成新数据集结果" : "修改预估结果";
+  const statusText = mode === "apply"
+    ? (result.ok ? "成功" : "失败")
+    : (plan.valid ? "可执行" : "不可执行");
+  const statusClass = (mode === "apply" ? result.ok : plan.valid) ? "ok" : "fail";
+  const outputPath = result.output_path ? `
+    <div class="result-section">
+      <h4>输出目录</h4>
+      <div class="result-path">${escapeHtml(result.output_path)}</div>
+    </div>
+  ` : "";
+  const summary = result.summary ? formatSummaryCards(result.summary) : "";
+  const validation = result.validation ? formatValidationResult(result.validation, "输出数据集校验") : "";
+  els.editDryRunOutput.innerHTML = `
+    <div class="result-header">
+      <div>
+        <h4>${escapeHtml(title)}</h4>
+        <p>${escapeHtml(result.path || state.summary?.root || "")}</p>
+      </div>
+      <span class="result-status ${statusClass}">${escapeHtml(statusText)}</span>
+    </div>
+    ${formatIssueList("错误", result.errors || plan.errors || [], "error")}
+    ${formatIssueList("警告", result.warnings || plan.warnings || [], "warning")}
+    ${formatPlanSummary(plan)}
+    ${formatOperationSummary(plan.operations || [])}
+    ${outputPath}
+    ${summary}
+    ${validation}
+  `;
+}
+
+function formatPlanSummary(plan) {
+  const original = plan.original || {};
+  const predicted = plan.predicted || {};
+  const rows = [
+    ["原始 episodes", original.episodes],
+    ["原始 frames", original.frames],
+    ["预计 episodes", predicted.episodes],
+    ["预计 frames", predicted.frames],
+    ["删除 episodes", predicted.deleted_episodes],
+    ["裁剪 episodes", predicted.trimmed_episodes],
+    ["需要处理视频", plan.requires_video_processing ? "是" : "否"],
+  ];
+  return `
+    <div class="result-section">
+      <h4>影响范围</h4>
+      ${formatKeyValueGrid(rows)}
+    </div>
+  `;
+}
+
+function formatOperationSummary(operations) {
+  if (!operations.length) {
+    return `
+      <div class="result-section">
+        <h4>操作明细</h4>
+        <div class="result-empty">没有待应用操作。</div>
+      </div>
+    `;
+  }
+  return `
+    <div class="result-section">
+      <h4>操作明细</h4>
+      <div class="result-operation-list">
+        ${operations.map((operation) => {
+          const isDelete = operation.type === "delete_episode";
+          const title = isDelete ? `删除 Episode ${operation.episode_index}` : `裁剪 Episode ${operation.episode_index}`;
+          const detail = isDelete
+            ? "该 episode 会被移除，后续 episode 会重新编号。"
+            : `保留 ${fmt(operation.start_time)}s - ${fmt(operation.end_time)}s，共 ${operation.new_length ?? "-"} 帧。`;
+          return `
+            <div class="result-operation-item">
+              <strong>${escapeHtml(title)}</strong>
+              <span>${escapeHtml(detail)}</span>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function formatValidationResult(result, title) {
+  const statusClass = result.valid ? "ok" : "fail";
+  const official = result.official || {};
+  const officialText = official.status
+    ? `${official.status}${official.reason ? `：${official.reason}` : ""}${official.error ? `：${official.error}` : ""}`
+    : "未返回官方校验结果";
+  return `
+    <div class="result-header">
+      <div>
+        <h4>${escapeHtml(title)}</h4>
+        <p>${escapeHtml(result.root || result.output_path || "")}</p>
+      </div>
+      <span class="result-status ${statusClass}">${result.valid ? "通过" : "失败"}</span>
+    </div>
+    ${formatIssueList("错误", result.errors || [], "error")}
+    ${formatIssueList("警告", result.warnings || [], "warning")}
+    ${result.summary ? formatSummaryCards(result.summary) : ""}
+    <div class="result-section">
+      <h4>官方 LeRobot 校验</h4>
+      <div class="result-path">${escapeHtml(officialText)}</div>
+    </div>
+  `;
+}
+
+function formatSummaryCards(summary) {
+  const rows = Object.entries(summary).map(([key, value]) => [key, value]);
+  return `
+    <div class="result-section">
+      <h4>摘要</h4>
+      ${formatKeyValueGrid(rows)}
+    </div>
+  `;
+}
+
+function formatIssueList(title, items, type) {
+  if (!items.length) return "";
+  return `
+    <div class="result-section ${type === "error" ? "result-error" : "result-warning"}">
+      <h4>${escapeHtml(title)}</h4>
+      <ul class="result-list">
+        ${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function formatKeyValueGrid(rows) {
+  return `
+    <div class="result-grid">
+      ${rows
+        .filter(([, value]) => value !== undefined && value !== null)
+        .map(([key, value]) => `
+          <div class="result-metric">
+            <span>${escapeHtml(key)}</span>
+            <strong>${escapeHtml(formatResultValue(value))}</strong>
+          </div>
+        `).join("")}
+    </div>
+  `;
+}
+
+function formatResultValue(value) {
+  if (Array.isArray(value)) return value.join(", ");
+  if (value && typeof value === "object") return Object.entries(value).map(([key, item]) => `${key}: ${item}`).join(", ");
+  return value;
+}
+
 async function applyEditPlan() {
   if (!state.summary) {
     els.editDryRunOutput.textContent = "请先加载数据集。";
+    els.editDryRunOutput.classList.add("empty");
     return;
   }
   if (!state.editOperations.length) {
     els.editDryRunOutput.textContent = "没有待应用的编辑操作。";
+    els.editDryRunOutput.classList.add("empty");
     return;
   }
   const outputPath = els.editOutputPath.value.trim();
   if (!outputPath) {
     els.editDryRunOutput.textContent = "请填写输出目录。";
+    els.editDryRunOutput.classList.add("empty");
     return;
   }
-  els.editDryRunOutput.textContent = "正在生成新数据集...";
+  setEditOutputLoading("正在生成新数据集...");
   try {
     const result = await api("/api/edit/apply", {
       method: "POST",
@@ -973,9 +1176,9 @@ async function applyEditPlan() {
         operations: state.editOperations,
       }),
     });
-    els.editDryRunOutput.textContent = JSON.stringify(result, null, 2);
+    renderEditResult(result, "apply");
   } catch (error) {
-    els.editDryRunOutput.textContent = error.message;
+    renderEditError(error.message);
   }
 }
 
@@ -1136,6 +1339,8 @@ els.installRequirements.addEventListener("click", async () => {
   }
 });
 els.playPause.addEventListener("click", () => state.playing ? pause() : play());
+els.prevEpisode.addEventListener("click", () => loadAdjacentEpisode(-1));
+els.nextEpisode.addEventListener("click", () => loadAdjacentEpisode(1));
 els.speed.addEventListener("change", () => {
   for (const video of state.videos) video.playbackRate = Number(els.speed.value);
 });
