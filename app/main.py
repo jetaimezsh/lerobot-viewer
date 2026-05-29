@@ -32,6 +32,7 @@ from app.editing import (
     validate_edit_plan,
     validate_merge_compatibility,
 )
+from app.validation import validate_lerobot_v3_dataset
 
 
 APP_ROOT = Path(__file__).resolve().parent.parent
@@ -365,6 +366,14 @@ def validate_dataset(request: OpenDatasetRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
     cache = DatasetCache(root)
     return dataset_validation_summary(cache)
+
+
+@app.post("/api/datasets/strict-validate")
+def strict_validate_dataset(request: OpenDatasetRequest) -> dict[str, Any]:
+    root = resolve_dataset_path(request.path)
+    if not root.exists() or not root.is_dir():
+        raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
+    return validate_lerobot_v3_dataset(root)
 
 
 @app.post("/api/merge/validate")

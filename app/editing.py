@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import json
+import importlib
 import shutil
 import subprocess
 import tempfile
@@ -11,6 +12,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field
+
+from app.validation import validate_lerobot_v3_dataset
 
 
 class EditOperation(BaseModel):
@@ -48,6 +51,7 @@ def editing_tool_status(cache: Any | None = None) -> dict[str, Any]:
         python_package_check("pandas", pd.__version__),
         python_package_check("pyarrow"),
         python_package_check("numpy", np.__version__),
+        lerobot_package_check(),
         filesystem_write_check(),
         ffmpeg_check(),
     ]
@@ -285,6 +289,14 @@ def apply_merge_plan(caches: list[Any], output_path: Path, overwrite: bool = Fal
         output_path=output_path,
         tasks_df=merged["tasks"],
     )
+    validation = validate_lerobot_v3_dataset(output_path)
+    if not validation["valid"]:
+        return {
+            "ok": False,
+            "errors": validation["errors"],
+            "warnings": validation["warnings"],
+            "validation": validation,
+        }
     return {
         "ok": True,
         "output_path": str(output_path),
@@ -325,12 +337,23 @@ def apply_edit_plan(cache: Any, operations: list[EditOperation], output_path: Pa
         shutil.rmtree(output_path)
 
     edited = build_edited_dataset(cache, plan["operations"])
-    write_dataset(cache, edited["frames"], edited["episodes"], output_path)
+    tasks_df = rebuild_tasks_for_frames(cache, edited["frames"], edited["episodes"])
+    write_dataset(cache, edited["frames"], edited["episodes"], output_path, tasks_df=tasks_df)
+    validation = validate_lerobot_v3_dataset(output_path)
+    if not validation["valid"]:
+        return {
+            "ok": False,
+            "errors": validation["errors"],
+            "warnings": validation["warnings"],
+            "dry_run": plan,
+            "validation": validation,
+        }
 
     return {
         "ok": True,
         "output_path": str(output_path),
         "dry_run": plan,
+        "validation": validation,
         "summary": {
             "episodes": int(len(edited["episodes"])),
             "frames": int(len(edited["frames"])),
@@ -409,6 +432,26 @@ def build_merged_tasks(caches: list[Any]) -> tuple[pd.DataFrame, list[dict[int, 
             index=pd.Index([task for task, _ in ordered_tasks], name="task"),
         ),
         task_maps,
+    )
+
+
+def rebuild_tasks_for_frames(cache: Any, frames: pd.DataFrame, episodes: pd.DataFrame) -> pd.DataFrame:
+    source_tasks = read_tasks_table(cache.root)
+    task_lookup = {}
+    for row in source_tasks.to_dict(orient="records"):
+        task_lookup[int(row.get("task_index", len(task_lookup)))] = task_text_from_record(row)
+
+    used_old_indexes = sorted(int(value) for value in frames["task_index"].dropna().unique()) if "task_index" in frames.columns else [0]
+    old_to_new = {old_index: new_index for new_index, old_index in enumerate(used_old_indexes)}
+    if "task_index" in frames.columns:
+        frames["task_index"] = frames["task_index"].map(lambda value: old_to_new[int(value)])
+    if "task_index" in episodes.columns:
+        episodes["task_index"] = episodes["task_index"].map(lambda value: old_to_new.get(int(value), int(value)))
+
+    task_texts = [task_lookup.get(old_index, str(old_index)) for old_index in used_old_indexes]
+    return pd.DataFrame(
+        {"task_index": list(range(len(task_texts)))},
+        index=pd.Index(task_texts, name="task"),
     )
 
 
@@ -634,6 +677,32 @@ def python_package_check(name: str, version: str | None = None) -> dict[str, Any
     }
 
 
+def lerobot_package_check() -> dict[str, Any]:
+    try:
+        module = importlib.import_module("lerobot")
+        version = getattr(module, "__version__", "installed")
+        importlib.import_module("lerobot.datasets.lerobot_dataset")
+        return {
+            "id": "lerobot",
+            "label": "Official package: lerobot",
+            "ok": True,
+            "required_for_no_video": False,
+            "required_for_video": False,
+            "required_for_official_validation": True,
+            "detail": version,
+        }
+    except Exception as exc:
+        return {
+            "id": "lerobot",
+            "label": "Official package: lerobot",
+            "ok": False,
+            "required_for_no_video": False,
+            "required_for_video": False,
+            "required_for_official_validation": True,
+            "detail": str(exc),
+        }
+
+
 def filesystem_write_check() -> dict[str, Any]:
     try:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
@@ -734,6 +803,17 @@ def build_missing_items(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "impact": "无法读取、修改或写入 LeRobot v3.0 的 Parquet/数组数据",
                     "reason": f"{check['id']} 是数据修改流程的必需 Python 包",
                     "fix": "运行 requirements.txt 安装，或在 System环境 页面点击安装 requirements.txt",
+                    "raw_detail": check["detail"],
+                }
+            )
+        elif check["id"] == "lerobot":
+            missing.append(
+                {
+                    "id": "lerobot",
+                    "name": "lerobot 官方包",
+                    "impact": "无法执行 Hugging Face LeRobotDataset 官方打开校验",
+                    "reason": "官方包不参与当前无视频数据写入，但它能作为训练前兼容性校验的最后一道检查",
+                    "fix": "安装 lerobot 包后重新运行 System环境 检测和输出数据集校验",
                     "raw_detail": check["detail"],
                 }
             )

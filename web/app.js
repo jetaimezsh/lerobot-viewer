@@ -71,6 +71,7 @@ const els = {
   editOperationList: document.getElementById("editOperationList"),
   editOperationBadge: document.getElementById("editOperationBadge"),
   checkEditTools: document.getElementById("checkEditTools"),
+  strictValidateDataset: document.getElementById("strictValidateDataset"),
   runEditDryRun: document.getElementById("runEditDryRun"),
   applyEditPlan: document.getElementById("applyEditPlan"),
   editOutputPath: document.getElementById("editOutputPath"),
@@ -852,6 +853,23 @@ async function runEditDryRun() {
   }
 }
 
+async function strictValidateCurrentDataset() {
+  if (!state.summary) {
+    els.editDryRunOutput.textContent = "请先加载数据集。";
+    return;
+  }
+  els.editDryRunOutput.textContent = "正在进行严格校验...";
+  try {
+    const result = await api("/api/datasets/strict-validate", {
+      method: "POST",
+      body: JSON.stringify({ path: state.summary.root }),
+    });
+    els.editDryRunOutput.textContent = JSON.stringify(result, null, 2);
+  } catch (error) {
+    els.editDryRunOutput.textContent = error.message;
+  }
+}
+
 async function checkEditTools() {
   els.toolStatusReport.textContent = "正在检测...";
   els.toolStatusReport.classList.remove("empty");
@@ -1127,6 +1145,7 @@ els.setTrimStart.addEventListener("click", () => setTrimPoint("start"));
 els.setTrimEnd.addEventListener("click", () => setTrimPoint("end"));
 els.markTrimEpisode.addEventListener("click", markTrimCurrentEpisode);
 els.checkEditTools.addEventListener("click", checkEditTools);
+els.strictValidateDataset.addEventListener("click", strictValidateCurrentDataset);
 els.runEditDryRun.addEventListener("click", runEditDryRun);
 els.applyEditPlan.addEventListener("click", applyEditPlan);
 els.addCurrentDatasetToMerge.addEventListener("click", addCurrentDatasetToMerge);

@@ -353,6 +353,21 @@ conda 检测包括：
 
 数据修改工具检测会说明当前环境是否支持无视频数据集编辑、含视频数据集编辑，以及缺少的工具和修复建议。
 
+## 数据集可用性校验
+
+v2 数据编辑功能会在生成新数据集后执行两层校验：
+
+- 非官方严格校验：不依赖 `lerobot` 包，直接检查 LeRobot v3.0 文件结构、`info.json`、`tasks.parquet`、`episodes` metadata、Parquet 数据行数、`episode_index`、`frame_index`、全局 `index`、`timestamp`、`task_index`、feature shape 和 `stats.json`。
+- 官方校验：如果当前环境安装了 Hugging Face `lerobot` 包，会尝试用官方 `LeRobotDataset` 打开输出目录并读取样本。
+
+如果没有安装 `lerobot`，官方校验会显示为 skipped，但非官方严格校验仍会执行。可以在 `数据集编辑` 页面点击 `严格校验当前数据集` 手动检查当前加载的数据集。
+
+安装官方包后再启动服务，可启用官方校验：
+
+```powershell
+python -m pip install lerobot
+```
+
 ## 最近打开和路径补全
 
 成功打开的数据集会记录在项目根目录：
