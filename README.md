@@ -149,7 +149,29 @@ python -m pip install -r requirements.txt
 - `numpy`
 - `pydantic`
 
-本工具不强制安装 `lerobot`，因为它直接按官方 v3.0 文件格式读取本地数据集。
+含视频数据集执行删除 episode、裁剪 episode 并生成新数据集时，还需要系统可直接运行 `ffmpeg`。
+
+Windows 推荐用 Chocolatey 安装：
+
+```powershell
+choco install ffmpeg -y
+ffmpeg -version
+```
+
+conda 环境也可以安装 conda-forge 版本：
+
+```powershell
+conda install -c conda-forge ffmpeg -y
+ffmpeg -version
+```
+
+如果无法安装系统级 ffmpeg，也可以在当前 Python 环境中安装 `imageio-ffmpeg`，后端会自动识别它内置的 ffmpeg：
+
+```powershell
+python -m pip install imageio-ffmpeg
+```
+
+本工具不强制安装 `lerobot`，因为它直接按官方 v3.0 文件格式读取和写入本地数据集；但建议安装 `lerobot`，这样可以在严格校验之外再执行官方 `LeRobotDataset` 打开校验。
 
 ## 启动项目
 

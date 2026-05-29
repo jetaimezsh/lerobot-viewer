@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import math
 import json
 import importlib
@@ -60,7 +61,11 @@ def editing_tool_status(cache: Any | None = None) -> dict[str, Any]:
     dataset = None
     if cache is not None:
         has_video = bool(cache.video_keys)
-        dataset_can_apply = not has_video and capabilities["delete_episode_no_video"]["available"] and capabilities["trim_episode_no_video"]["available"]
+        dataset_can_apply = (
+            capabilities["delete_episode_video"]["available"] and capabilities["trim_episode_video"]["available"]
+            if has_video
+            else capabilities["delete_episode_no_video"]["available"] and capabilities["trim_episode_no_video"]["available"]
+        )
         dataset = {
             "path": str(cache.root),
             "has_video": has_video,
@@ -319,12 +324,14 @@ def apply_edit_plan(cache: Any, operations: list[EditOperation], output_path: Pa
     if not plan["operations"]:
         return {"ok": False, "errors": ["没有待应用的编辑操作"], "warnings": plan["warnings"], "dry_run": plan}
     if cache.video_keys:
-        return {
-            "ok": False,
-            "errors": ["当前执行版本暂不支持含视频数据集的落盘编辑；需要先安装并接入 ffmpeg 视频裁剪/重写"],
-            "warnings": plan["warnings"],
-            "dry_run": plan,
-        }
+        executable = ffmpeg_executable()
+        if not executable:
+            return {
+                "ok": False,
+                "errors": ["当前数据集包含视频，执行删除/裁剪落盘需要 ffmpeg；当前环境未找到可执行的 ffmpeg"],
+                "warnings": plan["warnings"],
+                "dry_run": plan,
+            }
 
     output_path = output_path.resolve()
     if output_path == cache.root.resolve():
@@ -336,9 +343,20 @@ def apply_edit_plan(cache: Any, operations: list[EditOperation], output_path: Pa
             return {"ok": False, "errors": [f"输出路径不是目录: {output_path}"], "warnings": [], "dry_run": plan}
         shutil.rmtree(output_path)
 
-    edited = build_edited_dataset(cache, plan["operations"])
-    tasks_df = rebuild_tasks_for_frames(cache, edited["frames"], edited["episodes"])
-    write_dataset(cache, edited["frames"], edited["episodes"], output_path, tasks_df=tasks_df)
+    try:
+        edited = build_edited_dataset(cache, plan["operations"])
+        tasks_df = rebuild_tasks_for_frames(cache, edited["frames"], edited["episodes"])
+        video_reencoded = bool(cache.video_keys)
+        if video_reencoded:
+            write_edited_videos(cache, edited["video_jobs"], edited["episodes"], output_path)
+        write_dataset(cache, edited["frames"], edited["episodes"], output_path, tasks_df=tasks_df, video_reencoded=video_reencoded)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "errors": [str(exc)],
+            "warnings": plan["warnings"],
+            "dry_run": plan,
+        }
     validation = validate_lerobot_v3_dataset(output_path)
     if not validation["valid"]:
         return {
@@ -357,6 +375,7 @@ def apply_edit_plan(cache: Any, operations: list[EditOperation], output_path: Pa
         "summary": {
             "episodes": int(len(edited["episodes"])),
             "frames": int(len(edited["frames"])),
+            "videos": list(cache.video_keys),
             "data_file": str(output_path / "data/chunk-000/file-000.parquet"),
             "episodes_file": str(output_path / "meta/episodes/chunk-000/file-000.parquet"),
         },
@@ -469,11 +488,12 @@ def task_text_from_record(record: dict[str, Any]) -> str:
     return json.dumps(clean_json_value(record), ensure_ascii=False, sort_keys=True)
 
 
-def build_edited_dataset(cache: Any, normalized_operations: list[dict[str, Any]]) -> dict[str, pd.DataFrame]:
+def build_edited_dataset(cache: Any, normalized_operations: list[dict[str, Any]]) -> dict[str, Any]:
     operations_by_episode = {int(op["episode_index"]): op for op in normalized_operations}
     fps = float(cache.info["fps"])
     new_frames: list[pd.DataFrame] = []
     new_episode_rows: list[dict[str, Any]] = []
+    video_jobs: list[dict[str, Any]] = []
     global_index = 0
     new_episode_index = 0
 
@@ -486,8 +506,12 @@ def build_edited_dataset(cache: Any, normalized_operations: list[dict[str, Any]]
         frame_df = read_episode_frames(cache, episode)
         old_length = len(frame_df)
         if operation and operation["type"] == "trim_episode":
-            frame_df = frame_df.iloc[int(operation["start_frame"]): int(operation["end_frame"])].copy()
+            source_start_frame = int(operation["start_frame"])
+            source_end_frame = int(operation["end_frame"])
+            frame_df = frame_df.iloc[source_start_frame:source_end_frame].copy()
         else:
+            source_start_frame = 0
+            source_end_frame = old_length
             frame_df = frame_df.copy()
 
         new_length = len(frame_df)
@@ -512,6 +536,17 @@ def build_edited_dataset(cache: Any, normalized_operations: list[dict[str, Any]]
 
         new_frames.append(frame_df)
         new_episode_rows.append(row)
+        if cache.video_keys:
+            video_jobs.append(
+                {
+                    "source_episode_index": source_episode_index,
+                    "source_episode": episode.copy(),
+                    "new_episode_index": new_episode_index,
+                    "start_frame": source_start_frame,
+                    "end_frame": source_end_frame,
+                    "length": new_length,
+                }
+            )
         global_index += new_length
         new_episode_index += 1
 
@@ -521,6 +556,7 @@ def build_edited_dataset(cache: Any, normalized_operations: list[dict[str, Any]]
     return {
         "frames": pd.concat(new_frames, ignore_index=True),
         "episodes": pd.DataFrame(new_episode_rows),
+        "video_jobs": video_jobs,
     }
 
 
@@ -564,12 +600,155 @@ def base_episode_row(episode: pd.Series) -> dict[str, Any]:
     }
 
 
+def write_edited_videos(cache: Any, video_jobs: list[dict[str, Any]], episodes: pd.DataFrame, output_path: Path) -> None:
+    executable = ffmpeg_executable()
+    if not executable:
+        raise RuntimeError("ffmpeg is required for video dataset edits")
+    fps = float(cache.info["fps"])
+    if fps <= 0:
+        raise RuntimeError("dataset fps must be positive to rewrite videos")
+    if not video_jobs:
+        raise RuntimeError("video edit produced no output episodes")
+
+    output_path.mkdir(parents=True, exist_ok=True)
+    for video_key in cache.video_keys:
+        output_video = output_video_path(cache, output_path, video_key)
+        output_video.parent.mkdir(parents=True, exist_ok=True)
+        cumulative = 0.0
+        with tempfile.TemporaryDirectory(dir=output_path) as directory:
+            temp_dir = Path(directory)
+            segment_paths = []
+            for job_index, job in enumerate(video_jobs):
+                source_episode = job["source_episode"]
+                source_video = cache.video_file_for_episode(source_episode, video_key)
+                prefix = f"videos/{video_key}"
+                from_col = f"{prefix}/from_timestamp"
+                source_from = float(source_episode.get(from_col, 0.0))
+                start_time = source_from + float(job["start_frame"]) / fps
+                duration = float(job["length"]) / fps
+                segment_path = temp_dir / f"segment-{job_index:06d}.mp4"
+                run_ffmpeg(
+                    [
+                        executable,
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-y",
+                        "-ss",
+                        f"{start_time:.6f}",
+                        "-t",
+                        f"{duration:.6f}",
+                        "-i",
+                        str(source_video),
+                        "-an",
+                        "-vf",
+                        f"fps={format_fps(fps)}",
+                        "-frames:v",
+                        str(int(job["length"])),
+                        "-c:v",
+                        "libx264",
+                        "-pix_fmt",
+                        "yuv420p",
+                        "-preset",
+                        "veryfast",
+                        "-movflags",
+                        "+faststart",
+                        str(segment_path),
+                    ]
+                )
+                if not segment_path.exists() or segment_path.stat().st_size == 0:
+                    raise RuntimeError(f"ffmpeg did not create a valid segment: {segment_path}")
+                segment_paths.append(segment_path)
+
+                new_episode_index = int(job["new_episode_index"])
+                row_mask = episodes["episode_index"].astype(int) == new_episode_index
+                episode_start = cumulative
+                cumulative += duration
+                episodes.loc[row_mask, f"{prefix}/chunk_index"] = 0
+                episodes.loc[row_mask, f"{prefix}/file_index"] = 0
+                episodes.loc[row_mask, f"{prefix}/from_timestamp"] = round(episode_start, 6)
+                episodes.loc[row_mask, f"{prefix}/to_timestamp"] = round(cumulative, 6)
+
+            if len(segment_paths) == 1:
+                shutil.copy2(segment_paths[0], output_video)
+            else:
+                concat_list = temp_dir / "concat.txt"
+                concat_list.write_text(
+                    "\n".join(f"file '{ffmpeg_concat_path(path)}'" for path in segment_paths),
+                    encoding="utf-8",
+                )
+                run_ffmpeg(
+                    [
+                        executable,
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-y",
+                        "-f",
+                        "concat",
+                        "-safe",
+                        "0",
+                        "-i",
+                        str(concat_list),
+                        "-c",
+                        "copy",
+                        str(output_video),
+                    ]
+                )
+            if not output_video.exists() or output_video.stat().st_size == 0:
+                raise RuntimeError(f"ffmpeg did not create a valid output video: {output_video}")
+
+
+def output_video_path(cache: Any, output_path: Path, video_key: str) -> Path:
+    template = cache.info.get("video_path", "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4")
+    return output_path / template.format(video_key=video_key, chunk_index=0, file_index=0)
+
+
+def run_ffmpeg(command: list[str]) -> None:
+    result = subprocess.run(command, text=True, capture_output=True, check=False)
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "ffmpeg failed").strip()
+        raise RuntimeError(message)
+
+
+def ffmpeg_executable() -> str | None:
+    executable = shutil.which("ffmpeg")
+    if executable:
+        return executable
+    try:
+        imageio_ffmpeg = importlib.import_module("imageio_ffmpeg")
+        imageio_executable = imageio_ffmpeg.get_ffmpeg_exe()
+        if imageio_executable and Path(imageio_executable).exists():
+            return str(imageio_executable)
+    except Exception:
+        pass
+    for candidate in [
+        Path("C:/ProgramData/chocolatey/bin/ffmpeg.exe"),
+        Path("C:/ffmpeg/bin/ffmpeg.exe"),
+        Path.cwd() / "tools/ffmpeg/bin/ffmpeg.exe",
+    ]:
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def format_fps(fps: float) -> str:
+    if float(fps).is_integer():
+        return str(int(fps))
+    return f"{fps:.6f}".rstrip("0").rstrip(".")
+
+
+def ffmpeg_concat_path(path: Path) -> str:
+    return str(path.resolve()).replace("\\", "/").replace("'", "'\\''")
+
+
 def write_dataset(
     cache: Any,
     frames: pd.DataFrame,
     episodes: pd.DataFrame,
     output_path: Path,
     tasks_df: pd.DataFrame | None = None,
+    video_reencoded: bool = False,
 ) -> None:
     (output_path / "data/chunk-000").mkdir(parents=True, exist_ok=True)
     (output_path / "meta/episodes/chunk-000").mkdir(parents=True, exist_ok=True)
@@ -583,13 +762,24 @@ def write_dataset(
         tasks_df.to_parquet(output_path / "meta/tasks.parquet")
         total_tasks = int(len(tasks_df))
 
-    info = dict(cache.info)
+    info = copy.deepcopy(cache.info)
     info["total_episodes"] = int(len(episodes))
     info["total_frames"] = int(len(frames))
     info["total_tasks"] = total_tasks
     info["splits"] = {"train": f"0:{len(episodes)}"}
     info["data_path"] = "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"
-    if "video_path" in info:
+    has_video_features = any(feature.get("dtype") == "video" for feature in info.get("features", {}).values())
+    if has_video_features:
+        info["video_path"] = info.get("video_path", "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4")
+        if video_reencoded:
+            for feature in info.get("features", {}).values():
+                if feature.get("dtype") != "video":
+                    continue
+                video_info = feature.setdefault("video_info", {})
+                video_info["video.codec"] = "h264"
+                video_info["video.pix_fmt"] = "yuv420p"
+                video_info["has_audio"] = False
+    elif "video_path" in info:
         info.pop("video_path")
     with (output_path / "meta/info.json").open("w", encoding="utf-8") as f:
         json.dump(clean_json_value(info), f, ensure_ascii=False, indent=2)
@@ -729,7 +919,7 @@ def filesystem_write_check() -> dict[str, Any]:
 
 
 def ffmpeg_check() -> dict[str, Any]:
-    executable = shutil.which("ffmpeg")
+    executable = ffmpeg_executable()
     if not executable:
         return {
             "id": "ffmpeg",
@@ -737,7 +927,7 @@ def ffmpeg_check() -> dict[str, Any]:
             "ok": False,
             "required_for_no_video": False,
             "required_for_video": True,
-            "detail": "未在 PATH 中找到 ffmpeg",
+            "detail": "未在 PATH、常见安装目录或 imageio-ffmpeg 中找到 ffmpeg",
         }
     try:
         result = subprocess.run(

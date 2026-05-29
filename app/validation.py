@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib
 import json
 import math
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,7 @@ def validate_lerobot_v3_dataset(root: Path, run_official: bool = True) -> dict[s
         validate_info(root, info, result)
         validate_tasks(tasks, info, result)
         validate_episode_metadata(root, info, episodes, result)
+        validate_video_files(root, info, episodes, result)
         validate_frame_data(root, info, episodes, tasks, result)
         validate_stats(root, info, result)
     except Exception as exc:
@@ -184,6 +187,55 @@ def validate_episode_metadata(root: Path, info: dict[str, Any], episodes: pd.Dat
                 result["errors"].append(f"video episode metadata 缺少字段: {column}")
 
 
+def validate_video_files(root: Path, info: dict[str, Any], episodes: pd.DataFrame, result: dict[str, Any]) -> None:
+    video_path_template = info.get("video_path")
+    if not video_path_template:
+        return
+    fps = float(info.get("fps", 0) or 0)
+    probed_durations: dict[Path, float | None] = {}
+    warned_probe = False
+    for video_key, feature in info.get("features", {}).items():
+        if feature.get("dtype") != "video":
+            continue
+        prefix = f"videos/{video_key}"
+        required = [f"{prefix}/{suffix}" for suffix in ["chunk_index", "file_index", "from_timestamp", "to_timestamp"]]
+        if any(column not in episodes.columns for column in required):
+            continue
+        for _, episode in episodes.iterrows():
+            video_path = root / video_path_template.format(
+                video_key=video_key,
+                chunk_index=int(episode[f"{prefix}/chunk_index"]),
+                file_index=int(episode[f"{prefix}/file_index"]),
+            )
+            if not video_path.exists():
+                result["errors"].append(f"视频文件不存在: {video_path}")
+                continue
+            from_timestamp = float(episode[f"{prefix}/from_timestamp"])
+            to_timestamp = float(episode[f"{prefix}/to_timestamp"])
+            if not math.isfinite(from_timestamp) or not math.isfinite(to_timestamp) or to_timestamp <= from_timestamp:
+                result["errors"].append(f"episode {episode['episode_index']} 视频时间边界非法: {video_key}")
+                continue
+            if fps > 0:
+                expected_duration = int(episode["length"]) / fps
+                actual_duration = to_timestamp - from_timestamp
+                if abs(actual_duration - expected_duration) > max(0.1, 1.5 / fps):
+                    result["warnings"].append(
+                        f"episode {episode['episode_index']} 视频时间长度与 episode length/fps 不一致: {video_key}"
+                    )
+            if video_path not in probed_durations:
+                probed_durations[video_path] = ffprobe_duration(video_path)
+            duration = probed_durations[video_path]
+            if duration is None:
+                if not warned_probe:
+                    result["warnings"].append("未找到 ffprobe 或无法读取视频时长，跳过视频文件时长边界校验")
+                    warned_probe = True
+                continue
+            if to_timestamp > duration + max(0.2, 2.0 / fps if fps > 0 else 0.2):
+                result["errors"].append(
+                    f"episode {episode['episode_index']} 视频结束时间超过文件时长: {to_timestamp:.3f}s > {duration:.3f}s"
+                )
+
+
 def validate_frame_data(root: Path, info: dict[str, Any], episodes: pd.DataFrame, tasks: pd.DataFrame, result: dict[str, Any]) -> None:
     fps = float(info.get("fps", 0))
     task_indexes = {int(value) for value in tasks["task_index"].tolist()}
@@ -257,6 +309,87 @@ def value_shape(value: Any) -> tuple[int, ...]:
     if isinstance(value, (list, tuple)):
         return tuple(np.array(value, dtype=object).shape)
     return ()
+
+
+def ffprobe_duration(path: Path) -> float | None:
+    executable = shutil.which("ffprobe")
+    if not executable:
+        for candidate in [
+            Path("C:/ProgramData/chocolatey/bin/ffprobe.exe"),
+            Path("C:/ffmpeg/bin/ffprobe.exe"),
+            Path.cwd() / "tools/ffmpeg/bin/ffprobe.exe",
+        ]:
+            if candidate.exists():
+                executable = str(candidate)
+                break
+    if not executable:
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            for candidate in [
+                Path("C:/ProgramData/chocolatey/bin/ffmpeg.exe"),
+                Path("C:/ffmpeg/bin/ffmpeg.exe"),
+                Path.cwd() / "tools/ffmpeg/bin/ffmpeg.exe",
+            ]:
+                if candidate.exists():
+                    ffmpeg = str(candidate)
+                    break
+        if ffmpeg:
+            return ffmpeg_duration(Path(ffmpeg), path)
+    if not executable:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                executable,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return float(result.stdout.strip())
+    except ValueError:
+        return None
+
+
+def ffmpeg_duration(executable: Path, path: Path) -> float | None:
+    try:
+        result = subprocess.run(
+            [
+                str(executable),
+                "-hide_banner",
+                "-i",
+                str(path),
+            ],
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except Exception:
+        return None
+    output = result.stderr or result.stdout
+    marker = "Duration:"
+    if marker not in output:
+        return None
+    try:
+        duration_text = output.split(marker, 1)[1].split(",", 1)[0].strip()
+        hours, minutes, seconds = duration_text.split(":")
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    except Exception:
+        return None
 
 
 def validate_stats(root: Path, info: dict[str, Any], result: dict[str, Any]) -> None:

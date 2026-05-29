@@ -13,7 +13,7 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.editing import EditOperation, apply_edit_plan, apply_merge_plan
+from app.editing import EditOperation, apply_edit_plan, apply_merge_plan, ffmpeg_executable
 from app.main import DatasetCache
 
 
@@ -160,6 +160,28 @@ def check_no_video_edit_and_merge() -> None:
         assert_equal(merged_cache.summary()["total_tasks"], 1, "merged task count")
 
 
+def check_video_edit(path: Path) -> None:
+    if not ffmpeg_executable():
+        print("skip: ffmpeg not found, video edit apply check skipped")
+        return
+    with tempfile.TemporaryDirectory(dir=PROJECT_ROOT) as directory:
+        output_path = Path(directory) / "video_edited"
+        source_cache = DatasetCache(path)
+        operations = [EditOperation(type="trim_episode", episode_index=0, start_time=0.1, end_time=0.3)]
+        operations.extend(
+            EditOperation(type="delete_episode", episode_index=int(index))
+            for index in source_cache.episodes["episode_index"].tolist()
+            if int(index) != 0
+        )
+        edited = apply_edit_plan(source_cache, operations, output_path, overwrite=True)
+        assert_equal(edited["ok"], True, "video edit apply ok")
+        edited_cache = DatasetCache(output_path)
+        assert_equal(edited_cache.summary()["total_episodes"], 1, "video edited episode count")
+        assert_equal(edited_cache.summary()["total_frames"], 2, "video edited frame count")
+        assert_equal(edited_cache.summary()["video_keys"], source_cache.summary()["video_keys"], "video edited keys")
+        print(f"ok: video edit apply checks passed ({path})")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run local LeRobot viewer smoke checks.")
     parser.add_argument(
@@ -179,6 +201,7 @@ def main() -> None:
     if args.pusht.exists():
         check_pusht(args.pusht.resolve())
         print(f"ok: pusht dataset checks passed ({args.pusht})")
+        check_video_edit(args.pusht.resolve())
     else:
         print(f"skip: pusht dataset not found ({args.pusht})")
 
