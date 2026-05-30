@@ -15,7 +15,7 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.editing import EditOperation, apply_edit_plan, apply_merge_plan, ffmpeg_executable
+from app.editing import EditOperation, apply_edit_plan, apply_merge_plan, ffmpeg_executable, source_keyframe_interval
 from app.main import DatasetCache
 
 
@@ -169,7 +169,7 @@ def check_video_edit(path: Path) -> None:
     with tempfile.TemporaryDirectory(dir=PROJECT_ROOT) as directory:
         output_path = Path(directory) / "video_edited"
         source_cache = DatasetCache(path)
-        operations = [EditOperation(type="trim_episode", episode_index=0, start_time=0.1, end_time=0.3)]
+        operations = [EditOperation(type="trim_episode", episode_index=0, start_time=0.1, end_time=2.1)]
         operations.extend(
             EditOperation(type="delete_episode", episode_index=int(index))
             for index in source_cache.episodes["episode_index"].tolist()
@@ -179,7 +179,7 @@ def check_video_edit(path: Path) -> None:
         assert_equal(edited["ok"], True, "video edit apply ok")
         edited_cache = DatasetCache(output_path)
         assert_equal(edited_cache.summary()["total_episodes"], 1, "video edited episode count")
-        assert_equal(edited_cache.summary()["total_frames"], 2, "video edited frame count")
+        assert_equal(edited_cache.summary()["total_frames"], 20, "video edited frame count")
         assert_equal(edited_cache.summary()["video_keys"], source_cache.summary()["video_keys"], "video edited keys")
         video_key = source_cache.summary()["video_keys"][0]
         source_info = source_cache.summary()["features"][video_key]["video_info"]
@@ -192,6 +192,10 @@ def check_video_edit(path: Path) -> None:
             assert_equal(edited_stream["codec_name"], source_stream["codec_name"], "video edited stream codec")
             assert_equal(edited_stream["pix_fmt"], source_stream["pix_fmt"], "video edited stream pixel format")
             assert_equal(edited_stream["avg_frame_rate"], source_stream["avg_frame_rate"], "video edited stream fps")
+            source_interval = source_keyframe_interval(source_cache.video_file_for_episode(source_cache.episode_record(0), video_key))
+            edited_interval = source_keyframe_interval(edited_cache.video_file_for_episode(edited_cache.episode_record(0), video_key))
+            if source_interval and edited_interval:
+                assert_equal(edited_interval, source_interval, "video edited keyframe interval")
         print(f"ok: video edit apply checks passed ({path})")
 
 

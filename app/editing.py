@@ -720,11 +720,13 @@ def video_encoding_for_key(cache: Any, video_key: str, source_video: Path, datas
     codec = normalize_video_codec(stream_info.get("codec_name") or video_info.get("video.codec"))
     pix_fmt = str(stream_info.get("pix_fmt") or video_info.get("video.pix_fmt") or "yuv420p")
     fps = parse_frame_rate(stream_info.get("avg_frame_rate") or stream_info.get("r_frame_rate")) or float(video_info.get("video.fps") or dataset_fps)
+    keyframe_interval = source_keyframe_interval(source_video)
     return {
         "codec": codec,
         "pix_fmt": pix_fmt,
         "fps": fps,
-        "encoder_options": ffmpeg_encoder_options(codec),
+        "keyframe_interval": keyframe_interval,
+        "encoder_options": ffmpeg_encoder_options(codec, keyframe_interval),
     }
 
 
@@ -738,15 +740,54 @@ def normalize_video_codec(codec: Any) -> str:
     return aliases.get(normalized, normalized)
 
 
-def ffmpeg_encoder_options(codec: str) -> list[str]:
+def ffmpeg_encoder_options(codec: str, keyframe_interval: int | None = None) -> list[str]:
+    gop_options = ["-g", str(keyframe_interval)] if keyframe_interval and keyframe_interval > 0 else []
     if codec == "av1":
-        return ["-c:v", "libaom-av1", "-crf", "30", "-b:v", "0", "-cpu-used", "6"]
+        return [
+            "-c:v",
+            "libaom-av1",
+            "-usage",
+            "realtime",
+            "-cpu-used",
+            "8",
+            "-row-mt",
+            "1",
+            "-lag-in-frames",
+            "0",
+            "-auto-alt-ref",
+            "0",
+            "-denoise-noise-level",
+            "0",
+            "-crf",
+            "30",
+            "-b:v",
+            "0",
+            *gop_options,
+        ]
     if codec == "h264":
-        return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"]
+        return [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "18",
+            *gop_options,
+            *(["-keyint_min", str(keyframe_interval), "-sc_threshold", "0"] if keyframe_interval and keyframe_interval > 0 else []),
+        ]
     if codec == "hevc":
-        return ["-c:v", "libx265", "-preset", "veryfast", "-crf", "23"]
+        return [
+            "-c:v",
+            "libx265",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "23",
+            *gop_options,
+            *(["-keyint_min", str(keyframe_interval), "-sc_threshold", "0"] if keyframe_interval and keyframe_interval > 0 else []),
+        ]
     if codec == "vp9":
-        return ["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "6", "-crf", "32", "-b:v", "0"]
+        return ["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "6", "-crf", "32", "-b:v", "0", *gop_options]
     raise RuntimeError(f"unsupported source video codec for frame-accurate trim: {codec}")
 
 
@@ -779,6 +820,54 @@ def ffprobe_video_stream(path: Path) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return streams[0] if streams else {}
+
+
+def source_keyframe_interval(path: Path) -> int | None:
+    executable = ffprobe_executable()
+    if not executable:
+        return None
+    result = subprocess.run(
+        [
+            executable,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-read_intervals",
+            "%+#300",
+            "-show_frames",
+            "-show_entries",
+            "frame=key_frame",
+            "-of",
+            "csv=p=0",
+            str(path),
+        ],
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    keyframe_indexes: list[int] = []
+    frame_index = 0
+    for line in result.stdout.splitlines():
+        value = line.split(",", 1)[0].strip()
+        if value not in {"0", "1"}:
+            continue
+        if value == "1":
+            keyframe_indexes.append(frame_index)
+            if len(keyframe_indexes) >= 6:
+                break
+        frame_index += 1
+    intervals = [
+        current - previous
+        for previous, current in zip(keyframe_indexes, keyframe_indexes[1:])
+        if current > previous
+    ]
+    if not intervals:
+        return None
+    return int(round(float(np.median(intervals))))
 
 
 def ffprobe_executable() -> str | None:
