@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -179,7 +181,47 @@ def check_video_edit(path: Path) -> None:
         assert_equal(edited_cache.summary()["total_episodes"], 1, "video edited episode count")
         assert_equal(edited_cache.summary()["total_frames"], 2, "video edited frame count")
         assert_equal(edited_cache.summary()["video_keys"], source_cache.summary()["video_keys"], "video edited keys")
+        video_key = source_cache.summary()["video_keys"][0]
+        source_info = source_cache.summary()["features"][video_key]["video_info"]
+        edited_info = edited_cache.summary()["features"][video_key]["video_info"]
+        assert_equal(edited_info["video.codec"], source_info["video.codec"], "video edited metadata codec")
+        assert_equal(edited_info["video.pix_fmt"], source_info["video.pix_fmt"], "video edited metadata pixel format")
+        source_stream = ffprobe_stream(source_cache.video_file_for_episode(source_cache.episode_record(0), video_key))
+        edited_stream = ffprobe_stream(edited_cache.video_file_for_episode(edited_cache.episode_record(0), video_key))
+        if source_stream and edited_stream:
+            assert_equal(edited_stream["codec_name"], source_stream["codec_name"], "video edited stream codec")
+            assert_equal(edited_stream["pix_fmt"], source_stream["pix_fmt"], "video edited stream pixel format")
+            assert_equal(edited_stream["avg_frame_rate"], source_stream["avg_frame_rate"], "video edited stream fps")
         print(f"ok: video edit apply checks passed ({path})")
+
+
+def ffprobe_stream(path: Path) -> dict[str, Any] | None:
+    executable = shutil.which("ffprobe")
+    if not executable:
+        return None
+    result = subprocess.run(
+        [
+            executable,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=codec_name,pix_fmt,avg_frame_rate",
+            "-of",
+            "json",
+            str(path),
+        ],
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    data = json.loads(result.stdout)
+    streams = data.get("streams") or []
+    return streams[0] if streams else None
 
 
 def main() -> None:

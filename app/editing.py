@@ -346,10 +346,17 @@ def apply_edit_plan(cache: Any, operations: list[EditOperation], output_path: Pa
     try:
         edited = build_edited_dataset(cache, plan["operations"])
         tasks_df = rebuild_tasks_for_frames(cache, edited["frames"], edited["episodes"])
-        video_reencoded = bool(cache.video_keys)
-        if video_reencoded:
-            write_edited_videos(cache, edited["video_jobs"], edited["episodes"], output_path)
-        write_dataset(cache, edited["frames"], edited["episodes"], output_path, tasks_df=tasks_df, video_reencoded=video_reencoded)
+        video_info_overrides = {}
+        if cache.video_keys:
+            video_info_overrides = write_edited_videos(cache, edited["video_jobs"], edited["episodes"], output_path)
+        write_dataset(
+            cache,
+            edited["frames"],
+            edited["episodes"],
+            output_path,
+            tasks_df=tasks_df,
+            video_info_overrides=video_info_overrides,
+        )
     except Exception as exc:
         return {
             "ok": False,
@@ -600,7 +607,7 @@ def base_episode_row(episode: pd.Series) -> dict[str, Any]:
     }
 
 
-def write_edited_videos(cache: Any, video_jobs: list[dict[str, Any]], episodes: pd.DataFrame, output_path: Path) -> None:
+def write_edited_videos(cache: Any, video_jobs: list[dict[str, Any]], episodes: pd.DataFrame, output_path: Path) -> dict[str, dict[str, Any]]:
     executable = ffmpeg_executable()
     if not executable:
         raise RuntimeError("ffmpeg is required for video dataset edits")
@@ -611,9 +618,18 @@ def write_edited_videos(cache: Any, video_jobs: list[dict[str, Any]], episodes: 
         raise RuntimeError("video edit produced no output episodes")
 
     output_path.mkdir(parents=True, exist_ok=True)
+    video_info_overrides: dict[str, dict[str, Any]] = {}
     for video_key in cache.video_keys:
         output_video = output_video_path(cache, output_path, video_key)
         output_video.parent.mkdir(parents=True, exist_ok=True)
+        first_source_video = cache.video_file_for_episode(video_jobs[0]["source_episode"], video_key)
+        encoding = video_encoding_for_key(cache, video_key, first_source_video, fps)
+        video_info_overrides[video_key] = {
+            "video.fps": encoding["fps"],
+            "video.codec": encoding["codec"],
+            "video.pix_fmt": encoding["pix_fmt"],
+            "has_audio": False,
+        }
         cumulative = 0.0
         with tempfile.TemporaryDirectory(dir=output_path) as directory:
             temp_dir = Path(directory)
@@ -642,15 +658,12 @@ def write_edited_videos(cache: Any, video_jobs: list[dict[str, Any]], episodes: 
                         str(source_video),
                         "-an",
                         "-vf",
-                        f"fps={format_fps(fps)}",
+                        f"fps={format_fps(encoding['fps'])}",
                         "-frames:v",
                         str(int(job["length"])),
-                        "-c:v",
-                        "libx264",
+                        *encoding["encoder_options"],
                         "-pix_fmt",
-                        "yuv420p",
-                        "-preset",
-                        "veryfast",
+                        encoding["pix_fmt"],
                         "-movflags",
                         "+faststart",
                         str(segment_path),
@@ -697,6 +710,105 @@ def write_edited_videos(cache: Any, video_jobs: list[dict[str, Any]], episodes: 
                 )
             if not output_video.exists() or output_video.stat().st_size == 0:
                 raise RuntimeError(f"ffmpeg did not create a valid output video: {output_video}")
+    return video_info_overrides
+
+
+def video_encoding_for_key(cache: Any, video_key: str, source_video: Path, dataset_fps: float) -> dict[str, Any]:
+    feature = cache.features.get(video_key, {})
+    video_info = feature.get("video_info") or {}
+    stream_info = ffprobe_video_stream(source_video)
+    codec = normalize_video_codec(stream_info.get("codec_name") or video_info.get("video.codec"))
+    pix_fmt = str(stream_info.get("pix_fmt") or video_info.get("video.pix_fmt") or "yuv420p")
+    fps = parse_frame_rate(stream_info.get("avg_frame_rate") or stream_info.get("r_frame_rate")) or float(video_info.get("video.fps") or dataset_fps)
+    return {
+        "codec": codec,
+        "pix_fmt": pix_fmt,
+        "fps": fps,
+        "encoder_options": ffmpeg_encoder_options(codec),
+    }
+
+
+def normalize_video_codec(codec: Any) -> str:
+    normalized = str(codec or "h264").lower()
+    aliases = {
+        "avc1": "h264",
+        "h265": "hevc",
+        "vp09": "vp9",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def ffmpeg_encoder_options(codec: str) -> list[str]:
+    if codec == "av1":
+        return ["-c:v", "libaom-av1", "-crf", "30", "-b:v", "0", "-cpu-used", "6"]
+    if codec == "h264":
+        return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"]
+    if codec == "hevc":
+        return ["-c:v", "libx265", "-preset", "veryfast", "-crf", "23"]
+    if codec == "vp9":
+        return ["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "6", "-crf", "32", "-b:v", "0"]
+    raise RuntimeError(f"unsupported source video codec for frame-accurate trim: {codec}")
+
+
+def ffprobe_video_stream(path: Path) -> dict[str, Any]:
+    executable = ffprobe_executable()
+    if not executable:
+        return {}
+    result = subprocess.run(
+        [
+            executable,
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=codec_name,pix_fmt,r_frame_rate,avg_frame_rate,width,height",
+            "-of",
+            "json",
+            str(path),
+        ],
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        return {}
+    try:
+        streams = json.loads(result.stdout).get("streams") or []
+    except json.JSONDecodeError:
+        return {}
+    return streams[0] if streams else {}
+
+
+def ffprobe_executable() -> str | None:
+    executable = shutil.which("ffprobe")
+    if executable:
+        return executable
+    for candidate in [
+        Path("C:/ProgramData/chocolatey/bin/ffprobe.exe"),
+        Path("C:/ffmpeg/bin/ffprobe.exe"),
+        Path.cwd() / "tools/ffmpeg/bin/ffprobe.exe",
+    ]:
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def parse_frame_rate(value: Any) -> float | None:
+    if not value:
+        return None
+    text = str(value)
+    try:
+        if "/" in text:
+            numerator, denominator = text.split("/", 1)
+            denominator_float = float(denominator)
+            if denominator_float == 0:
+                return None
+            return float(numerator) / denominator_float
+        return float(text)
+    except ValueError:
+        return None
 
 
 def output_video_path(cache: Any, output_path: Path, video_key: str) -> Path:
@@ -748,7 +860,7 @@ def write_dataset(
     episodes: pd.DataFrame,
     output_path: Path,
     tasks_df: pd.DataFrame | None = None,
-    video_reencoded: bool = False,
+    video_info_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     (output_path / "data/chunk-000").mkdir(parents=True, exist_ok=True)
     (output_path / "meta/episodes/chunk-000").mkdir(parents=True, exist_ok=True)
@@ -771,14 +883,12 @@ def write_dataset(
     has_video_features = any(feature.get("dtype") == "video" for feature in info.get("features", {}).values())
     if has_video_features:
         info["video_path"] = info.get("video_path", "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4")
-        if video_reencoded:
-            for feature in info.get("features", {}).values():
-                if feature.get("dtype") != "video":
-                    continue
-                video_info = feature.setdefault("video_info", {})
-                video_info["video.codec"] = "h264"
-                video_info["video.pix_fmt"] = "yuv420p"
-                video_info["has_audio"] = False
+        for video_key, override in (video_info_overrides or {}).items():
+            feature = info.get("features", {}).get(video_key)
+            if not feature or feature.get("dtype") != "video":
+                continue
+            video_info = feature.setdefault("video_info", {})
+            video_info.update(override)
     elif "video_path" in info:
         info.pop("video_path")
     with (output_path / "meta/info.json").open("w", encoding="utf-8") as f:

@@ -201,6 +201,15 @@ conda activate lerobot-viewer
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
+也可以在激活 conda 后运行项目脚本。脚本会优先使用当前 conda 环境里的 Python；如果没有激活 conda，才会回退到项目 `.venv`：
+
+```powershell
+conda activate lerobot-viewer
+.\scripts\start_backend.ps1
+```
+
+如果官方 LeRobot 校验提示没有安装 `lerobot`，先确认页面 System 环境里显示的 Python 路径是不是你的 conda 环境。官方校验只会使用当前后端进程的 Python 环境，不会自动跨环境查找包。
+
 如果想在开发时自动重载：
 
 ```powershell
@@ -321,6 +330,15 @@ conda 环境下手动启动：
 conda activate lerobot-viewer
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
+
+也可以在激活 conda 后运行项目脚本。脚本会优先使用当前 conda 环境里的 Python；如果没有激活 conda，才会回退到项目 `.venv`：
+
+```bash
+conda activate lerobot-viewer
+bash scripts/start_backend.sh
+```
+
+如果官方 LeRobot 校验提示没有安装 `lerobot`，先确认页面 System 环境里显示的 Python 路径是不是你的 conda 环境。官方校验只会使用当前后端进程的 Python 环境，不会自动跨环境查找包。
 
 开发时自动重载：
 

@@ -243,7 +243,7 @@ def index() -> str:
 
 @app.get("/api/env")
 def env_info() -> dict[str, Any]:
-    package_names = ["fastapi", "uvicorn", "pandas", "pyarrow", "numpy", "pydantic"]
+    package_names = ["fastapi", "uvicorn", "pandas", "pyarrow", "numpy", "pydantic", "lerobot", "torch", "safetensors"]
     packages = {}
     for name in package_names:
         try:
