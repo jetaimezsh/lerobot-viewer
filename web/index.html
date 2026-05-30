@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LeRobot Dataset v3.0 Viewer</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260529-episode-nav-results">
+  <link rel="stylesheet" href="/static/styles.css?v=20260530-model-backtest-v3">
 </head>
 <body>
   <div class="shell">
@@ -38,6 +38,8 @@
         <button class="nav-button active" data-view="overviewView">总览</button>
         <button class="nav-button" data-view="episodeView">Episode 播放</button>
         <button class="nav-button" data-view="datasetEditView">数据集编辑</button>
+        <button class="nav-button" data-view="modelManagerView">模型管理</button>
+        <button class="nav-button" data-view="modelBacktestView">模型回测</button>
         <button class="nav-button" data-view="envView">System环境</button>
       </nav>
 
@@ -77,6 +79,10 @@
           <section class="surface">
             <div class="section-kicker">Tasks</div>
             <div id="taskList" class="task-list empty">暂无任务信息</div>
+          </section>
+          <section class="surface">
+            <div class="section-kicker">Models</div>
+            <div id="modelOverview" class="model-overview empty">尚未注册模型。</div>
           </section>
         </div>
       </section>
@@ -142,6 +148,7 @@
               <button id="setTrimStart" type="button">当前时刻设为起点</button>
               <button id="setTrimEnd" type="button">当前时刻设为终点</button>
               <button id="markTrimEpisode" type="button">标记保留区间</button>
+              <button id="sendEpisodeToBacktest" type="button">用当前 episode 回测</button>
             </div>
             <div id="trimDraft" class="edit-draft">裁剪区间未设置</div>
           </details>
@@ -243,6 +250,92 @@
         </div>
       </section>
 
+      <section id="modelManagerView" class="view">
+        <section class="surface model-surface">
+          <div>
+            <div class="section-kicker">Model Manager</div>
+            <h3>模型管理</h3>
+            <p>第三版先支持 LeRobot 官方 checkpoint。模型推理仅支持 Linux，Windows 可注册和检查 checkpoint 信息。</p>
+          </div>
+          <div class="model-actions">
+            <button id="checkModelEnv" type="button">检测模型环境</button>
+            <button id="refreshModels" type="button">刷新模型列表</button>
+          </div>
+        </section>
+        <div class="model-grid">
+          <section class="surface">
+            <div class="section-kicker">Add Model</div>
+            <div class="model-form">
+              <input id="modelName" type="text" placeholder="模型名称，例如 ACT pusht">
+              <input id="checkpointPath" type="text" placeholder="checkpoint 路径，例如 /data/checkpoints/pretrained_model">
+              <select id="modelAdapterType">
+                <option value="lerobot_official">LeRobot 官方 checkpoint</option>
+                <option value="custom_script">自定义脚本（预留接口）</option>
+              </select>
+              <input id="modelScriptPath" type="text" placeholder="自定义脚本路径（后续版本启用）">
+              <select id="modelDevice">
+                <option value="cuda">cuda</option>
+                <option value="cuda:0">cuda:0</option>
+                <option value="cpu">cpu</option>
+              </select>
+              <button id="registerModel" type="button">注册模型</button>
+            </div>
+            <div id="modelEnvReport" class="model-env-report empty">尚未检测模型环境。</div>
+          </section>
+          <section class="surface">
+            <div class="section-kicker">Registered Models</div>
+            <div id="modelList" class="model-list empty">尚未注册模型。</div>
+          </section>
+        </div>
+      </section>
+
+      <section id="modelBacktestView" class="view">
+        <section class="surface model-surface">
+          <div>
+            <div class="section-kicker">Offline Backtest</div>
+            <h3>模型离线回测</h3>
+            <p>选择一个或多个模型、一个或多个 episode，离线推理后对比模型 action 与数据集真实 action。</p>
+          </div>
+          <div class="model-actions">
+            <button id="runBacktest" type="button">运行回测</button>
+            <button id="clearBacktest" type="button">清空结果</button>
+          </div>
+        </section>
+        <div class="backtest-grid">
+          <section class="surface">
+            <div class="section-kicker">Backtest Setup</div>
+            <label class="field-label" for="backtestEpisodes">Episodes</label>
+            <textarea id="backtestEpisodes" rows="4" placeholder="例如：0 或 0,1,2 或 0-5"></textarea>
+            <label class="checkbox-row">
+              <input id="limitBacktestFrames" type="checkbox">
+              仅测试前 20 帧
+            </label>
+            <div class="section-kicker">Models</div>
+            <div id="backtestModelChoices" class="model-choice-list empty">请先在模型管理中注册模型。</div>
+          </section>
+          <section class="surface">
+            <div class="section-kicker">Backtest Result</div>
+            <div id="backtestResult" class="backtest-result empty">尚未运行回测。</div>
+          </section>
+        </div>
+        <section class="surface backtest-chart-surface">
+          <div class="chart-toolbar">
+            <div>
+              <div class="section-kicker">Action Compare</div>
+              <h3>action 对比</h3>
+            </div>
+            <div class="backtest-chart-controls">
+              <select id="backtestEpisodeSelect"></select>
+              <select id="backtestDimSelect"></select>
+              <label class="checkbox-row"><input id="showGroundTruth" type="checkbox" checked> 真实 action</label>
+              <label class="checkbox-row"><input id="showBacktestError" type="checkbox"> error</label>
+            </div>
+          </div>
+          <div id="backtestSeriesToggles" class="series-options"></div>
+          <canvas id="backtestChart" width="1100" height="420"></canvas>
+        </section>
+      </section>
+
       <section id="envView" class="view">
         <section class="surface env-surface">
           <div>
@@ -270,6 +363,6 @@
     </main>
   </div>
 
-  <script src="/static/app.js?v=20260529-episode-nav-results"></script>
+  <script src="/static/app.js?v=20260530-model-backtest-v3"></script>
 </body>
 </html>

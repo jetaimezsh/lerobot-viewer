@@ -18,6 +18,20 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from app.backtesting import (
+    BacktestRunRequest,
+    ModelDeleteRequest,
+    ModelLoadRequest,
+    ModelRegisterRequest,
+    delete_model,
+    inspect_model,
+    list_models,
+    load_model,
+    model_runtime_status,
+    register_model,
+    run_backtest,
+    unload_model,
+)
 from app.editing import (
     EditApplyRequest,
     EditDryRunRequest,
@@ -248,6 +262,68 @@ def env_info() -> dict[str, Any]:
         "requirements": str(APP_ROOT / "requirements.txt"),
         "packages": packages,
     }
+
+
+@app.get("/api/models/env")
+def model_env_info() -> dict[str, Any]:
+    return model_runtime_status()
+
+
+@app.get("/api/models")
+def models_list() -> list[dict[str, Any]]:
+    return list_models()
+
+
+@app.post("/api/models/register")
+def model_register(request: ModelRegisterRequest) -> dict[str, Any]:
+    try:
+        return register_model(request)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/models/inspect")
+def model_inspect(request: ModelLoadRequest) -> dict[str, Any]:
+    try:
+        return inspect_model(request.model_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/models/load")
+def model_load(request: ModelLoadRequest) -> dict[str, Any]:
+    try:
+        return load_model(request.model_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/models/unload")
+def model_unload(request: ModelLoadRequest) -> dict[str, Any]:
+    try:
+        return unload_model(request.model_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/models/delete")
+def model_delete(request: ModelDeleteRequest) -> dict[str, Any]:
+    try:
+        return delete_model(request.model_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/backtests/run")
+def backtest_run(request: BacktestRunRequest) -> dict[str, Any]:
+    root = resolve_dataset_path(request.dataset_path)
+    if not root.exists() or not root.is_dir():
+        raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
+    cache = DatasetCache(root)
+    try:
+        return run_backtest(request, cache)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def conda_info() -> dict[str, Any]:

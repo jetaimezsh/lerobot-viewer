@@ -591,6 +591,201 @@ h3 {
   gap: 16px;
 }
 
+.model-grid,
+.backtest-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.model-surface {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.model-actions,
+.model-form,
+.model-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.model-form {
+  display: grid;
+}
+
+.model-form input,
+.model-form select,
+#backtestEpisodes {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 10px;
+  font: inherit;
+}
+
+.model-list,
+.model-choice-list,
+.model-overview,
+.backtest-result {
+  display: grid;
+  gap: 10px;
+}
+
+.model-card,
+.model-choice,
+.model-overview-item,
+.model-overview-row,
+.backtest-cell {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--soft);
+  overflow-wrap: anywhere;
+}
+
+.model-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.model-card-head strong,
+.model-choice strong,
+.model-overview-item strong {
+  display: block;
+}
+
+.model-card-head span,
+.model-choice small,
+.model-overview-item span,
+.model-card-path,
+.model-card-meta,
+.backtest-cell span,
+.backtest-cell small {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.model-card-path {
+  margin-top: 8px;
+}
+
+.model-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 8px 0;
+}
+
+.model-card-issues {
+  margin-top: 8px;
+  border-radius: 8px;
+  padding: 8px;
+  font-size: 13px;
+}
+
+.model-card-issues.error {
+  background: #fff5f5;
+  color: var(--danger);
+}
+
+.model-card-issues.warning {
+  background: #fff8e8;
+  color: #805000;
+}
+
+.model-choice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  cursor: pointer;
+}
+
+.model-choice input,
+.series-option input {
+  width: 16px;
+  height: 16px;
+}
+
+.model-env-grid,
+.backtest-matrix {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.model-env-cell {
+  border: 1px solid #edf1f5;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: #ffffff;
+}
+
+.model-env-cell span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.model-env-checks {
+  margin-top: 10px;
+}
+
+.field-label {
+  display: block;
+  margin: 8px 0 6px;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.backtest-chart-surface {
+  margin-top: 16px;
+}
+
+.backtest-chart-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.backtest-chart-controls select {
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 8px;
+  font: inherit;
+}
+
+#backtestChart {
+  width: 100%;
+  height: 420px;
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.result-status.neutral {
+  background: #64748b;
+}
+
+.backtest-cell.ok strong {
+  color: var(--accent-strong);
+}
+
+.backtest-cell.fail strong {
+  color: var(--danger);
+}
+
 .env-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1214,7 +1409,9 @@ h3 {
   .analysis-grid,
   .edit-grid,
   .merge-grid,
-  .system-grid {
+  .system-grid,
+  .model-grid,
+  .backtest-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -1233,12 +1430,15 @@ h3 {
   .episode-header,
   .video-head,
   .env-surface,
-  .edit-surface {
+  .edit-surface,
+  .model-surface {
     flex-direction: column;
   }
 
   .edit-run-buttons,
-  .env-actions {
+  .env-actions,
+  .model-actions,
+  .backtest-chart-controls {
     justify-content: flex-start;
   }
 

@@ -436,6 +436,36 @@ D:\lerobot\sample_datasets\pusht
 - `observation.state` 和 `action` 可展开为数组维度时序图。
 - `observation.image` 视频可加载并与时间轴同步。
 
+## v3 模型离线回测
+
+第三版开始加入模型工作区，页面划分为：
+
+- `模型管理`：注册 checkpoint、检查模型文件、加载/卸载模型、查看 policy 类型、大小和状态。
+- `模型回测`：选择一个或多个模型、一个或多个 episode，运行离线回测并对比模型 action 与数据集真实 action。
+
+当前实现先支持 `LeRobot 官方 checkpoint` 的接口框架，并预留 `custom_script` 自定义模型脚本接口。模型推理运行仅支持 Linux；Windows 仍可查看页面、注册 checkpoint、检查文件结构和查看已有结果，但不会执行真实模型推理。
+
+Linux 模型回测环境建议额外安装：
+
+```bash
+python -m pip install torch lerobot safetensors
+```
+
+回测结果会按 `model x episode` 组合展示：
+
+- 每个组合的执行状态
+- MAE / RMSE / max error
+- 最差误差 frame
+- action 维度级真实值、预测值和误差曲线
+
+当前测试覆盖：
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\backtest_smoke_test.py
+```
+
+这个测试不依赖真实模型，使用 mock adapter 验证 episode action 读取、预测 action 对齐、误差指标和 checkpoint 文件检查逻辑。真实 LeRobot checkpoint 推理需要在 Linux 上补充集成测试。
+
 ## 常见问题
 
 ### PowerShell 不允许执行脚本

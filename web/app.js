@@ -22,6 +22,10 @@ const state = {
   editOperations: [],
   trimDraftStart: null,
   trimDraftEnd: null,
+  models: [],
+  modelEnv: null,
+  backtestResult: null,
+  visibleBacktestModels: new Set(),
 };
 
 const els = {
@@ -37,6 +41,7 @@ const els = {
   datasetSummary: document.getElementById("datasetSummary"),
   featureList: document.getElementById("featureList"),
   taskList: document.getElementById("taskList"),
+  modelOverview: document.getElementById("modelOverview"),
   pageTitle: document.getElementById("pageTitle"),
   statusPill: document.getElementById("statusPill"),
   episodeTitle: document.getElementById("episodeTitle"),
@@ -69,6 +74,7 @@ const els = {
   setTrimStart: document.getElementById("setTrimStart"),
   setTrimEnd: document.getElementById("setTrimEnd"),
   markTrimEpisode: document.getElementById("markTrimEpisode"),
+  sendEpisodeToBacktest: document.getElementById("sendEpisodeToBacktest"),
   trimDraft: document.getElementById("trimDraft"),
   editOperationList: document.getElementById("editOperationList"),
   editOperationBadge: document.getElementById("editOperationBadge"),
@@ -86,6 +92,28 @@ const els = {
   applyMerge: document.getElementById("applyMerge"),
   mergePaths: document.getElementById("mergePaths"),
   mergeOutput: document.getElementById("mergeOutput"),
+  checkModelEnv: document.getElementById("checkModelEnv"),
+  refreshModels: document.getElementById("refreshModels"),
+  modelName: document.getElementById("modelName"),
+  checkpointPath: document.getElementById("checkpointPath"),
+  modelAdapterType: document.getElementById("modelAdapterType"),
+  modelScriptPath: document.getElementById("modelScriptPath"),
+  modelDevice: document.getElementById("modelDevice"),
+  registerModel: document.getElementById("registerModel"),
+  modelEnvReport: document.getElementById("modelEnvReport"),
+  modelList: document.getElementById("modelList"),
+  backtestEpisodes: document.getElementById("backtestEpisodes"),
+  limitBacktestFrames: document.getElementById("limitBacktestFrames"),
+  backtestModelChoices: document.getElementById("backtestModelChoices"),
+  runBacktest: document.getElementById("runBacktest"),
+  clearBacktest: document.getElementById("clearBacktest"),
+  backtestResult: document.getElementById("backtestResult"),
+  backtestEpisodeSelect: document.getElementById("backtestEpisodeSelect"),
+  backtestDimSelect: document.getElementById("backtestDimSelect"),
+  showGroundTruth: document.getElementById("showGroundTruth"),
+  showBacktestError: document.getElementById("showBacktestError"),
+  backtestSeriesToggles: document.getElementById("backtestSeriesToggles"),
+  backtestChart: document.getElementById("backtestChart"),
 };
 
 const palette = ["#087f8c", "#b76e00", "#2f6fbb", "#7a5195", "#2f9e44", "#c92a2a", "#5f6c72", "#805ad5"];
@@ -188,10 +216,22 @@ function setView(viewId) {
     button.classList.toggle("active", button.dataset.view === viewId);
   });
   if (viewId === "episodeView") requestAnimationFrame(drawChart);
+  if (viewId === "modelManagerView") {
+    loadModelEnv();
+    loadModels();
+  }
+  if (viewId === "modelBacktestView") {
+    loadModels();
+    requestAnimationFrame(drawBacktestChart);
+  }
 }
 
 function goToDatasetEditor() {
   setView("datasetEditView");
+}
+
+function goToModelBacktest() {
+  setView("modelBacktestView");
 }
 
 function currentEpisodeIndex() {
@@ -253,6 +293,7 @@ async function openDataset() {
     renderSummary();
     renderFeatures();
     renderTasks();
+    renderModelOverview();
     renderEpisodes();
     resetEpisodeView();
     await loadHistory();
@@ -384,6 +425,33 @@ function renderTasks() {
     const text = task.task ?? task.name ?? JSON.stringify(task);
     return `<div class="task-row"><strong>${escapeHtml(taskIndex)}</strong> ${escapeHtml(text)}</div>`;
   }).join("");
+}
+
+function renderModelOverview() {
+  if (!els.modelOverview) return;
+  if (!state.models.length) {
+    els.modelOverview.classList.add("empty");
+    els.modelOverview.innerHTML = "尚未注册模型。";
+    return;
+  }
+  els.modelOverview.classList.remove("empty");
+  const loaded = state.models.filter((model) => model.loaded).length;
+  els.modelOverview.innerHTML = `
+    <div class="model-overview-row">
+      <strong>${state.models.length}</strong>
+      <span>已注册模型</span>
+    </div>
+    <div class="model-overview-row">
+      <strong>${loaded}</strong>
+      <span>已加载模型</span>
+    </div>
+    ${state.models.slice(0, 3).map((model) => `
+      <div class="model-overview-item">
+        <strong>${escapeHtml(model.name)}</strong>
+        <span>${escapeHtml(model.inspection?.policy_type || model.adapter_type)} · ${escapeHtml(model.status)}</span>
+      </div>
+    `).join("")}
+  `;
 }
 
 function renderEpisodes() {
@@ -860,6 +928,13 @@ function markTrimCurrentEpisode() {
   els.editEpisodeMeta.textContent = `已把 Episode ${episodeIndex} 的保留区间加入编辑计划。到“数据集编辑”页面可查看队列并生成新数据集。`;
 }
 
+function sendCurrentEpisodeToBacktest() {
+  const episodeIndex = currentEpisodeIndex();
+  if (episodeIndex === null) return;
+  els.backtestEpisodes.value = String(episodeIndex);
+  goToModelBacktest();
+}
+
 async function runEditDryRun() {
   if (!state.summary) {
     els.editDryRunOutput.textContent = "请先加载数据集。";
@@ -1148,6 +1223,370 @@ function formatResultValue(value) {
   return value;
 }
 
+async function loadModelEnv() {
+  if (!els.modelEnvReport) return;
+  els.modelEnvReport.classList.remove("empty");
+  els.modelEnvReport.textContent = "正在检测模型环境...";
+  try {
+    state.modelEnv = await api("/api/models/env");
+    renderModelEnv();
+  } catch (error) {
+    els.modelEnvReport.textContent = error.message;
+  }
+}
+
+function renderModelEnv() {
+  const env = state.modelEnv;
+  if (!env) return;
+  const rows = [
+    ["系统", env.os],
+    ["Linux 推理", env.is_linux ? "支持" : "当前不支持"],
+    ["LeRobot 回测", env.ready_for_lerobot_backtest ? "可运行" : "不可运行"],
+    ["CUDA", env.cuda?.available ? `${env.cuda.device_count} 个设备` : "不可用"],
+    ["缺失项", env.missing?.length ? env.missing.join(", ") : "无"],
+  ];
+  els.modelEnvReport.innerHTML = `
+    <div class="model-env-grid">
+      ${rows.map(([label, value]) => `
+        <div class="model-env-cell">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value)}</strong>
+        </div>
+      `).join("")}
+    </div>
+    <div class="model-env-checks">
+      ${(env.checks || []).map((check) => `
+        <div class="tool-check ${check.ok ? "ok" : "fail"}">
+          <strong>${escapeHtml(check.label)}</strong>
+          <span>${escapeHtml(check.detail)}</span>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+async function loadModels() {
+  try {
+    state.models = await api("/api/models");
+    renderModels();
+    renderModelOverview();
+    renderBacktestModelChoices();
+  } catch (error) {
+    if (els.modelList) els.modelList.textContent = error.message;
+  }
+}
+
+async function registerCurrentModel() {
+  const checkpointPath = els.checkpointPath.value.trim();
+  if (!checkpointPath) {
+    els.modelList.textContent = "请填写 checkpoint 路径。";
+    return;
+  }
+  try {
+    await api("/api/models/register", {
+      method: "POST",
+      body: JSON.stringify({
+        name: els.modelName.value.trim() || null,
+        checkpoint_path: checkpointPath,
+        adapter_type: els.modelAdapterType.value,
+        device: els.modelDevice.value,
+        script_path: els.modelScriptPath.value.trim() || null,
+      }),
+    });
+    els.modelName.value = "";
+    els.checkpointPath.value = "";
+    els.modelScriptPath.value = "";
+    await loadModels();
+  } catch (error) {
+    els.modelList.textContent = error.message;
+  }
+}
+
+function renderModels() {
+  if (!els.modelList) return;
+  if (!state.models.length) {
+    els.modelList.classList.add("empty");
+    els.modelList.innerHTML = "尚未注册模型。";
+    return;
+  }
+  els.modelList.classList.remove("empty");
+  els.modelList.innerHTML = state.models.map((model) => {
+    const inspection = model.inspection || {};
+    const errors = inspection.errors || [];
+    const warnings = inspection.warnings || [];
+    return `
+      <div class="model-card" data-model-id="${escapeAttr(model.id)}">
+        <div class="model-card-head">
+          <div>
+            <strong>${escapeHtml(model.name)}</strong>
+            <span>${escapeHtml(model.adapter_type)} · ${escapeHtml(model.device)} · ${escapeHtml(model.status)}</span>
+          </div>
+          <span class="result-status ${model.loaded ? "ok" : errors.length ? "fail" : "neutral"}">${model.loaded ? "已加载" : errors.length ? "无效" : "已注册"}</span>
+        </div>
+        <div class="model-card-path">${escapeHtml(model.checkpoint_path)}</div>
+        <div class="model-card-meta">
+          <span>policy: ${escapeHtml(inspection.policy_type || "-")}</span>
+          <span>size: ${escapeHtml(inspection.size_mb ?? 0)} MB</span>
+          <span>files: ${escapeHtml(inspection.file_count ?? 0)}</span>
+          ${inspection.parameter_count ? `<span>params: ${escapeHtml(inspection.parameter_count)}</span>` : ""}
+        </div>
+        ${errors.length ? `<div class="model-card-issues error">${errors.map(escapeHtml).join("<br>")}</div>` : ""}
+        ${warnings.length ? `<div class="model-card-issues warning">${warnings.map(escapeHtml).join("<br>")}</div>` : ""}
+        <div class="model-card-actions">
+          <button type="button" data-model-action="inspect">检查</button>
+          <button type="button" data-model-action="load">加载</button>
+          <button type="button" data-model-action="unload">卸载</button>
+          <button type="button" data-model-action="delete">删除</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+async function handleModelAction(event) {
+  const action = event.target?.dataset?.modelAction;
+  if (!action) return;
+  const card = event.target.closest(".model-card");
+  const modelId = card?.dataset?.modelId;
+  if (!modelId) return;
+  const endpoint = {
+    inspect: "/api/models/inspect",
+    load: "/api/models/load",
+    unload: "/api/models/unload",
+    delete: "/api/models/delete",
+  }[action];
+  try {
+    await api(endpoint, {
+      method: "POST",
+      body: JSON.stringify({ model_id: modelId }),
+    });
+    await loadModels();
+  } catch (error) {
+    card.insertAdjacentHTML("beforeend", `<div class="model-card-issues error">${escapeHtml(error.message)}</div>`);
+  }
+}
+
+function renderBacktestModelChoices() {
+  if (!els.backtestModelChoices) return;
+  if (!state.models.length) {
+    els.backtestModelChoices.classList.add("empty");
+    els.backtestModelChoices.innerHTML = "请先在模型管理中注册模型。";
+    return;
+  }
+  els.backtestModelChoices.classList.remove("empty");
+  els.backtestModelChoices.innerHTML = state.models.map((model) => `
+    <label class="model-choice">
+      <input type="checkbox" value="${escapeAttr(model.id)}">
+      <span>
+        <strong>${escapeHtml(model.name)}</strong>
+        <small>${escapeHtml(model.inspection?.policy_type || model.adapter_type)} · ${escapeHtml(model.status)}</small>
+      </span>
+    </label>
+  `).join("");
+}
+
+function selectedBacktestModelIds() {
+  return Array.from(els.backtestModelChoices.querySelectorAll("input:checked")).map((input) => input.value);
+}
+
+function parseEpisodeSelection(raw) {
+  const result = new Set();
+  for (const part of raw.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean)) {
+    if (part.includes("-")) {
+      const [start, end] = part.split("-").map((item) => Number(item.trim()));
+      if (!Number.isInteger(start) || !Number.isInteger(end) || end < start) throw new Error(`episode 范围无效: ${part}`);
+      for (let index = start; index <= end; index += 1) result.add(index);
+    } else {
+      const value = Number(part);
+      if (!Number.isInteger(value)) throw new Error(`episode 无效: ${part}`);
+      result.add(value);
+    }
+  }
+  return Array.from(result).sort((a, b) => a - b);
+}
+
+async function runSelectedBacktest() {
+  if (!state.summary) {
+    els.backtestResult.textContent = "请先加载数据集。";
+    return;
+  }
+  const modelIds = selectedBacktestModelIds();
+  if (!modelIds.length) {
+    els.backtestResult.textContent = "请至少选择一个模型。";
+    return;
+  }
+  let episodeIndexes;
+  try {
+    episodeIndexes = parseEpisodeSelection(els.backtestEpisodes.value.trim());
+  } catch (error) {
+    els.backtestResult.textContent = error.message;
+    return;
+  }
+  if (!episodeIndexes.length) {
+    els.backtestResult.textContent = "请填写要回测的 episode。";
+    return;
+  }
+  els.backtestResult.classList.remove("empty");
+  els.backtestResult.textContent = "正在运行回测...";
+  try {
+    state.backtestResult = await api("/api/backtests/run", {
+      method: "POST",
+      body: JSON.stringify({
+        dataset_path: state.summary.root,
+        model_ids: modelIds,
+        episode_indexes: episodeIndexes,
+        max_frames: els.limitBacktestFrames.checked ? 20 : null,
+      }),
+    });
+    state.visibleBacktestModels = new Set(modelIds);
+    renderBacktestResult();
+  } catch (error) {
+    els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测失败</h4><p>${escapeHtml(error.message)}</p></div>`;
+  }
+}
+
+function clearBacktestResult() {
+  state.backtestResult = null;
+  state.visibleBacktestModels = new Set();
+  els.backtestResult.classList.add("empty");
+  els.backtestResult.innerHTML = "尚未运行回测。";
+  els.backtestEpisodeSelect.innerHTML = "";
+  els.backtestDimSelect.innerHTML = "";
+  els.backtestSeriesToggles.innerHTML = "";
+  drawBacktestChart();
+}
+
+function renderBacktestResult() {
+  const run = state.backtestResult;
+  if (!run) return;
+  const summary = run.summary || {};
+  const rows = [
+    ["组合数", summary.total],
+    ["完成", summary.done],
+    ["失败", summary.failed],
+    ["平均 MAE", summary.mean_mae],
+    ["平均 RMSE", summary.mean_rmse],
+    ["最大误差", summary.max_error],
+  ];
+  els.backtestResult.classList.remove("empty");
+  els.backtestResult.innerHTML = `
+    <div class="result-header">
+      <div>
+        <h4>回测任务 ${escapeHtml(run.run_id)}</h4>
+        <p>${escapeHtml(run.dataset_path)}</p>
+      </div>
+      <span class="result-status ${summary.failed ? "fail" : "ok"}">${summary.failed ? "部分失败" : "完成"}</span>
+    </div>
+    ${formatKeyValueGrid(rows)}
+    <div class="backtest-matrix">
+      ${(run.results || []).map((item) => `
+        <div class="backtest-cell ${item.status === "done" ? "ok" : "fail"}">
+          <strong>${escapeHtml(modelName(item.model_id))}</strong>
+          <span>Episode ${escapeHtml(item.episode_index)} · ${escapeHtml(item.status)}</span>
+          ${item.metrics ? `<small>MAE ${escapeHtml(item.metrics.mae)} · RMSE ${escapeHtml(item.metrics.rmse)}</small>` : `<small>${escapeHtml(item.error || "")}</small>`}
+        </div>
+      `).join("")}
+    </div>
+  `;
+  populateBacktestChartControls();
+  drawBacktestChart();
+}
+
+function populateBacktestChartControls() {
+  const done = doneBacktestResults();
+  const episodes = Array.from(new Set(done.map((item) => item.episode_index))).sort((a, b) => a - b);
+  els.backtestEpisodeSelect.innerHTML = episodes.map((index) => `<option value="${index}">Episode ${index}</option>`).join("");
+  const first = done[0];
+  const dims = first?.series?.length || 0;
+  els.backtestDimSelect.innerHTML = Array.from({ length: dims }, (_, index) => `<option value="${index}">action[${index}]</option>`).join("");
+  els.backtestSeriesToggles.innerHTML = state.models.map((model) => `
+    <label class="series-option">
+      <input type="checkbox" value="${escapeAttr(model.id)}" ${state.visibleBacktestModels.has(model.id) ? "checked" : ""}>
+      <span>${escapeHtml(model.name)}</span>
+    </label>
+  `).join("");
+}
+
+function doneBacktestResults() {
+  return (state.backtestResult?.results || []).filter((item) => item.status === "done");
+}
+
+function selectedChartResults() {
+  const episode = Number(els.backtestEpisodeSelect.value);
+  const visible = new Set(Array.from(els.backtestSeriesToggles.querySelectorAll("input:checked")).map((input) => input.value));
+  state.visibleBacktestModels = visible;
+  return doneBacktestResults().filter((item) => item.episode_index === episode && visible.has(item.model_id));
+}
+
+function drawBacktestChart() {
+  if (!els.backtestChart) return;
+  const canvas = els.backtestChart;
+  const ctx = canvas.getContext("2d");
+  const width = canvas.clientWidth || canvas.width;
+  const height = canvas.clientHeight || canvas.height;
+  canvas.width = width;
+  canvas.height = height;
+  ctx.clearRect(0, 0, width, height);
+  const results = selectedChartResults();
+  const dim = Number(els.backtestDimSelect.value || 0);
+  if (!results.length || Number.isNaN(dim)) {
+    ctx.fillStyle = "#5f6c72";
+    ctx.font = "14px sans-serif";
+    ctx.fillText("运行回测后选择 episode、action 维度和模型。", 24, 34);
+    return;
+  }
+  const lines = [];
+  if (els.showGroundTruth.checked && results[0].series?.[dim]) {
+    lines.push({ name: "ground truth", values: results[0].series[dim].ground_truth, color: "#111827" });
+  }
+  const colors = ["#087f8c", "#b76e00", "#2f6fbb", "#7a5195", "#c92a2a", "#2f9e44"];
+  results.forEach((item, index) => {
+    const series = item.series?.[dim];
+    if (!series) return;
+    lines.push({ name: `${modelName(item.model_id)} predicted`, values: series.predicted, color: colors[index % colors.length] });
+    if (els.showBacktestError.checked) {
+      lines.push({ name: `${modelName(item.model_id)} error`, values: series.error, color: colors[(index + 2) % colors.length], dashed: true });
+    }
+  });
+  drawLineChart(ctx, width, height, lines);
+}
+
+function drawLineChart(ctx, width, height, lines) {
+  const pad = { left: 48, right: 18, top: 24, bottom: 38 };
+  const values = lines.flatMap((line) => line.values.filter((value) => value !== null && value !== undefined));
+  if (!values.length) return;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = Math.max(max - min, 1e-6);
+  ctx.strokeStyle = "#e2e8f0";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(pad.left, pad.top, width - pad.left - pad.right, height - pad.top - pad.bottom);
+  for (const line of lines) {
+    ctx.beginPath();
+    ctx.strokeStyle = line.color;
+    ctx.lineWidth = 2;
+    ctx.setLineDash(line.dashed ? [6, 4] : []);
+    line.values.forEach((value, index) => {
+      const x = pad.left + (index / Math.max(line.values.length - 1, 1)) * (width - pad.left - pad.right);
+      const y = pad.top + (1 - ((value - min) / span)) * (height - pad.top - pad.bottom);
+      if (index === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  ctx.fillStyle = "#334155";
+  ctx.font = "12px sans-serif";
+  lines.slice(0, 8).forEach((line, index) => {
+    ctx.fillStyle = line.color;
+    ctx.fillText(line.name, pad.left + index * 130, height - 12);
+  });
+}
+
+function modelName(modelId) {
+  return state.models.find((model) => model.id === modelId)?.name || modelId;
+}
+
 async function applyEditPlan() {
   if (!state.summary) {
     els.editDryRunOutput.textContent = "请先加载数据集。";
@@ -1349,6 +1788,7 @@ els.markDeleteEpisode.addEventListener("click", markDeleteCurrentEpisode);
 els.setTrimStart.addEventListener("click", () => setTrimPoint("start"));
 els.setTrimEnd.addEventListener("click", () => setTrimPoint("end"));
 els.markTrimEpisode.addEventListener("click", markTrimCurrentEpisode);
+els.sendEpisodeToBacktest.addEventListener("click", sendCurrentEpisodeToBacktest);
 els.checkEditTools.addEventListener("click", checkEditTools);
 els.strictValidateDataset.addEventListener("click", strictValidateCurrentDataset);
 els.runEditDryRun.addEventListener("click", runEditDryRun);
@@ -1357,6 +1797,17 @@ els.addCurrentDatasetToMerge.addEventListener("click", addCurrentDatasetToMerge)
 els.clearMergeList.addEventListener("click", clearMergeList);
 els.validateMerge.addEventListener("click", validateMergePlan);
 els.applyMerge.addEventListener("click", applyMergePlan);
+els.checkModelEnv.addEventListener("click", loadModelEnv);
+els.refreshModels.addEventListener("click", loadModels);
+els.registerModel.addEventListener("click", registerCurrentModel);
+els.modelList.addEventListener("click", handleModelAction);
+els.runBacktest.addEventListener("click", runSelectedBacktest);
+els.clearBacktest.addEventListener("click", clearBacktestResult);
+els.backtestEpisodeSelect.addEventListener("change", drawBacktestChart);
+els.backtestDimSelect.addEventListener("change", drawBacktestChart);
+els.showGroundTruth.addEventListener("change", drawBacktestChart);
+els.showBacktestError.addEventListener("change", drawBacktestChart);
+els.backtestSeriesToggles.addEventListener("change", drawBacktestChart);
 els.zoomIn.addEventListener("click", () => zoomChart(0.5));
 els.zoomOut.addEventListener("click", () => zoomChart(2));
 els.resetZoom.addEventListener("click", () => {
@@ -1421,8 +1872,10 @@ els.chart.addEventListener("wheel", (event) => {
   zoomChart(factor, chartElapsedFromEvent(event));
 }, { passive: false });
 window.addEventListener("resize", drawChart);
+window.addEventListener("resize", drawBacktestChart);
 
 loadEnv().catch((error) => {
   els.envInfo.textContent = error.message;
 });
 loadHistory().catch(() => {});
+loadModels().catch(() => {});
