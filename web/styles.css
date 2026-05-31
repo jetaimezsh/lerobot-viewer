@@ -44,6 +44,7 @@ button {
   color: #fff;
   cursor: pointer;
   font-weight: 650;
+  white-space: nowrap;
 }
 
 button:hover {
@@ -973,6 +974,7 @@ h3 {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 #applyEditPlan {
