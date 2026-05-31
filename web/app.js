@@ -135,6 +135,15 @@ const els = {
   backtestChart: document.getElementById("backtestChart"),
 };
 
+// Expose folder-browser entry points on window so onclick handlers
+// work even if JS event listeners silently fail to attach.
+window._openMergeBrowser = function () {
+  openFolderBrowser(els.mergePaths, function (dir) { addMergePath(dir); els.mergePaths.value = ""; });
+};
+window._openCheckpointBrowser = function () {
+  openFolderBrowser(els.checkpointPath, function (dir) { els.checkpointPath.value = dir; });
+};
+
 const palette = ["#087f8c", "#b76e00", "#2f6fbb", "#7a5195", "#2f9e44", "#c92a2a", "#5f6c72", "#805ad5"];
 
 async function api(path, options = {}) {
@@ -1885,9 +1894,12 @@ function clearMergeList() {
 
 // ── Folder Browser for merge path input ────────────────────────────────
 function openFolderBrowser(targetInput, onSelect) {
-  if (!els.folderBrowser) return;
+  if (!els.folderBrowser) {
+    console.error("openFolderBrowser: #folderBrowser missing from DOM");
+    return;
+  }
   els.folderBrowser.style.display = "flex";
-  // Store callback to use when user clicks "选择此目录".
+  console.log("openFolderBrowser: opened with startDir =", (targetInput && targetInput.value) || "");
   state._fbOnSelect = onSelect;
   state._fbTarget = targetInput;
   const startDir = (targetInput && targetInput.value) ? targetInput.value.trim() : "";
@@ -1897,6 +1909,7 @@ function openFolderBrowser(targetInput, onSelect) {
 function closeFolderBrowser() {
   if (!els.folderBrowser) return;
   els.folderBrowser.style.display = "none";
+  console.log("closeFolderBrowser: closed");
 }
 
 async function navigateFolderBrowser(dir) {
@@ -2202,9 +2215,7 @@ els.strictValidateDataset.addEventListener("click", strictValidateCurrentDataset
 els.runEditDryRun.addEventListener("click", runEditDryRun);
 els.applyEditPlan.addEventListener("click", applyEditPlan);
 els.addCurrentDatasetToMerge.addEventListener("click", addCurrentDatasetToMerge);
-if (els.addMergePathBtn) els.addMergePathBtn.addEventListener("click", () => {
-  openFolderBrowser(els.mergePaths, (dir) => { addMergePath(dir); els.mergePaths.value = ""; });
-});
+// addMergePathBtn uses onclick in HTML for robustness
 els.clearMergeList.addEventListener("click", clearMergeList);
 els.validateMerge.addEventListener("click", validateMergePlan);
 els.applyMerge.addEventListener("click", applyMergePlan);
@@ -2268,10 +2279,7 @@ els.checkModelEnv.addEventListener("click", loadModelEnv);
 els.refreshModels.addEventListener("click", loadModels);
 els.registerModel.addEventListener("click", registerCurrentModel);
 
-// Checkpoint path: folder browser button
-if (els.browseCheckpoint) els.browseCheckpoint.addEventListener("click", () => {
-  openFolderBrowser(els.checkpointPath, (dir) => { els.checkpointPath.value = dir; });
-});
+// browseCheckpoint uses onclick in HTML for robustness
 
 // Checkpoint path: autocomplete via /api/path/suggest
 if (els.checkpointPath) els.checkpointPath.addEventListener("input", async () => {

@@ -252,7 +252,7 @@
 
             <div class="merge-controls">
               <button id="addCurrentDatasetToMerge" type="button">+ 加入当前数据集</button>
-              <button id="addMergePathBtn" type="button">+ 添加路径</button>
+              <button id="addMergePathBtn" type="button" onclick="window._openMergeBrowser && window._openMergeBrowser()">+ 添加路径</button>
               <button id="clearMergeList" type="button">清空</button>
             </div>
 
@@ -301,7 +301,7 @@
               <input id="modelName" type="text" placeholder="模型名称，例如 ACT pusht">
               <div style="display:flex; gap:8px;">
                 <input id="checkpointPath" type="text" placeholder="checkpoint 路径，例如 /data/checkpoints/pretrained_model" style="flex:1;">
-                <button id="browseCheckpoint" type="button" style="flex-shrink:0;">选择目录</button>
+                <button id="browseCheckpoint" type="button" style="flex-shrink:0;" onclick="window._openCheckpointBrowser && window._openCheckpointBrowser()">选择目录</button>
               </div>
               <select id="modelAdapterType">
                 <option value="lerobot_official">LeRobot 官方 checkpoint</option>
