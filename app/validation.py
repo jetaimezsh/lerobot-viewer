@@ -129,10 +129,28 @@ def validate_info(root: Path, info: dict[str, Any], result: dict[str, Any]) -> N
     for key in ["features", "fps", "data_path", "total_episodes", "total_frames", "total_tasks"]:
         if key not in info:
             result["errors"].append(f"info.json 缺少字段: {key}")
+    for key in ["chunks_size", "data_files_size_in_mb", "video_files_size_in_mb"]:
+        if key not in info:
+            result["warnings"].append(f"info.json 缺少字段: {key}（v3.0 建议包含）")
     if any(feature.get("dtype") == "video" for feature in info.get("features", {}).values()) and not info.get("video_path"):
         result["errors"].append("info.json 有 video feature 但缺少 video_path")
     if not (root / "meta/stats.json").exists():
         result["errors"].append("缺少 meta/stats.json")
+    # Validate video feature video_info completeness.
+    for video_key, feature in info.get("features", {}).items():
+        if feature.get("dtype") != "video":
+            continue
+        video_info = feature.get("video_info")
+        if not isinstance(video_info, dict):
+            result["errors"].append(f"video feature {video_key} 缺少 video_info")
+            continue
+        for video_field in ["video.fps", "video.codec", "video.pix_fmt"]:
+            if video_field not in video_info:
+                result["errors"].append(f"video feature {video_key} video_info 缺少 {video_field}")
+        if "has_audio" not in video_info:
+            result["warnings"].append(f"video feature {video_key} video_info 缺少 has_audio")
+        if "is_depth_map" not in video_info:
+            result["warnings"].append(f"video feature {video_key} video_info 缺少 is_depth_map")
 
 
 def validate_tasks(tasks: pd.DataFrame, info: dict[str, Any], result: dict[str, Any]) -> None:

@@ -607,6 +607,38 @@ def base_episode_row(episode: pd.Series) -> dict[str, Any]:
     }
 
 
+_BUILTIN_ENCODERS: dict[str, str] = {
+    "h264": "libx264",
+    "hevc": "libx265",
+    "av1": "libaom-av1",
+    "vp9": "libvpx-vp9",
+}
+
+
+def _fetch_encoder_list(executable: str) -> set[str]:
+    """Return every video encoder name advertised by this ffmpeg binary."""
+    result = subprocess.run(
+        [executable, "-encoders"],
+        text=True,
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
+    if result.returncode != 0:
+        return set()
+    encoders: set[str] = set()
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Encoder lines begin with " V..... " or " V....D " etc.
+        if stripped[0] == "V":
+            parts = stripped.split()
+            if len(parts) >= 2:
+                encoders.add(parts[1])
+    return encoders
+
+
 def write_edited_videos(cache: Any, video_jobs: list[dict[str, Any]], episodes: pd.DataFrame, output_path: Path) -> dict[str, dict[str, Any]]:
     executable = ffmpeg_executable()
     if not executable:
@@ -617,6 +649,7 @@ def write_edited_videos(cache: Any, video_jobs: list[dict[str, Any]], episodes: 
     if not video_jobs:
         raise RuntimeError("video edit produced no output episodes")
 
+    available_encoders = _fetch_encoder_list(executable)
     output_path.mkdir(parents=True, exist_ok=True)
     video_info_overrides: dict[str, dict[str, Any]] = {}
     for video_key in cache.video_keys:
@@ -624,11 +657,24 @@ def write_edited_videos(cache: Any, video_jobs: list[dict[str, Any]], episodes: 
         output_video.parent.mkdir(parents=True, exist_ok=True)
         first_source_video = cache.video_file_for_episode(video_jobs[0]["source_episode"], video_key)
         encoding = video_encoding_for_key(cache, video_key, first_source_video, fps)
+        builtin_encoder = _BUILTIN_ENCODERS.get(encoding["codec"])
+        if builtin_encoder and builtin_encoder not in available_encoders:
+            fallback = _pick_encoder_from_set(available_encoders, encoding["codec"])
+            if not fallback:
+                raise RuntimeError(
+                    f"No encoder available for {encoding['codec']}. "
+                    "Please install ffmpeg with the required encoder: "
+                    "conda install -c conda-forge ffmpeg"
+                )
+            encoding["encoder_options"] = ffmpeg_encoder_options(
+                encoding["codec"], encoding["keyframe_interval"], encoder=fallback
+            )
         video_info_overrides[video_key] = {
             "video.fps": encoding["fps"],
             "video.codec": encoding["codec"],
             "video.pix_fmt": encoding["pix_fmt"],
             "has_audio": False,
+            "is_depth_map": False,
         }
         cumulative = 0.0
         with tempfile.TemporaryDirectory(dir=output_path) as directory:
@@ -713,7 +759,9 @@ def write_edited_videos(cache: Any, video_jobs: list[dict[str, Any]], episodes: 
     return video_info_overrides
 
 
-def video_encoding_for_key(cache: Any, video_key: str, source_video: Path, dataset_fps: float) -> dict[str, Any]:
+def video_encoding_for_key(
+    cache: Any, video_key: str, source_video: Path, dataset_fps: float, encoder: str | None = None
+) -> dict[str, Any]:
     feature = cache.features.get(video_key, {})
     video_info = feature.get("video_info") or {}
     stream_info = ffprobe_video_stream(source_video)
@@ -726,7 +774,7 @@ def video_encoding_for_key(cache: Any, video_key: str, source_video: Path, datas
         "pix_fmt": pix_fmt,
         "fps": fps,
         "keyframe_interval": keyframe_interval,
-        "encoder_options": ffmpeg_encoder_options(codec, keyframe_interval),
+        "encoder_options": ffmpeg_encoder_options(codec, keyframe_interval, encoder=encoder),
     }
 
 
@@ -740,12 +788,13 @@ def normalize_video_codec(codec: Any) -> str:
     return aliases.get(normalized, normalized)
 
 
-def ffmpeg_encoder_options(codec: str, keyframe_interval: int | None = None) -> list[str]:
+def ffmpeg_encoder_options(codec: str, keyframe_interval: int | None = None, encoder: str | None = None) -> list[str]:
     gop_options = ["-g", str(keyframe_interval)] if keyframe_interval and keyframe_interval > 0 else []
     if codec == "av1":
+        chosen = encoder or "libaom-av1"
         return [
             "-c:v",
-            "libaom-av1",
+            chosen,
             "-usage",
             "realtime",
             "-cpu-used",
@@ -765,30 +814,61 @@ def ffmpeg_encoder_options(codec: str, keyframe_interval: int | None = None) -> 
             *gop_options,
         ]
     if codec == "h264":
-        return [
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "18",
-            *gop_options,
-            *(["-keyint_min", str(keyframe_interval), "-sc_threshold", "0"] if keyframe_interval and keyframe_interval > 0 else []),
-        ]
+        chosen = encoder or "libx264"
+        return _build_h264_options(chosen, keyframe_interval, gop_options)
     if codec == "hevc":
-        return [
-            "-c:v",
-            "libx265",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "23",
-            *gop_options,
-            *(["-keyint_min", str(keyframe_interval), "-sc_threshold", "0"] if keyframe_interval and keyframe_interval > 0 else []),
-        ]
+        chosen = encoder or "libx265"
+        return _build_hevc_options(chosen, keyframe_interval, gop_options)
     if codec == "vp9":
-        return ["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "6", "-crf", "32", "-b:v", "0", *gop_options]
+        chosen = encoder or "libvpx-vp9"
+        return ["-c:v", chosen, "-deadline", "realtime", "-cpu-used", "6", "-crf", "32", "-b:v", "0", *gop_options]
     raise RuntimeError(f"unsupported source video codec for frame-accurate trim: {codec}")
+
+
+def _build_h264_options(encoder: str, keyframe_interval: int | None, gop_options: list[str]) -> list[str]:
+    """Build ffmpeg options for H.264 encoding, supporting both software and hardware encoders."""
+    opts = ["-c:v", encoder]
+    if encoder == "libx264":
+        opts.extend(["-preset", "veryfast", "-crf", "18"])
+        if keyframe_interval and keyframe_interval > 0:
+            opts.extend(["-keyint_min", str(keyframe_interval), "-sc_threshold", "0"])
+    elif encoder == "h264_nvenc":
+        opts.extend(["-preset", "p1", "-cq", "18", "-rc", "vbr"])
+    elif encoder == "h264_vaapi":
+        opts.extend(["-rc_mode", "CQP", "-qp", "18"])
+    elif encoder == "h264_amf":
+        opts.extend(["-usage", "lowlatency", "-qp_i", "18", "-qp_p", "18"])
+    elif encoder == "h264_qsv":
+        opts.extend(["-preset", "veryfast", "-global_quality", "18"])
+    elif encoder == "h264_v4l2m2m":
+        opts.extend(["-qp", "18"])
+    else:
+        opts.extend(["-crf", "18"])
+    opts.extend(gop_options)
+    return opts
+
+
+def _build_hevc_options(encoder: str, keyframe_interval: int | None, gop_options: list[str]) -> list[str]:
+    """Build ffmpeg options for HEVC encoding, supporting both software and hardware encoders."""
+    opts = ["-c:v", encoder]
+    if encoder == "libx265":
+        opts.extend(["-preset", "veryfast", "-crf", "23"])
+        if keyframe_interval and keyframe_interval > 0:
+            opts.extend(["-keyint_min", str(keyframe_interval), "-sc_threshold", "0"])
+    elif encoder == "hevc_nvenc":
+        opts.extend(["-preset", "p1", "-cq", "23", "-rc", "vbr"])
+    elif encoder == "hevc_vaapi":
+        opts.extend(["-rc_mode", "CQP", "-qp", "23"])
+    elif encoder == "hevc_amf":
+        opts.extend(["-usage", "lowlatency", "-qp_i", "23", "-qp_p", "23"])
+    elif encoder == "hevc_qsv":
+        opts.extend(["-preset", "veryfast", "-global_quality", "23"])
+    elif encoder == "hevc_v4l2m2m":
+        opts.extend(["-qp", "23"])
+    else:
+        opts.extend(["-crf", "23"])
+    opts.extend(gop_options)
+    return opts
 
 
 def ffprobe_video_stream(path: Path) -> dict[str, Any]:
@@ -943,6 +1023,57 @@ def ffmpeg_concat_path(path: Path) -> str:
     return str(path.resolve()).replace("\\", "/").replace("'", "'\\''")
 
 
+_H264_ENCODER_PREFERENCES = [
+    "libx264",
+    "h264_vaapi",
+    "h264_nvenc",
+    "h264_amf",
+    "h264_qsv",
+    "h264_v4l2m2m",
+]
+_HEVC_ENCODER_PREFERENCES = [
+    "libx265",
+    "hevc_vaapi",
+    "hevc_nvenc",
+    "hevc_amf",
+    "hevc_qsv",
+    "hevc_v4l2m2m",
+]
+_AV1_ENCODER_PREFERENCES = [
+    "libaom-av1",
+    "libsvtav1",
+    "av1_vaapi",
+    "av1_nvenc",
+    "av1_amf",
+    "av1_qsv",
+]
+_VP9_ENCODER_PREFERENCES = [
+    "libvpx-vp9",
+    "vp9_vaapi",
+    "vp9_qsv",
+]
+
+_ENCODER_PREFERENCES: dict[str, list[str]] = {
+    "h264": _H264_ENCODER_PREFERENCES,
+    "hevc": _HEVC_ENCODER_PREFERENCES,
+    "av1": _AV1_ENCODER_PREFERENCES,
+    "vp9": _VP9_ENCODER_PREFERENCES,
+}
+
+
+def available_encoder_for_codec(executable: str, codec: str) -> str | None:
+    """Return the best available encoder name for *codec* on this ffmpeg binary."""
+    return _pick_encoder_from_set(_fetch_encoder_list(executable), codec)
+
+
+def _pick_encoder_from_set(available: set[str], codec: str) -> str | None:
+    """Pick the best available encoder for *codec* from a pre-fetched set."""
+    for encoder in _ENCODER_PREFERENCES.get(codec, []):
+        if encoder in available:
+            return encoder
+    return None
+
+
 def write_dataset(
     cache: Any,
     frames: pd.DataFrame,
@@ -969,6 +1100,12 @@ def write_dataset(
     info["total_tasks"] = total_tasks
     info["splits"] = {"train": f"0:{len(episodes)}"}
     info["data_path"] = "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet"
+
+    # Ensure required v3.0 fields have sensible defaults (per LeRobot official spec).
+    info.setdefault("chunks_size", 1000)
+    info.setdefault("data_files_size_in_mb", 100.0)
+    info.setdefault("video_files_size_in_mb", 500.0)
+
     has_video_features = any(feature.get("dtype") == "video" for feature in info.get("features", {}).values())
     if has_video_features:
         info["video_path"] = info.get("video_path", "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4")
@@ -978,6 +1115,8 @@ def write_dataset(
                 continue
             video_info = feature.setdefault("video_info", {})
             video_info.update(override)
+            # Ensure every video feature declares is_depth_map (required by v3.0 spec).
+            video_info.setdefault("is_depth_map", False)
     elif "video_path" in info:
         info.pop("video_path")
     with (output_path / "meta/info.json").open("w", encoding="utf-8") as f:
