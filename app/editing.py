@@ -437,6 +437,21 @@ def apply_merge_plan(caches: list[Any], output_path: Path, overwrite: bool = Fal
     v_overrides = None
     if caches[0].video_keys:
         v_overrides = write_merged_videos(caches, merged["video_jobs"], merged["episodes"], output_path)
+
+    # Compute the combined source total_frames so _rebuild_stats
+    # scales video feature stats correctly across all source datasets.
+    merge_source_total = sum(int(c.info.get("total_frames", 0)) for c in caches)
+    # Use the first cache that has video_keys as the source of video
+    # pixel stats (mean/std are per-pixel constants, independent of
+    # which dataset they came from).
+    merge_source_stats = None
+    for c in caches:
+        if c.video_keys:
+            merge_source_stats = _read_source_stats(c)
+            break
+    if merge_source_stats is None:
+        merge_source_stats = _read_source_stats(caches[0])
+
     write_dataset(
         cache=caches[0],
         frames=merged["frames"],
@@ -444,6 +459,8 @@ def apply_merge_plan(caches: list[Any], output_path: Path, overwrite: bool = Fal
         output_path=output_path,
         tasks_df=merged["tasks"],
         video_info_overrides=v_overrides,
+        stats_source_total=merge_source_total,
+        stats_source=merge_source_stats,
     )
     validation = validate_lerobot_v3_dataset(output_path)
     if not validation["valid"]:
@@ -1452,6 +1469,8 @@ def write_dataset(
     output_path: Path,
     tasks_df: pd.DataFrame | None = None,
     video_info_overrides: dict[str, dict[str, Any]] | None = None,
+    stats_source_total: int | None = None,
+    stats_source: dict[str, Any] | None = None,
 ) -> None:
     (output_path / "data/chunk-000").mkdir(parents=True, exist_ok=True)
     (output_path / "meta/episodes/chunk-000").mkdir(parents=True, exist_ok=True)
@@ -1497,7 +1516,7 @@ def write_dataset(
     with (output_path / "meta/info.json").open("w", encoding="utf-8") as f:
         json.dump(clean_json_value(info), f, ensure_ascii=False, indent=2)
 
-    stats = _rebuild_stats(frames, cache)
+    stats = _rebuild_stats(frames, cache, source_total=stats_source_total, source_stats=stats_source)
     with (output_path / "meta/stats.json").open("w", encoding="utf-8") as f:
         json.dump(clean_json_value(stats), f, ensure_ascii=False, indent=2)
 
@@ -1510,7 +1529,12 @@ def flatten_stats_for_episode(df: pd.DataFrame, features: dict[str, dict[str, An
     return result
 
 
-def _rebuild_stats(frames: pd.DataFrame, cache: Any) -> dict[str, dict[str, Any]]:
+def _rebuild_stats(
+    frames: pd.DataFrame,
+    cache: Any,
+    source_total: int | None = None,
+    source_stats: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Build output stats.json.
 
     - Non-video features: recompute min / max / mean / std / count from
@@ -1521,11 +1545,17 @@ def _rebuild_stats(frames: pd.DataFrame, cache: Any) -> dict[str, dict[str, Any]
       only samples images for video features, so ``count`` is a sample
       count, not ``total_frames``.  We adjust it to keep the sampling
       ratio consistent after removing frames.
+
+    *source_total* and *source_stats* override the values read from
+    *cache* — used by the merge path where the combined source spans
+    multiple datasets.
     """
-    source_stats = _read_source_stats(cache)
+    if source_stats is None:
+        source_stats = _read_source_stats(cache)
+    if source_total is None:
+        source_total = int(cache.info.get("total_frames", 0))
     stats: dict[str, dict[str, Any]] = {}
 
-    source_total = int(cache.info.get("total_frames", 0))
     output_total = int(len(frames))
     ratio = output_total / max(source_total, 1)
 
