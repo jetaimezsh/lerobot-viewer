@@ -119,30 +119,13 @@ def _info_type_precheck(root: Path) -> list[str]:
         return ["info.json is not valid JSON"]
 
     issues: list[str] = []
-    # fps declared as int in v3.0 spec.
-    fps = info.get("fps")
-    if isinstance(fps, float) and not isinstance(fps, bool):
-        issues.append(f"info.fps is float ({fps}), should be int")
-    for field in ("total_episodes", "total_frames", "total_tasks", "chunks_size"):
+    # v3.0 spec integer fields — float values cause
+    #   "Unknown format code 'd' for object of type 'float'"
+    # when LeRobot internally formats them.
+    for field in ("fps", "total_episodes", "total_frames", "total_tasks", "chunks_size"):
         val = info.get(field)
         if isinstance(val, float) and not isinstance(val, bool):
             issues.append(f"info.{field} is float ({val}), should be int")
-
-    for vk, feat in info.get("features", {}).items():
-        if not isinstance(feat, dict):
-            continue
-        # Official key is "info"; accept either.
-        vi = feat.get("info") or feat.get("video_info")
-        if not isinstance(vi, dict):
-            continue
-        for vi_field in ("video.fps",):
-            v = vi.get(vi_field)
-            if isinstance(v, float) and not isinstance(v, bool) and v == int(v):
-                issues.append(f"features.{vk}.video_info.{vi_field} is float ({v}), should be int")
-        for vi_field in ("has_audio", "is_depth_map"):
-            v = vi.get(vi_field)
-            if v is not None and not isinstance(v, bool):
-                issues.append(f"features.{vk}.video_info.{vi_field} is not bool: {type(v).__name__} = {v!r}")
     return issues
 
 
@@ -178,55 +161,108 @@ def read_episodes(root: Path) -> pd.DataFrame:
     return df.sort_values("episode_index").reset_index(drop=True)
 
 
-def validate_info(root: Path, info: dict[str, Any], result: dict[str, Any]) -> None:
-    if info.get("codebase_version") != "v3.0":
-        result["errors"].append(f"codebase_version 不是 v3.0: {info.get('codebase_version')}")
-    for key in ["features", "fps", "data_path", "total_episodes", "total_frames", "total_tasks"]:
-        if key not in info:
-            result["errors"].append(f"info.json 缺少字段: {key}")
-    for key in ["chunks_size", "data_files_size_in_mb", "video_files_size_in_mb"]:
-        if key not in info:
-            result["warnings"].append(f"info.json 缺少字段: {key}（v3.0 建议包含）")
+# ---------------------------------------------------------------------------
+# LeRobot v3.0 info.json field classification (per official specification)
+# ---------------------------------------------------------------------------
+# Hard required (dataset won't load without them):
+#   codebase_version, fps, features, data_path
+#   + video_path (if any feature has dtype="video")
+#
+# Spec-defined with defaults (LeRobot fills in if missing):
+#   chunks_size (default 1000), data_files_size_in_mb (default 100.0),
+#   video_files_size_in_mb (default 500.0)
+#
+# Aggregated from data files (inferred if missing):
+#   total_episodes, total_frames, total_tasks
+#
+# Optional / auto-detected:
+#   robot_type, splits, feature.info (video metadata, auto-detected from
+#   video file via ffprobe)
+#
+# v3.0 integer fields (MUST be Python int, not float — {:d} formatting):
+#   fps, total_episodes, total_frames, total_tasks, chunks_size
+# ---------------------------------------------------------------------------
 
-    # Type checks: LeRobot official code may use {:d} format on these.
-    for int_field in ("fps", "total_episodes", "total_frames", "total_tasks", "chunks_size"):
-        val = info.get(int_field)
-        if isinstance(val, float) and not isinstance(val, bool):
-            result["warnings"].append(
-                f"info.{int_field} 是 float ({val}) 而非 int — LeRobot 官方加载可能报错"
+_V3_REQUIRED_FIELDS = {"codebase_version", "fps", "features", "data_path"}
+_V3_DEFAULTED_FIELDS = {"chunks_size", "data_files_size_in_mb", "video_files_size_in_mb"}
+_V3_INT_FIELDS = {"fps", "total_episodes", "total_frames", "total_tasks", "chunks_size"}
+
+
+def validate_info(root: Path, info: dict[str, Any], result: dict[str, Any]) -> None:
+    # --- codebase_version ------------------------------------------------
+    cv = info.get("codebase_version")
+    if cv != "v3.0":
+        result["errors"].append(
+            f"codebase_version 不是 v3.0: {cv}（此工具仅支持 v3.0）"
+        )
+
+    # --- hard required fields --------------------------------------------
+    for key in sorted(_V3_REQUIRED_FIELDS):
+        if key not in info:
+            result["errors"].append(
+                f"info.json 缺少必需字段: {key}（v3.0 规范要求）"
             )
 
-    if any(feature.get("dtype") == "video" for feature in info.get("features", {}).values()) and not info.get("video_path"):
-        result["errors"].append("info.json 有 video feature 但缺少 video_path")
+    # --- video_path (conditional required) --------------------------------
+    has_video = any(
+        f.get("dtype") == "video" for f in info.get("features", {}).values()
+        if isinstance(f, dict)
+    )
+    if has_video and not info.get("video_path"):
+        result["errors"].append(
+            "info.json 有 video feature 但缺少 video_path（v3.0 规范要求）"
+        )
+
+    # --- spec-defined with defaults ---------------------------------------
+    for key in sorted(_V3_DEFAULTED_FIELDS):
+        if key not in info:
+            result["warnings"].append(
+                f"info.json 缺少建议字段: {key}（官方有默认值，不影响加载）"
+            )
+
+    # --- aggregated fields: warn if missing (LeRobot infers them) ---------
+    for key in ("total_episodes", "total_frames", "total_tasks"):
+        if key not in info:
+            result["warnings"].append(
+                f"info.json 缺少字段: {key}（官方从数据文件推测，不影响加载）"
+            )
+
+    # --- integer type checks (v3.0 spec: these MUST be int) ---------------
+    for field in sorted(_V3_INT_FIELDS):
+        val = info.get(field)
+        if val is None:
+            continue
+        if isinstance(val, float) and not isinstance(val, bool):
+            # float here causes "Unknown format code 'd' for object of type
+            # 'float'" when LeRobot internally formats these values.
+            if field in _V3_REQUIRED_FIELDS:
+                result["errors"].append(
+                    f"info.{field} 类型错误: 是 float ({val})，v3.0 规范要求 int"
+                )
+            else:
+                result["warnings"].append(
+                    f"info.{field} 是 float ({val}) 而非 int — 官方加载可能报错"
+                )
+
+    # --- stats.json -------------------------------------------------------
     if not (root / "meta/stats.json").exists():
-        result["errors"].append("缺少 meta/stats.json")
-    # Validate video feature completeness.
-    # Official LeRobot library auto-detects video_info from video files when
-    # the "info" dict is missing (see update_video_info in lerobot_dataset.py),
-    # so a missing info sub-dict is a warning, not an error.
+        result["errors"].append("缺少 meta/stats.json（v3.0 规范要求）")
+
+    # --- video feature info (auto-detected, not required) -----------------
     for video_key, feature in info.get("features", {}).items():
+        if not isinstance(feature, dict):
+            continue
         if feature.get("dtype") != "video":
             continue
-        # Official spec uses "info"; some datasets use "video_info". Accept either.
+        # Official key is "info"; older versions of this tool wrote "video_info".
         video_info = feature.get("info") or feature.get("video_info")
         if not isinstance(video_info, dict):
+            # LeRobot auto-detects this from the video file — not an error.
             result["warnings"].append(
-                f"video feature {video_key} 缺少 info（官方库会从视频文件自动探测，不影响加载）"
+                f"video feature {video_key} 缺少 info 字典"
+                "（官方库会从视频文件自动探测，不影响加载）"
             )
             continue
-        for video_field in ["video.fps", "video.codec", "video.pix_fmt"]:
-            if video_field not in video_info:
-                result["errors"].append(f"video feature {video_key} video_info 缺少 {video_field}")
-        # video.fps declared as int in many datasets — float can break {:d} formatting.
-        vfps = video_info.get("video.fps")
-        if isinstance(vfps, float) and not isinstance(vfps, bool) and vfps == int(vfps):
-            result["warnings"].append(
-                f"video feature {video_key} video_info.video.fps 是 float ({vfps}) 而非 int"
-            )
-        if "has_audio" not in video_info:
-            result["warnings"].append(f"video feature {video_key} video_info 缺少 has_audio")
-        if "is_depth_map" not in video_info:
-            result["warnings"].append(f"video feature {video_key} video_info 缺少 is_depth_map")
 
 
 def validate_tasks(tasks: pd.DataFrame, info: dict[str, Any], result: dict[str, Any]) -> None:
