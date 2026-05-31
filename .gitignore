@@ -3,6 +3,7 @@ sample_datasets/
 tmp_multiview_dataset/
 .viewer_history.json
 logs/
+state/
 __pycache__/
 *.py[cod]
 *.pyo

@@ -14,7 +14,7 @@ from urllib.parse import unquote
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -24,14 +24,18 @@ from app.backtesting import (
     ModelLoadRequest,
     ModelRegisterRequest,
     delete_model,
+    get_backtest_job,
     inspect_model,
+    list_backtest_jobs,
     list_models,
     load_model,
     model_runtime_status,
     register_model,
     run_backtest,
+    submit_backtest_job,
     unload_model,
 )
+from app.backtest_store import export_backtest_run, list_backtest_runs, load_backtest_run
 from app.editing import (
     EditApplyRequest,
     EditDryRunRequest,
@@ -377,6 +381,65 @@ def backtest_run(request: BacktestRunRequest) -> dict[str, Any]:
     except Exception as exc:
         log_failure("backtest_run", None, exc, {"models": request.model_ids})
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/backtests/jobs")
+def backtest_job_create(request: BacktestRunRequest) -> dict[str, Any]:
+    try:
+        result = submit_backtest_job(request, load_backtest_cache)
+        log_operation(
+            "backtest_job_create",
+            "success",
+            target=result.get("job_id"),
+            details={"models": request.model_ids, "episodes": [item.model_dump() for item in request.episodes]},
+        )
+        return result
+    except Exception as exc:
+        log_failure("backtest_job_create", None, exc, {"models": request.model_ids})
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/backtests/jobs")
+def backtest_jobs() -> list[dict[str, Any]]:
+    return list_backtest_jobs()
+
+
+@app.get("/api/backtests/jobs/{job_id}")
+def backtest_job(job_id: str) -> dict[str, Any]:
+    try:
+        return get_backtest_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/backtests/runs")
+def backtest_runs(limit: int = Query(100, ge=1, le=500)) -> list[dict[str, Any]]:
+    return list_backtest_runs(limit)
+
+
+@app.get("/api/backtests/runs/{run_id}")
+def backtest_run_result(run_id: str) -> dict[str, Any]:
+    try:
+        return load_backtest_run(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/backtests/runs/{run_id}/export")
+def backtest_run_export(run_id: str, format: str = Query("json")) -> Response:
+    try:
+        run = load_backtest_run(run_id)
+        content, media_type, filename = export_backtest_run(run, format)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    log_operation("backtest_export", "success", target=run_id, details={"format": format})
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def load_backtest_cache(raw_path: str) -> DatasetCache:

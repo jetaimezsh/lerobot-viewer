@@ -338,6 +338,7 @@
           <div class="model-actions">
             <button id="runBacktest" type="button">运行回测</button>
             <button id="clearBacktest" type="button">清空结果</button>
+            <button id="refreshBacktestHistory" type="button">刷新历史</button>
           </div>
         </section>
         <div class="backtest-grid">
@@ -360,9 +361,14 @@
           </section>
           <section class="surface">
             <div class="section-kicker">Backtest Result</div>
+            <div id="backtestExportActions" class="backtest-export-actions empty">运行回测后可导出报告。</div>
             <div id="backtestResult" class="backtest-result empty">尚未运行回测。</div>
           </section>
         </div>
+        <section class="surface backtest-history-surface">
+          <div class="section-kicker">Backtest History</div>
+          <div id="backtestHistory" class="backtest-history empty">暂无回测历史。</div>
+        </section>
         <section class="surface backtest-chart-surface">
           <div class="chart-toolbar">
             <div>

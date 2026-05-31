@@ -1067,6 +1067,90 @@ h3 {
   gap: 10px;
 }
 
+.backtest-export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.backtest-export-actions.empty {
+  display: block;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+.backtest-export-actions a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 7px;
+  background: #edf2f7;
+  color: #334155;
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.backtest-export-actions a:hover {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.backtest-history-surface {
+  margin-bottom: 16px;
+}
+
+.backtest-history {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.backtest-history.empty {
+  padding: 12px;
+  color: var(--muted);
+  background: var(--soft);
+}
+
+.backtest-history table {
+  width: 100%;
+  min-width: 900px;
+  border-collapse: collapse;
+}
+
+.backtest-history th,
+.backtest-history td {
+  border-bottom: 1px solid var(--line);
+  padding: 9px 10px;
+  text-align: left;
+  vertical-align: top;
+  font-size: 13px;
+}
+
+.backtest-history th {
+  background: #f8fafc;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.backtest-history tr:last-child td {
+  border-bottom: 0;
+}
+
+.backtest-history button {
+  height: 30px;
+  padding: 0 10px;
+  background: #edf2f7;
+  color: #334155;
+}
+
 .model-card,
 .model-choice,
 .backtest-cell {

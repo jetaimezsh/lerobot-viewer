@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -13,11 +14,14 @@ from app.backtesting import (
     LOADED_ADAPTERS,
     MODEL_REGISTRY,
     MockBacktestAdapter,
+    get_backtest_job,
     model_runtime_status,
     register_model,
     run_backtest,
     run_episode_backtest,
+    submit_backtest_job,
 )
+from app.backtest_store import export_backtest_run, load_backtest_run
 from app.main import DatasetCache
 from scripts.smoke_test import assert_equal, create_no_video_dataset
 from app.backtesting import ModelRegisterRequest
@@ -100,6 +104,61 @@ def check_multi_dataset_backtest_request() -> None:
         assert_equal(len({item["episode_key"] for item in result["results"]}), 2, "multi-dataset episode keys")
         assert_equal(result["results"][0]["dataset_name"], "dataset_a", "first result dataset name")
         assert_equal(result["results"][1]["dataset_name"], "dataset_b", "second result dataset name")
+        persisted = load_backtest_run(result["run_id"])
+        assert_equal(persisted["summary"]["done"], 2, "persisted backtest done count")
+        csv_text, csv_media, csv_name = export_backtest_run(result, "csv")
+        assert_equal("model_id" in csv_text, True, "csv export includes model_id")
+        assert_equal(csv_media.startswith("text/csv"), True, "csv export media type")
+        assert_equal(csv_name.endswith(".csv"), True, "csv export filename")
+        html_text, html_media, html_name = export_backtest_run(result, "html")
+        assert_equal("<table>" in html_text, True, "html export includes table")
+        assert_equal(html_media.startswith("text/html"), True, "html export media type")
+        assert_equal(html_name.endswith(".html"), True, "html export filename")
+
+
+def check_backtest_worker_job() -> None:
+    with tempfile.TemporaryDirectory(dir=PROJECT_ROOT) as directory:
+        work = Path(directory)
+        dataset = work / "dataset"
+        create_no_video_dataset(dataset, [3], task="worker task")
+        caches = {str(dataset.resolve()): DatasetCache(dataset)}
+        model_id = "mock-worker"
+        MODEL_REGISTRY[model_id] = {
+            "id": model_id,
+            "name": "mock worker",
+            "checkpoint_path": str(work / "mock"),
+            "adapter_type": "lerobot_official",
+            "device": "cpu",
+            "script_path": None,
+            "status": "loaded",
+            "loaded": True,
+            "created_at": "test",
+            "inspection": {"valid": True},
+        }
+        LOADED_ADAPTERS[model_id] = MockBacktestAdapter([0.0, 0.0])
+        try:
+            job = submit_backtest_job(
+                BacktestRunRequest(
+                    model_ids=[model_id],
+                    episodes=[BacktestEpisodeRef(dataset_path=str(dataset), episode_index=0)],
+                    max_frames=2,
+                ),
+                lambda path: caches[str(Path(path).resolve())],
+            )
+            latest = job
+            for _ in range(40):
+                latest = get_backtest_job(job["job_id"])
+                if latest["status"] in {"done", "failed"}:
+                    break
+                time.sleep(0.05)
+            assert_equal(latest["status"], "done", "worker job status")
+            assert_equal(latest["summary"]["done"], 1, "worker job done count")
+            assert_equal(bool(latest["run_id"]), True, "worker job persisted run id")
+            persisted = load_backtest_run(latest["run_id"])
+            assert_equal(persisted["summary"]["done"], 1, "worker persisted done count")
+        finally:
+            LOADED_ADAPTERS.pop(model_id, None)
+            MODEL_REGISTRY.pop(model_id, None)
 
 
 def main() -> None:
@@ -111,6 +170,8 @@ def main() -> None:
     print("ok: model registration inspection passed")
     check_multi_dataset_backtest_request()
     print("ok: multi-dataset backtest request passed")
+    check_backtest_worker_job()
+    print("ok: backtest worker job passed")
 
 
 if __name__ == "__main__":

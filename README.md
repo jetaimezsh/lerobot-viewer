@@ -25,7 +25,8 @@ lerobot-viewer/
 │   ├── main.py          # FastAPI 应用、路径补全、历史记录
 │   ├── editing.py       # 编辑/选择导出/合并引擎、视频处理
 │   ├── validation.py    # v3.0 严格校验、官方 LeRobotDataset 加载验证
-│   ├── backtesting.py   # 模型注册/加载/回测
+│   ├── backtesting.py   # 模型注册/加载/回测、后台 worker 队列
+│   ├── backtest_store.py # 回测结果持久化与 JSON/CSV/HTML 导出
 │   └── operation_log.py # JSONL 操作日志
 ├── web/
 │   ├── index.html       # 单页应用
@@ -165,8 +166,11 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 3. 在 **LeRobot 数据 / Episode 播放** 页面点击"加入回测样本池"
 4. 可以切换并加载其他数据集，继续加入不同数据集的 episode
 5. 在 **模型回测 / 回测任务** 页面用表格确认样本所属数据集、路径、episode 编号、帧数、时长、任务和视频路数
-6. 选择一个或多个模型 → 运行回测
+6. 选择一个或多个模型 → 运行回测；任务会提交到后台 worker，页面轮询任务状态
 7. 查看 MAE/RMSE / 维度级 action 对比曲线
+8. 历史结果会写入 `state/backtests/`，可在页面重新打开，也可导出 HTML/CSV/JSON 报告
+
+说明：官方 LeRobot checkpoint 推理在 v3 阶段仅支持 Linux；Windows 可做 checkpoint 管理、数据选择、历史查看和报告导出。
 
 回测 API 支持多数据集 episode 引用：
 

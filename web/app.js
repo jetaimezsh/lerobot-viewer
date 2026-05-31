@@ -131,7 +131,10 @@ const els = {
   backtestModelChoices: document.getElementById("backtestModelChoices"),
   runBacktest: document.getElementById("runBacktest"),
   clearBacktest: document.getElementById("clearBacktest"),
+  refreshBacktestHistory: document.getElementById("refreshBacktestHistory"),
+  backtestExportActions: document.getElementById("backtestExportActions"),
   backtestResult: document.getElementById("backtestResult"),
+  backtestHistory: document.getElementById("backtestHistory"),
   backtestEpisodeSelect: document.getElementById("backtestEpisodeSelect"),
   backtestDimSelect: document.getElementById("backtestDimSelect"),
   showGroundTruth: document.getElementById("showGroundTruth"),
@@ -292,6 +295,7 @@ function setView(viewId) {
   }
   if (viewId === "modelBacktestView") {
     loadModels();
+    loadBacktestHistory();
     renderBacktestSelectionTable();
     requestAnimationFrame(drawBacktestChart);
   }
@@ -1710,9 +1714,10 @@ async function runSelectedBacktest() {
     return;
   }
   els.backtestResult.classList.remove("empty");
-  els.backtestResult.textContent = "正在运行回测...";
+  els.backtestResult.textContent = "正在提交后台回测任务...";
+  renderBacktestExportActions(null);
   try {
-    state.backtestResult = await api("/api/backtests/run", {
+    const job = await api("/api/backtests/jobs", {
       method: "POST",
       body: JSON.stringify({
         model_ids: modelIds,
@@ -1724,10 +1729,60 @@ async function runSelectedBacktest() {
       }),
     });
     state.visibleBacktestModels = new Set(modelIds);
-    renderBacktestResult();
+    renderBacktestJobStatus(job);
+    pollBacktestJob(job.job_id);
   } catch (error) {
     els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测失败</h4><p>${escapeHtml(error.message)}</p></div>`;
   }
+}
+
+async function pollBacktestJob(jobId) {
+  try {
+    while (true) {
+      await delay(900);
+      const job = await api(`/api/backtests/jobs/${encodeURIComponent(jobId)}`);
+      renderBacktestJobStatus(job);
+      if (job.status === "done") {
+        state.backtestResult = job.result || await api(`/api/backtests/runs/${encodeURIComponent(job.run_id)}`);
+        state.visibleBacktestModels = new Set(state.backtestResult.model_ids || []);
+        renderBacktestResult();
+        await loadBacktestHistory();
+        return;
+      }
+      if (job.status === "failed") {
+        els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测失败</h4><p>${escapeHtml(job.error || "后台任务失败")}</p></div>`;
+        await loadBacktestHistory();
+        return;
+      }
+    }
+  } catch (error) {
+    els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测状态读取失败</h4><p>${escapeHtml(error.message)}</p></div>`;
+  }
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function renderBacktestJobStatus(job) {
+  const summary = job.summary || {};
+  els.backtestResult.classList.remove("empty");
+  els.backtestResult.innerHTML = `
+    <div class="result-header">
+      <div>
+        <h4>后台回测任务 ${escapeHtml(job.job_id)}</h4>
+        <p>${escapeHtml(job.status)}${job.run_id ? ` / run ${job.run_id}` : ""}</p>
+      </div>
+      <span class="result-status neutral">${escapeHtml(job.status)}</span>
+    </div>
+    ${formatKeyValueGrid([
+      ["创建时间", job.created_at || "-"],
+      ["开始时间", job.started_at || "-"],
+      ["结束时间", job.finished_at || "-"],
+      ["完成组合", summary.done ?? "-"],
+      ["失败组合", summary.failed ?? "-"],
+    ])}
+  `;
 }
 
 function clearBacktestResult() {
@@ -1735,6 +1790,7 @@ function clearBacktestResult() {
   state.visibleBacktestModels = new Set();
   els.backtestResult.classList.add("empty");
   els.backtestResult.innerHTML = "尚未运行回测。";
+  renderBacktestExportActions(null);
   els.backtestEpisodeSelect.innerHTML = "";
   els.backtestDimSelect.innerHTML = "";
   els.backtestSeriesToggles.innerHTML = "";
@@ -1773,8 +1829,100 @@ function renderBacktestResult() {
       `).join("")}
     </div>
   `;
+  renderBacktestExportActions(run);
   populateBacktestChartControls();
   drawBacktestChart();
+}
+
+function renderBacktestExportActions(run) {
+  if (!els.backtestExportActions) return;
+  if (!run?.run_id) {
+    els.backtestExportActions.classList.add("empty");
+    els.backtestExportActions.innerHTML = "运行回测后可导出报告。";
+    return;
+  }
+  const base = `/api/backtests/runs/${encodeURIComponent(run.run_id)}/export`;
+  els.backtestExportActions.classList.remove("empty");
+  els.backtestExportActions.innerHTML = `
+    <span>导出报告</span>
+    <a href="${base}?format=html" target="_blank" rel="noopener">HTML</a>
+    <a href="${base}?format=csv" target="_blank" rel="noopener">CSV</a>
+    <a href="${base}?format=json" target="_blank" rel="noopener">JSON</a>
+  `;
+}
+
+async function loadBacktestHistory() {
+  if (!els.backtestHistory) return;
+  try {
+    const runs = await api("/api/backtests/runs?limit=50");
+    renderBacktestHistory(runs);
+  } catch (error) {
+    els.backtestHistory.classList.add("empty");
+    els.backtestHistory.textContent = `读取回测历史失败：${error.message}`;
+  }
+}
+
+function renderBacktestHistory(runs) {
+  if (!els.backtestHistory) return;
+  if (!runs.length) {
+    els.backtestHistory.classList.add("empty");
+    els.backtestHistory.innerHTML = "暂无回测历史。";
+    return;
+  }
+  els.backtestHistory.classList.remove("empty");
+  els.backtestHistory.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>时间</th>
+          <th>Run</th>
+          <th>数据集</th>
+          <th>模型数</th>
+          <th>Episode</th>
+          <th>完成</th>
+          <th>失败</th>
+          <th>平均 MAE</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${runs.map((run) => {
+          const summary = run.summary || {};
+          return `
+            <tr>
+              <td>${escapeHtml(run.created_at || "-")}</td>
+              <td><code>${escapeHtml(run.run_id)}</code></td>
+              <td>${escapeHtml((run.dataset_paths || []).map(datasetName).join(", ") || "-")}</td>
+              <td>${escapeHtml((run.model_ids || []).length)}</td>
+              <td>${escapeHtml((run.episodes || []).length)}</td>
+              <td>${escapeHtml(summary.done ?? "-")}</td>
+              <td>${escapeHtml(summary.failed ?? "-")}</td>
+              <td>${escapeHtml(summary.mean_mae ?? "-")}</td>
+              <td>
+                <button type="button" data-backtest-run-id="${escapeAttr(run.run_id)}">查看</button>
+              </td>
+            </tr>
+          `;
+        }).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+async function loadBacktestRun(runId) {
+  const run = await api(`/api/backtests/runs/${encodeURIComponent(runId)}`);
+  state.backtestResult = run;
+  state.visibleBacktestModels = new Set(run.model_ids || []);
+  renderBacktestResult();
+}
+
+function handleBacktestHistoryClick(event) {
+  const runId = event.target?.dataset?.backtestRunId;
+  if (!runId) return;
+  loadBacktestRun(runId).catch((error) => {
+    els.backtestResult.classList.remove("empty");
+    els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>读取历史结果失败</h4><p>${escapeHtml(error.message)}</p></div>`;
+  });
 }
 
 function populateBacktestChartControls() {
@@ -1792,10 +1940,14 @@ function populateBacktestChartControls() {
   const first = done[0];
   const dims = first?.series?.length || 0;
   els.backtestDimSelect.innerHTML = Array.from({ length: dims }, (_, index) => `<option value="${index}">action[${index}]</option>`).join("");
-  els.backtestSeriesToggles.innerHTML = state.models.map((model) => `
+  const modelMap = new Map(state.models.map((model) => [model.id, model.name]));
+  for (const item of done) {
+    if (!modelMap.has(item.model_id)) modelMap.set(item.model_id, item.model_id);
+  }
+  els.backtestSeriesToggles.innerHTML = Array.from(modelMap.entries()).map(([id, name]) => `
     <label class="series-option">
-      <input type="checkbox" value="${escapeAttr(model.id)}" ${state.visibleBacktestModels.has(model.id) ? "checked" : ""}>
-      <span>${escapeHtml(model.name)}</span>
+      <input type="checkbox" value="${escapeAttr(id)}" ${state.visibleBacktestModels.has(id) ? "checked" : ""}>
+      <span>${escapeHtml(name)}</span>
     </label>
   `).join("");
 }
@@ -2414,6 +2566,8 @@ if (els.backtestSelectionTable) {
 if (els.clearBacktestSelection) els.clearBacktestSelection.addEventListener("click", clearBacktestSelection);
 els.runBacktest.addEventListener("click", runSelectedBacktest);
 els.clearBacktest.addEventListener("click", clearBacktestResult);
+if (els.refreshBacktestHistory) els.refreshBacktestHistory.addEventListener("click", loadBacktestHistory);
+if (els.backtestHistory) els.backtestHistory.addEventListener("click", handleBacktestHistoryClick);
 els.backtestEpisodeSelect.addEventListener("change", drawBacktestChart);
 els.backtestDimSelect.addEventListener("change", drawBacktestChart);
 els.showGroundTruth.addEventListener("change", drawBacktestChart);

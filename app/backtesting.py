@@ -6,14 +6,18 @@ import math
 import platform
 import time
 import uuid
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
+from threading import Lock
 from typing import Any, Protocol
 
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field
 
+from app.backtest_store import save_backtest_run
 from app.editing import read_episode_frames, resolve_dataset_path
+from app.operation_log import log_operation
 
 
 class ModelRegisterRequest(BaseModel):
@@ -65,6 +69,9 @@ class BacktestAdapter(Protocol):
 MODEL_REGISTRY: dict[str, dict[str, Any]] = {}
 LOADED_ADAPTERS: dict[str, BacktestAdapter] = {}
 BACKTEST_RUNS: dict[str, dict[str, Any]] = {}
+BACKTEST_JOBS: dict[str, dict[str, Any]] = {}
+BACKTEST_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="backtest-worker")
+BACKTEST_LOCK = Lock()
 
 
 def model_runtime_status() -> dict[str, Any]:
@@ -105,6 +112,7 @@ def model_runtime_status() -> dict[str, Any]:
         "cuda": cuda,
         "missing": missing,
         "registered_models": list_models(),
+        "worker": backtest_worker_status(),
     }
 
 
@@ -355,7 +363,93 @@ def run_backtest(request: BacktestRunRequest, cache_loader: Any) -> dict[str, An
         "results": results,
     }
     BACKTEST_RUNS[run_id] = run
+    save_backtest_run(run)
     return run
+
+
+def submit_backtest_job(request: BacktestRunRequest, cache_loader: Any) -> dict[str, Any]:
+    job_id = uuid.uuid4().hex[:12]
+    job = {
+        "job_id": job_id,
+        "status": "queued",
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "started_at": None,
+        "finished_at": None,
+        "request": request.model_dump(),
+        "summary": None,
+        "run_id": None,
+        "error": None,
+    }
+    with BACKTEST_LOCK:
+        BACKTEST_JOBS[job_id] = job
+    future = BACKTEST_EXECUTOR.submit(_run_backtest_job, job_id, request, cache_loader)
+    with BACKTEST_LOCK:
+        BACKTEST_JOBS[job_id]["future"] = future
+    return public_backtest_job(job)
+
+
+def list_backtest_jobs() -> list[dict[str, Any]]:
+    with BACKTEST_LOCK:
+        jobs = [public_backtest_job(job, include_result=False) for job in BACKTEST_JOBS.values()]
+    return sorted(jobs, key=lambda item: item.get("created_at") or "", reverse=True)
+
+
+def get_backtest_job(job_id: str) -> dict[str, Any]:
+    with BACKTEST_LOCK:
+        job = BACKTEST_JOBS.get(job_id)
+        if not job:
+            raise KeyError(f"backtest job not found: {job_id}")
+        return public_backtest_job(job)
+
+
+def backtest_worker_status() -> dict[str, Any]:
+    with BACKTEST_LOCK:
+        queued = sum(1 for job in BACKTEST_JOBS.values() if job.get("status") == "queued")
+        running = sum(1 for job in BACKTEST_JOBS.values() if job.get("status") == "running")
+    return {
+        "enabled": True,
+        "max_workers": 1,
+        "queued": queued,
+        "running": running,
+        "linux_inference_only": True,
+    }
+
+
+def _run_backtest_job(job_id: str, request: BacktestRunRequest, cache_loader: Any) -> None:
+    with BACKTEST_LOCK:
+        job = BACKTEST_JOBS[job_id]
+        job["status"] = "running"
+        job["started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        run = run_backtest(request, cache_loader)
+        with BACKTEST_LOCK:
+            job = BACKTEST_JOBS[job_id]
+            job["status"] = "done"
+            job["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            job["run_id"] = run.get("run_id")
+            job["summary"] = run.get("summary")
+            job["result"] = run
+        log_operation(
+            "backtest_job_done",
+            "success",
+            target=job_id,
+            details={"run_id": run.get("run_id"), "summary": run.get("summary", {})},
+        )
+    except Exception as exc:
+        with BACKTEST_LOCK:
+            job = BACKTEST_JOBS[job_id]
+            job["status"] = "failed"
+            job["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            job["error"] = str(exc)
+        log_operation("backtest_job_done", "failed", target=job_id, error=str(exc))
+
+
+def public_backtest_job(job: dict[str, Any], include_result: bool = True) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in job.items()
+        if key != "future" and not isinstance(value, Future) and (include_result or key != "result")
+    }
 
 
 def normalize_backtest_episode_refs(request: BacktestRunRequest) -> list[BacktestEpisodeRef]:
@@ -432,7 +526,7 @@ def run_episode_backtest(
             observation = build_observation(frame, cache.features)
             predictions.append(flatten_action(adapter.predict(observation)))
     except Exception as exc:
-        return {"model_id": model_id, "episode_index": episode_index, "status": "failed", "error": str(exc)}
+        return {**source, "model_id": model_id, "episode_index": episode_index, "status": "failed", "error": str(exc)}
 
     predicted = np.array(predictions, dtype=np.float64)
     if predicted.shape != ground_truth.shape:
