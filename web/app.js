@@ -20,6 +20,7 @@ const state = {
   raf: null,
   currentView: "overviewView",
   editMode: "edit",
+  mergePaths: [],   // source of truth for merge path list
   editOperations: [],
   trimDraftStart: null,
   trimDraftEnd: null,
@@ -1764,45 +1765,78 @@ async function applyEditPlan() {
   }
 }
 
+// state.mergePaths is the single source of truth.
+// els.mergePaths (textarea) is for input only — never read as the
+// authoritative list, always written to reflect state.mergePaths.
+
 function mergePathList() {
-  return els.mergePaths.value
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .filter(Boolean);
+  return state.mergePaths.slice();
 }
 
 function setMergePathList(paths) {
-  const deduped = Array.from(new Set(paths));
-  els.mergePaths.value = deduped.join("\n");
+  state.mergePaths = Array.from(new Set(paths));
+  els.mergePaths.value = state.mergePaths.join("\n");
   renderMergePathTable();
+  updateMergePathCount();
 }
 
 function addMergePath(path) {
-  if (!path || !path.trim()) return;
-  const current = mergePathList();
-  if (current.includes(path.trim())) return;
-  setMergePathList([...current, path.trim()]);
+  if (!path || !path.trim()) return 0;
+  const incoming = path.split(/\r?\n/).map((p) => p.trim()).filter(Boolean);
+  if (!incoming.length) return 0;
+  let added = 0;
+  const skipped = [];
+  for (const p of incoming) {
+    if (!state.mergePaths.includes(p)) {
+      state.mergePaths.push(p);
+      added++;
+    } else {
+      skipped.push(p);
+    }
+  }
+  if (added) {
+    els.mergePaths.value = state.mergePaths.join("\n");
+    renderMergePathTable();
+    updateMergePathCount();
+  }
+  // Brief feedback in result area.
+  const parts = [];
+  if (added) parts.push(`已添加 ${added} 个路径`);
+  if (skipped.length) parts.push(`跳过 ${skipped.length} 个重复`);
+  if (parts.length && els.mergeResult) {
+    els.mergeResult.classList.remove("empty");
+    els.mergeResult.innerHTML = `<div class="result-loading">${parts.join("，")}</div>`;
+  }
+  return added;
 }
 
 function removeMergePath(path) {
-  setMergePathList(mergePathList().filter((p) => p !== path));
+  state.mergePaths = state.mergePaths.filter((p) => p !== path);
+  els.mergePaths.value = state.mergePaths.join("\n");
+  renderMergePathTable();
+  updateMergePathCount();
+}
+
+function updateMergePathCount() {
+  const countEl = document.getElementById("mergePathCount");
+  if (countEl) countEl.textContent = state.mergePaths.length ? `${state.mergePaths.length} 个数据集` : "";
 }
 
 function renderMergePathTable() {
   if (!els.mergePathTable) return;
-  const paths = mergePathList();
-  if (!paths.length) {
+  if (!state.mergePaths.length) {
     els.mergePathTable.classList.add("empty");
     els.mergePathTable.innerHTML = `<span class="merge-empty-hint">用上方按钮或下方输入框添加数据集路径</span>`;
+    updateMergePathCount();
     return;
   }
   els.mergePathTable.classList.remove("empty");
-  els.mergePathTable.innerHTML = paths.map((path, i) => `
-    <div class="merge-path-row" data-path="${escapeAttr(path)}">
+  els.mergePathTable.innerHTML = state.mergePaths.map((p, i) => `
+    <div class="merge-path-row" data-path="${escapeAttr(p)}">
       <span class="merge-path-index">${i + 1}</span>
-      <span class="merge-path-text" title="${escapeAttr(path)}">${escapeHtml(path)}</span>
-      <span class="merge-path-status" data-path="${escapeAttr(path)}">-</span>
-      <button type="button" class="merge-path-remove" data-path="${escapeAttr(path)}">✕</button>
+      <span class="merge-path-text" title="${escapeAttr(p)}">${escapeHtml(p)}</span>
+      <span class="merge-path-status" data-path="${escapeAttr(p)}">-</span>
+      <button type="button" class="merge-path-remove" data-path="${escapeAttr(p)}">✕</button>
     </div>
   `).join("");
   for (const btn of els.mergePathTable.querySelectorAll(".merge-path-remove")) {
@@ -1810,6 +1844,7 @@ function renderMergePathTable() {
       removeMergePath(btn.dataset.path);
     });
   }
+  updateMergePathCount();
 }
 
 function addCurrentDatasetToMerge() {
@@ -1821,6 +1856,7 @@ function addCurrentDatasetToMerge() {
 }
 
 function clearMergeList() {
+  state.mergePaths = [];
   els.mergePaths.value = "";
   renderMergePathTable();
   resetMergeStatus();
@@ -2104,8 +2140,11 @@ els.runEditDryRun.addEventListener("click", runEditDryRun);
 els.applyEditPlan.addEventListener("click", applyEditPlan);
 els.addCurrentDatasetToMerge.addEventListener("click", addCurrentDatasetToMerge);
 els.addMergePathBtn.addEventListener("click", () => {
-  addMergePath(els.mergePaths.value.trim());
-  els.mergePaths.value = "";
+  const text = els.mergePaths.value.trim();
+  if (text) {
+    addMergePath(text);
+    els.mergePaths.value = state.mergePaths.join("\n");
+  }
   els.mergePaths.focus();
 });
 els.clearMergeList.addEventListener("click", clearMergeList);
@@ -2116,8 +2155,11 @@ els.applyMerge.addEventListener("click", applyMergePlan);
 els.mergePaths.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
-    addMergePath(els.mergePaths.value.trim());
-    els.mergePaths.value = "";
+    const text = els.mergePaths.value.trim();
+    if (text) {
+      addMergePath(text);
+      els.mergePaths.value = state.mergePaths.join("\n");
+    }
   }
 });
 els.checkModelEnv.addEventListener("click", loadModelEnv);
