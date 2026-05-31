@@ -399,6 +399,25 @@ def dataset_history() -> list[dict[str, Any]]:
     return load_history()
 
 
+class DeleteHistoryRequest(BaseModel):
+    path: str
+
+
+@app.post("/api/history/delete")
+def delete_history_item(request: DeleteHistoryRequest) -> dict[str, Any]:
+    items = load_history()
+    target = str(Path(request.path).expanduser().resolve())
+    new_items = [item for item in items if str(Path(item.get("path", "")).expanduser().resolve()) != target]
+    if len(new_items) == len(items):
+        raise HTTPException(status_code=404, detail="未找到该记录")
+    try:
+        with HISTORY_PATH.open("w", encoding="utf-8") as f:
+            json.dump(new_items, f, ensure_ascii=False, indent=2)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"无法写入历史文件: {exc}")
+    return {"ok": True, "deleted": target}
+
+
 @app.post("/api/edit/dry-run")
 def edit_dry_run(request: EditDryRunRequest) -> dict[str, Any]:
     root = resolve_dataset_path(request.path)

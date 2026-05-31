@@ -393,5 +393,23 @@
   </div>
 
   <script src="/static/app.js?v=20260530-model-backtest-v3"></script>
+<div id="folderBrowser" class="folder-browser-overlay" style="display:none">
+  <div class="folder-browser-dialog">
+    <div class="folder-browser-head">
+      <h4>选择数据集目录</h4>
+      <button id="folderBrowserClose" type="button" class="fb-close">✕</button>
+    </div>
+    <div class="folder-browser-nav">
+      <button id="folderBrowserUp" type="button">⬆ 上级目录</button>
+      <input id="folderBrowserPath" type="text" placeholder="输入路径后按 Enter 跳转">
+    </div>
+    <div id="folderBrowserList" class="folder-browser-list">加载中...</div>
+    <div class="folder-browser-foot">
+      <span id="folderBrowserCurrent" class="fb-current"></span>
+      <button id="folderBrowserSelect" type="button" class="fb-select">选择此目录</button>
+    </div>
+  </div>
+</div>
+
 </body>
 </html>

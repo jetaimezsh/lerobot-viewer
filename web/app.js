@@ -103,6 +103,13 @@ const els = {
   mergeResult: document.getElementById("mergeResult"),
   mergePathTable: document.getElementById("mergePathTable"),
   addMergePathBtn: document.getElementById("addMergePathBtn"),
+  folderBrowser: document.getElementById("folderBrowser"),
+  folderBrowserClose: document.getElementById("folderBrowserClose"),
+  folderBrowserUp: document.getElementById("folderBrowserUp"),
+  folderBrowserPath: document.getElementById("folderBrowserPath"),
+  folderBrowserList: document.getElementById("folderBrowserList"),
+  folderBrowserSelect: document.getElementById("folderBrowserSelect"),
+  folderBrowserCurrent: document.getElementById("folderBrowserCurrent"),
   checkModelEnv: document.getElementById("checkModelEnv"),
   refreshModels: document.getElementById("refreshModels"),
   modelName: document.getElementById("modelName"),
@@ -330,15 +337,32 @@ function renderHistory() {
   els.historyList.innerHTML = state.history.map((item) => {
     const videos = Array.isArray(item.video_keys) ? item.video_keys.length : 0;
     return `
-      <button class="history-item" data-path="${escapeAttr(item.path)}">
-        <strong>${escapeHtml(item.name || item.path)}</strong>
-        <small>${escapeHtml(item.path)}</small>
-        <span>${item.total_episodes ?? "-"} episodes · ${videos} views · ${escapeHtml(item.opened_at || "")}</span>
-      </button>
+      <div class="history-item-row" data-path="${escapeAttr(item.path)}">
+        <button class="history-item">
+          <strong>${escapeHtml(item.name || item.path)}</strong>
+          <small>${escapeHtml(item.path)}</small>
+          <span>${item.total_episodes ?? "-"} episodes · ${videos} views · ${escapeHtml(item.opened_at || "")}</span>
+        </button>
+        <button class="history-delete" data-path="${escapeAttr(item.path)}" title="删除记录">✕</button>
+      </div>
     `;
   }).join("");
-  for (const item of els.historyList.querySelectorAll(".history-item")) {
-    item.addEventListener("click", () => openPath(item.dataset.path));
+  for (const btn of els.historyList.querySelectorAll(".history-item")) {
+    btn.addEventListener("click", () => openPath(btn.dataset.path));
+  }
+  for (const btn of els.historyList.querySelectorAll(".history-delete")) {
+    btn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      try {
+        await api("/api/history/delete", {
+          method: "POST",
+          body: JSON.stringify({ path: btn.dataset.path }),
+        });
+        await loadHistory();
+      } catch (error) {
+        console.error("删除历史记录失败:", error);
+      }
+    });
   }
 }
 
@@ -1775,7 +1799,6 @@ function mergePathList() {
 
 function setMergePathList(paths) {
   state.mergePaths = Array.from(new Set(paths));
-  els.mergePaths.value = state.mergePaths.join("\n");
   renderMergePathTable();
   updateMergePathCount();
 }
@@ -1795,7 +1818,6 @@ function addMergePath(path) {
     }
   }
   if (added) {
-    els.mergePaths.value = state.mergePaths.join("\n");
     renderMergePathTable();
     updateMergePathCount();
   }
@@ -1812,7 +1834,6 @@ function addMergePath(path) {
 
 function removeMergePath(path) {
   state.mergePaths = state.mergePaths.filter((p) => p !== path);
-  els.mergePaths.value = state.mergePaths.join("\n");
   renderMergePathTable();
   updateMergePathCount();
 }
@@ -1857,9 +1878,46 @@ function addCurrentDatasetToMerge() {
 
 function clearMergeList() {
   state.mergePaths = [];
-  els.mergePaths.value = "";
   renderMergePathTable();
   resetMergeStatus();
+}
+
+// ── Folder Browser for merge path input ────────────────────────────────
+function openFolderBrowser() {
+  if (!els.folderBrowser) return;
+  els.folderBrowser.style.display = "flex";
+  navigateFolderBrowser(els.mergePaths.value.trim() || "");
+}
+
+function closeFolderBrowser() {
+  if (!els.folderBrowser) return;
+  els.folderBrowser.style.display = "none";
+}
+
+async function navigateFolderBrowser(dir) {
+  if (!els.folderBrowserList || !els.folderBrowserCurrent) return;
+  try {
+    const result = await api(`/api/path/suggest?path=${encodeURIComponent(dir)}`);
+    state._fbBase = result.base || dir;
+    state._fbItems = result.items || [];
+    els.folderBrowserCurrent.textContent = result.base || dir || "/";
+    els.folderBrowserPath.value = "";
+    if (!state._fbItems.length) {
+      els.folderBrowserList.innerHTML = "<span class=\"fb-empty\">此目录下没有子文件夹</span>";
+      return;
+    }
+    els.folderBrowserList.innerHTML = state._fbItems.map((item) => `
+      <button class="fb-item" type="button" data-path="${escapeAttr(item.path)}">
+        <span>📁 ${escapeHtml(item.name)}</span>
+        ${item.has_dataset_marker ? "<strong>dataset</strong>" : ""}
+      </button>
+    `).join("");
+    for (const btn of els.folderBrowserList.querySelectorAll(".fb-item")) {
+      btn.addEventListener("click", () => navigateFolderBrowser(btn.dataset.path));
+    }
+  } catch (error) {
+    els.folderBrowserList.innerHTML = `<span class="fb-empty">${escapeHtml(error.message)}</span>`;
+  }
 }
 
 function resetMergeStatus() {
@@ -2139,27 +2197,40 @@ els.strictValidateDataset.addEventListener("click", strictValidateCurrentDataset
 els.runEditDryRun.addEventListener("click", runEditDryRun);
 els.applyEditPlan.addEventListener("click", applyEditPlan);
 els.addCurrentDatasetToMerge.addEventListener("click", addCurrentDatasetToMerge);
-els.addMergePathBtn.addEventListener("click", () => {
-  const text = els.mergePaths.value.trim();
-  if (text) {
-    addMergePath(text);
-    els.mergePaths.value = state.mergePaths.join("\n");
-  }
-  els.mergePaths.focus();
-});
+els.addMergePathBtn.addEventListener("click", openFolderBrowser);
 els.clearMergeList.addEventListener("click", clearMergeList);
 els.validateMerge.addEventListener("click", validateMergePlan);
 els.applyMerge.addEventListener("click", applyMergePlan);
 
-// Enter key in merge textarea adds path
+// Folder browser events
+if (els.folderBrowserClose) els.folderBrowserClose.addEventListener("click", closeFolderBrowser);
+if (els.folderBrowserSelect) els.folderBrowserSelect.addEventListener("click", () => {
+  const dir = (state._fbBase || "").trim();
+  if (dir) { addMergePath(dir); els.mergePaths.value = ""; }
+  closeFolderBrowser();
+});
+if (els.folderBrowserUp) els.folderBrowserUp.addEventListener("click", () => {
+  const current = state._fbBase || "";
+  const parent = current.replace(/[/\\]+$/, "").replace(/[/\\][^/\\]+$/, "") || current.slice(0, 3) || "/";
+  navigateFolderBrowser(parent);
+});
+if (els.folderBrowserPath) els.folderBrowserPath.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    navigateFolderBrowser(els.folderBrowserPath.value.trim());
+  }
+});
+if (els.folderBrowser) els.folderBrowser.addEventListener("click", (event) => {
+  if (event.target === els.folderBrowser) closeFolderBrowser();
+});
+
+// Enter key in merge textarea adds path, then clears input
 els.mergePaths.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     const text = els.mergePaths.value.trim();
-    if (text) {
-      addMergePath(text);
-      els.mergePaths.value = state.mergePaths.join("\n");
-    }
+    if (text) addMergePath(text);
+    els.mergePaths.value = "";
   }
 });
 els.checkModelEnv.addEventListener("click", loadModelEnv);

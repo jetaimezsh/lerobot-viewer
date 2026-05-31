@@ -230,6 +230,38 @@ h3 {
   overflow: auto;
 }
 
+.history-item-row {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  position: relative;
+}
+
+.history-item-row .history-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.history-delete {
+  width: 32px;
+  height: auto;
+  min-height: 66px;
+  border-radius: 0 7px 7px 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-left: none;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.history-delete:hover {
+  background: rgba(201, 42, 42, 0.15);
+  color: var(--danger, #c92a2a);
+}
+
 .history-item {
   width: 100%;
   height: auto;
@@ -239,7 +271,10 @@ h3 {
   border: 1px solid rgba(255, 255, 255, 0.1);
   color: #f4fbfc;
   text-align: left;
+  border-radius: 7px;
 }
+
+.history-item-row .history-item { border-radius: 7px 0 0 7px; }
 
 .history-item:hover {
   background: #f4fbfc;
@@ -589,7 +624,8 @@ h3 {
 .merge-path-table {
   border: 1px solid var(--line);
   border-radius: 8px;
-  overflow: hidden;
+  overflow-y: auto;
+  max-height: 200px;
   margin-bottom: 8px;
   min-height: 36px;
 }
@@ -599,6 +635,7 @@ h3 {
   align-items: center;
   justify-content: center;
   background: #f8fafc;
+  max-height: none;
 }
 
 .merge-path-row {
@@ -710,6 +747,122 @@ h3 {
 .merge-validation-detail {
   font-size: 12px;
   color: #64717f;
+}
+
+/* ── Folder Browser Modal ─────────────────────────────────────── */
+.folder-browser-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.folder-browser-dialog {
+  background: #fff;
+  border-radius: 12px;
+  width: min(560px, 90vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.18);
+}
+
+.folder-browser-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 8px;
+}
+
+.folder-browser-head h4 { margin: 0; font-size: 16px; }
+
+.fb-close {
+  background: none;
+  border: none;
+  font-size: 20px;
+  cursor: pointer;
+  color: #94a3b8;
+  padding: 0 4px;
+}
+.fb-close:hover { color: #334155; }
+
+.folder-browser-nav {
+  display: flex;
+  gap: 8px;
+  padding: 8px 20px;
+}
+
+.folder-browser-nav button {
+  background: #e2e8f0;
+  color: #334155;
+  font-size: 13px;
+  height: 32px;
+}
+
+.folder-browser-nav input {
+  flex: 1;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 13px;
+  height: 32px;
+}
+
+.folder-browser-list {
+  flex: 1;
+  overflow-y: auto;
+  max-height: 360px;
+  padding: 8px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fb-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  background: none;
+  border: none;
+  text-align: left;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 400;
+  height: auto;
+}
+.fb-item:hover { background: #f1f5f9; }
+.fb-item strong { font-size: 11px; color: #2f9e44; }
+
+.fb-empty { color: #94a3b8; font-size: 13px; padding: 12px 0; text-align: center; }
+
+.folder-browser-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.fb-current {
+  font-size: 12px;
+  color: #64717f;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  margin-right: 12px;
+}
+
+.fb-select {
+  background: var(--blue, #2f6fbb);
+  height: 34px;
+  font-size: 14px;
 }
 
 .system-grid {
