@@ -138,11 +138,35 @@ const els = {
 // Expose folder-browser entry points on window so onclick handlers
 // work even if JS event listeners silently fail to attach.
 window._openMergeBrowser = function () {
-  openFolderBrowser(els.mergePaths, function (dir) { addMergePath(dir); els.mergePaths.value = ""; });
+  try {
+    console.log("DEBUG _openMergeBrowser: called");
+    if (typeof openFolderBrowser !== "function") { console.error("openFolderBrowser not a function"); return; }
+    console.log("DEBUG _openMergeBrowser: els.mergePaths =", els.mergePaths);
+    openFolderBrowser(els.mergePaths, function (dir) {
+      console.log("DEBUG _openMergeBrowser callback: dir =", dir);
+      addMergePath(dir);
+      if (els.mergePaths) els.mergePaths.value = "";
+      console.log("DEBUG _openMergeBrowser callback: done, state.mergePaths =", state.mergePaths);
+    });
+  } catch (e) {
+    console.error("DEBUG _openMergeBrowser error:", e);
+  }
 };
 window._openCheckpointBrowser = function () {
-  openFolderBrowser(els.checkpointPath, function (dir) { els.checkpointPath.value = dir; });
+  try {
+    console.log("DEBUG _openCheckpointBrowser: called");
+    if (typeof openFolderBrowser !== "function") { console.error("openFolderBrowser not a function"); return; }
+    console.log("DEBUG _openCheckpointBrowser: els.checkpointPath =", els.checkpointPath);
+    openFolderBrowser(els.checkpointPath, function (dir) {
+      console.log("DEBUG _openCheckpointBrowser callback: dir =", dir);
+      if (els.checkpointPath) els.checkpointPath.value = dir;
+      console.log("DEBUG _openCheckpointBrowser callback: done");
+    });
+  } catch (e) {
+    console.error("DEBUG _openCheckpointBrowser error:", e);
+  }
 };
+console.log("DEBUG: window._openMergeBrowser and _openCheckpointBrowser initialized");
 
 const palette = ["#087f8c", "#b76e00", "#2f6fbb", "#7a5195", "#2f9e44", "#c92a2a", "#5f6c72", "#805ad5"];
 
@@ -1894,47 +1918,78 @@ function clearMergeList() {
 
 // ── Folder Browser for merge path input ────────────────────────────────
 function openFolderBrowser(targetInput, onSelect) {
-  if (!els.folderBrowser) {
-    console.error("openFolderBrowser: #folderBrowser missing from DOM");
-    return;
+  try {
+    console.log("DEBUG openFolderBrowser: entry, targetInput =", targetInput, "onSelect =", typeof onSelect);
+    if (!els.folderBrowser) {
+      console.error("DEBUG openFolderBrowser: #folderBrowser is NULL — DOM element missing");
+      return;
+    }
+    console.log("DEBUG openFolderBrowser: els.folderBrowser =", els.folderBrowser);
+    console.log("DEBUG openFolderBrowser: current display =", els.folderBrowser.style.display);
+    els.folderBrowser.style.display = "flex";
+    console.log("DEBUG openFolderBrowser: set display=flex, new display =", els.folderBrowser.style.display);
+    state._fbOnSelect = onSelect;
+    state._fbTarget = targetInput;
+    var startDir = (targetInput && targetInput.value) ? targetInput.value.trim() : "";
+    console.log("DEBUG openFolderBrowser: startDir =", startDir);
+    if (typeof navigateFolderBrowser !== "function") {
+      console.error("DEBUG openFolderBrowser: navigateFolderBrowser is NOT a function");
+      return;
+    }
+    console.log("DEBUG openFolderBrowser: calling navigateFolderBrowser...");
+    navigateFolderBrowser(startDir);
+  } catch (e) {
+    console.error("DEBUG openFolderBrowser error:", e);
   }
-  els.folderBrowser.style.display = "flex";
-  console.log("openFolderBrowser: opened with startDir =", (targetInput && targetInput.value) || "");
-  state._fbOnSelect = onSelect;
-  state._fbTarget = targetInput;
-  const startDir = (targetInput && targetInput.value) ? targetInput.value.trim() : "";
-  navigateFolderBrowser(startDir);
 }
 
 function closeFolderBrowser() {
-  if (!els.folderBrowser) return;
-  els.folderBrowser.style.display = "none";
-  console.log("closeFolderBrowser: closed");
+  try {
+    console.log("DEBUG closeFolderBrowser: called");
+    if (!els.folderBrowser) { console.error("DEBUG closeFolderBrowser: no #folderBrowser"); return; }
+    els.folderBrowser.style.display = "none";
+    console.log("DEBUG closeFolderBrowser: set display=none");
+  } catch (e) {
+    console.error("DEBUG closeFolderBrowser error:", e);
+  }
 }
 
 async function navigateFolderBrowser(dir) {
-  if (!els.folderBrowserList || !els.folderBrowserCurrent) return;
   try {
-    const result = await api(`/api/path/suggest?path=${encodeURIComponent(dir)}`);
+    console.log("DEBUG navigateFolderBrowser: entry, dir =", dir);
+    if (!els.folderBrowserList) { console.error("DEBUG navigateFolderBrowser: #folderBrowserList missing"); return; }
+    if (!els.folderBrowserCurrent) { console.error("DEBUG navigateFolderBrowser: #folderBrowserCurrent missing"); return; }
+    console.log("DEBUG navigateFolderBrowser: calling API /api/path/suggest?path=" + encodeURIComponent(dir));
+    var result = await api("/api/path/suggest?path=" + encodeURIComponent(dir));
+    console.log("DEBUG navigateFolderBrowser: API response base =", result.base, "items count =", (result.items || []).length);
     state._fbBase = result.base || dir;
     state._fbItems = result.items || [];
     els.folderBrowserCurrent.textContent = result.base || dir || "/";
     els.folderBrowserPath.value = "";
     if (!state._fbItems.length) {
+      console.log("DEBUG navigateFolderBrowser: no items, showing empty");
       els.folderBrowserList.innerHTML = "<span class=\"fb-empty\">此目录下没有子文件夹</span>";
       return;
     }
-    els.folderBrowserList.innerHTML = state._fbItems.map((item) => `
-      <button class="fb-item" type="button" data-path="${escapeAttr(item.path)}">
+    var html = state._fbItems.map(function (item) {
+      return `<button class="fb-item" type="button" data-path="${escapeAttr(item.path)}">
         <span>📁 ${escapeHtml(item.name)}</span>
         ${item.has_dataset_marker ? "<strong>dataset</strong>" : ""}
-      </button>
-    `).join("");
-    for (const btn of els.folderBrowserList.querySelectorAll(".fb-item")) {
-      btn.addEventListener("click", () => navigateFolderBrowser(btn.dataset.path));
+      </button>`;
+    }).join("");
+    console.log("DEBUG navigateFolderBrowser: rendering " + state._fbItems.length + " items, html length = " + html.length);
+    els.folderBrowserList.innerHTML = html;
+    var buttons = els.folderBrowserList.querySelectorAll(".fb-item");
+    console.log("DEBUG navigateFolderBrowser: found " + buttons.length + " fb-item buttons in DOM");
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].addEventListener("click", (function (path) {
+        return function () { navigateFolderBrowser(path); };
+      })(buttons[i].dataset.path));
     }
+    console.log("DEBUG navigateFolderBrowser: all " + buttons.length + " listeners attached");
   } catch (error) {
-    els.folderBrowserList.innerHTML = `<span class="fb-empty">${escapeHtml(error.message)}</span>`;
+    console.error("DEBUG navigateFolderBrowser error:", error);
+    els.folderBrowserList.innerHTML = "<span class=\"fb-empty\">" + escapeHtml(error.message) + "</span>";
   }
 }
 
@@ -2220,49 +2275,52 @@ els.clearMergeList.addEventListener("click", clearMergeList);
 els.validateMerge.addEventListener("click", validateMergePlan);
 els.applyMerge.addEventListener("click", applyMergePlan);
 
-// Folder browser events
+// Folder browser events — each handler logs entry for debugging.
+console.log("DEBUG init: attaching folder browser events...");
 if (els.folderBrowserClose) els.folderBrowserClose.addEventListener("click", closeFolderBrowser);
 if (els.folderBrowserSelect) els.folderBrowserSelect.addEventListener("click", () => {
+  console.log("DEBUG folderBrowserSelect click: _fbBase =", state._fbBase);
   const dir = (state._fbBase || "").trim();
   if (dir) {
     if (state._fbOnSelect) {
+      console.log("DEBUG selector: calling _fbOnSelect with", dir);
       state._fbOnSelect(dir);
     } else {
+      console.log("DEBUG selector: calling addMergePath with", dir);
       addMergePath(dir);
     }
   }
   closeFolderBrowser();
 });
 if (els.folderBrowserUp) els.folderBrowserUp.addEventListener("click", () => {
-  let current = (state._fbBase || "").trim()
-    .replace(/[\\/]+$/, "");
+  console.log("DEBUG folderBrowserUp click: _fbBase =", state._fbBase);
+  let current = (state._fbBase || "").trim().replace(/[\\/]+$/, "");
   let parent = "";
-  if (current.length >= 2 && current[1] === ":" && current.length <= 3) {
-    // Windows root, e.g. "D:" — keep it.
-    // Up from "D:/foo" → "D:/".
-  }
   const lastForward = current.lastIndexOf("/");
   const lastBack = current.lastIndexOf("\\");
   const idx = Math.max(lastForward, lastBack);
   if (idx > 0) {
     parent = current.substring(0, idx);
   } else if (idx === 0 && current.length > 1) {
-    parent = "/"; // Unix root
+    parent = "/";
   } else {
-    parent = current; // already at root, stay
+    parent = current;
   }
   if (!parent && current.length >= 2 && current[1] === ":") {
     parent = current[0] + ":/";
   }
+  console.log("DEBUG up: navigating to parent =", parent || current || "/");
   navigateFolderBrowser(parent || current || "/");
 });
 if (els.folderBrowserPath) els.folderBrowserPath.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
+    console.log("DEBUG path input: navigating to", els.folderBrowserPath.value.trim());
     navigateFolderBrowser(els.folderBrowserPath.value.trim());
   }
 });
 if (els.folderBrowser) els.folderBrowser.addEventListener("click", (event) => {
+  console.log("DEBUG overlay click: target =", event.target, "folderBrowser =", els.folderBrowser);
   if (event.target === els.folderBrowser) closeFolderBrowser();
 });
 
