@@ -1497,7 +1497,7 @@ def write_dataset(
     with (output_path / "meta/info.json").open("w", encoding="utf-8") as f:
         json.dump(clean_json_value(info), f, ensure_ascii=False, indent=2)
 
-    stats = global_stats(frames, cache.features)
+    stats = _rebuild_stats(frames, cache)
     with (output_path / "meta/stats.json").open("w", encoding="utf-8") as f:
         json.dump(clean_json_value(stats), f, ensure_ascii=False, indent=2)
 
@@ -1510,7 +1510,52 @@ def flatten_stats_for_episode(df: pd.DataFrame, features: dict[str, dict[str, An
     return result
 
 
+def _rebuild_stats(frames: pd.DataFrame, cache: Any) -> dict[str, dict[str, Any]]:
+    """Build output stats.json: compute fresh stats for recomputable features,
+    preserve source stats for features we cannot recompute (e.g. video).
+
+    Some LeRobot datasets (including official ones like ``lerobot/pusht``)
+    carry per-channel pixel statistics for video features in their source
+    ``meta/stats.json``.  We cannot recompute those from the frame parquet
+    (video data lives in MP4 files), but downstream training pipelines may
+    expect them to be present.
+    """
+    # Start with a shallow copy of the source stats so keys we can't
+    # recompute (video features etc.) are preserved.
+    source_stats = _read_source_stats(cache)
+    stats = {k: v for k, v in source_stats.items()} if source_stats else {}
+
+    # Overlay fresh stats for every feature we CAN recompute.
+    for key, feature in cache.features.items():
+        if key not in frames.columns or feature.get("dtype") == "video":
+            continue
+        values = column_values(frames[key])
+        if values.size == 0:
+            continue
+        stats[key] = {
+            "min": clean_json_value(np.nanmin(values, axis=0).tolist()),
+            "max": clean_json_value(np.nanmax(values, axis=0).tolist()),
+            "mean": clean_json_value(np.nanmean(values, axis=0).tolist()),
+            "std": clean_json_value(np.nanstd(values, axis=0).tolist()),
+            "count": [int(values.shape[0])],
+        }
+    return stats
+
+
+def _read_source_stats(cache: Any) -> dict[str, Any] | None:
+    """Read the source stats.json, if it exists."""
+    path = cache.root / "meta" / "stats.json"
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def global_stats(df: pd.DataFrame, features: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Compute stats from scratch for *all* recomputable features in *df*."""
     stats = {}
     for key, feature in features.items():
         if key not in df.columns or feature.get("dtype") == "video":
