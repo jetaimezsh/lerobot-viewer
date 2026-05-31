@@ -19,6 +19,7 @@ const state = {
   videos: [],
   raf: null,
   currentView: "overviewView",
+  editMode: "edit",
   editOperations: [],
   trimDraftStart: null,
   trimDraftEnd: null,
@@ -70,13 +71,15 @@ const els = {
   currentValues: document.getElementById("currentValues"),
   editEpisodeTitle: document.getElementById("editEpisodeTitle"),
   editEpisodeMeta: document.getElementById("editEpisodeMeta"),
-  markDeleteEpisode: document.getElementById("markDeleteEpisode"),
+  modeEdit: document.getElementById("modeEdit"),
+  modeExport: document.getElementById("modeExport"),
+  modeEdit2: document.getElementById("modeEdit2"),
+  modeExport2: document.getElementById("modeExport2"),
   setTrimStart: document.getElementById("setTrimStart"),
   setTrimEnd: document.getElementById("setTrimEnd"),
-  markTrimEpisode: document.getElementById("markTrimEpisode"),
+  markEpisode: document.getElementById("markEpisode"),
+  markRange: document.getElementById("markRange"),
   sendEpisodeToBacktest: document.getElementById("sendEpisodeToBacktest"),
-  selectExportEpisode: document.getElementById("selectExportEpisode"),
-  selectExportRange: document.getElementById("selectExportRange"),
   trimDraft: document.getElementById("trimDraft"),
   editOperationList: document.getElementById("editOperationList"),
   editOperationBadge: document.getElementById("editOperationBadge"),
@@ -849,26 +852,34 @@ function operationKey(operation) {
 }
 
 function currentEditMode() {
-  const hasSelect = state.editOperations.some((op) => op.type.startsWith("select_"));
-  const hasEdit = state.editOperations.some((op) => op.type === "delete_episode" || op.type === "trim_episode");
-  if (hasSelect && hasEdit) return "mixed";
-  if (hasSelect) return "select";
-  if (hasEdit) return "edit";
-  return "none";
+  return state.editMode;
+}
+
+function setEditMode(mode) {
+  if (state.editMode === mode) return;
+  state.editMode = mode;
+  state.editOperations = [];
+  renderEditOperations();
+  updateEditOperationBadge();
+  if (els.editDryRunOutput) els.editDryRunOutput.textContent = "模式已切换，已标记操作已清空。";
+  refreshModeButtons();
+}
+
+function refreshModeButtons() {
+  const active = state.editMode;
+  for (const btn of [els.modeEdit, els.modeEdit2]) {
+    if (btn) btn.classList.toggle("active", active === "edit");
+  }
+  for (const btn of [els.modeExport, els.modeExport2]) {
+    if (btn) btn.classList.toggle("active", active === "export");
+  }
 }
 
 function upsertEditOperation(operation) {
-  const currentMode = currentEditMode();
-  const opMode = operation.type.startsWith("select_") ? "select" : "edit";
-  if (currentMode !== "none" && currentMode !== opMode) {
-    els.editDryRunOutput.textContent = "不能混合使用选择导出和删除/裁剪操作。请先清空编辑计划再切换模式。";
-    els.editDryRunOutput.classList.remove("empty");
-    return;
-  }
   state.editOperations = state.editOperations.filter((item) => item.episode_index !== operation.episode_index);
   state.editOperations.push(operation);
   renderEditOperations();
-  if (els.editDryRunOutput) els.editDryRunOutput.textContent = "编辑计划已变化，请重新运行预估。";
+  if (els.editDryRunOutput) els.editDryRunOutput.textContent = "标记已变化，请重新运行预估。";
 }
 
 function renderEditOperations() {
@@ -927,41 +938,39 @@ function renderEditOperations() {
 function updateEditOperationBadge() {
   if (!els.editOperationBadge) return;
   const count = state.editOperations.length;
-  const mode = currentEditMode();
-  const modeText = mode === "select" ? "选择导出模式" : mode === "edit" ? "编辑模式" : "无";
-  els.editOperationBadge.textContent = `${count} 个待处理操作${mode !== "none" ? " (" + modeText + ")" : ""}`;
+  const modeText = state.editMode === "export" ? "导出模式" : "删除模式";
+  els.editOperationBadge.textContent = `${count} 个已标记${count > 0 ? " (" + modeText + ")" : ""}`;
 }
 
-function markDeleteCurrentEpisode() {
+function markCurrentEpisode() {
   const episodeIndex = currentEpisodeIndex();
   if (episodeIndex === null) return;
-  upsertEditOperation({ type: "delete_episode", episode_index: episodeIndex });
-  els.editEpisodeMeta.textContent = `已把 Episode ${episodeIndex} 加入删除计划。到“数据集编辑”页面可查看队列并生成新数据集。`;
+  const type = state.editMode === “export” ? “select_episode” : “delete_episode”;
+  upsertEditOperation({ type, episode_index: episodeIndex });
+  const label = state.editMode === “export” ? “导出” : “删除”;
+  els.editEpisodeMeta.textContent = `已标记 Episode ${episodeIndex}（${label}模式）。`;
 }
 
 function setTrimPoint(kind) {
   if (!state.episode) return;
-  if (kind === "start") state.trimDraftStart = state.currentElapsed;
-  if (kind === "end") state.trimDraftEnd = state.currentElapsed;
+  if (kind === “start”) state.trimDraftStart = state.currentElapsed;
+  if (kind === “end”) state.trimDraftEnd = state.currentElapsed;
   updateTrimDraftLabel();
 }
 
-function markTrimCurrentEpisode() {
+function markCurrentRange() {
   const episodeIndex = currentEpisodeIndex();
   if (episodeIndex === null) return;
   const start = state.trimDraftStart;
   const end = state.trimDraftEnd;
   if (start === null || end === null || end <= start) {
-    els.editDryRunOutput.textContent = "裁剪区间无效：请先设置起点和终点，且终点必须大于起点。";
+    els.editDryRunOutput.textContent = “区间无效：请先设置起点和终点，且终点必须大于起点。”;
     return;
   }
-  upsertEditOperation({
-    type: "trim_episode",
-    episode_index: episodeIndex,
-    start_time: start,
-    end_time: end,
-  });
-  els.editEpisodeMeta.textContent = `已把 Episode ${episodeIndex} 的保留区间加入编辑计划。到“数据集编辑”页面可查看队列并生成新数据集。`;
+  const type = state.editMode === “export” ? “select_episode_range” : “trim_episode”;
+  upsertEditOperation({ type, episode_index: episodeIndex, start_time: start, end_time: end });
+  const label = state.editMode === “export” ? “导出” : “裁剪”;
+  els.editEpisodeMeta.textContent = `已标记 Episode ${episodeIndex} 的区间（${label}模式）。`;
 }
 
 function sendCurrentEpisodeToBacktest() {
@@ -969,31 +978,6 @@ function sendCurrentEpisodeToBacktest() {
   if (episodeIndex === null) return;
   els.backtestEpisodes.value = String(episodeIndex);
   goToModelBacktest();
-}
-
-function selectExportEpisode() {
-  const episodeIndex = currentEpisodeIndex();
-  if (episodeIndex === null) return;
-  upsertEditOperation({ type: "select_episode", episode_index: episodeIndex });
-  els.editEpisodeMeta.textContent = `已把 Episode ${episodeIndex} 加入选择导出计划。`;
-}
-
-function selectExportRange() {
-  const episodeIndex = currentEpisodeIndex();
-  if (episodeIndex === null) return;
-  const start = state.trimDraftStart;
-  const end = state.trimDraftEnd;
-  if (start === null || end === null || end <= start) {
-    els.editDryRunOutput.textContent = "选择区间无效：请先设置起点和终点，且终点必须大于起点。";
-    return;
-  }
-  upsertEditOperation({
-    type: "select_episode_range",
-    episode_index: episodeIndex,
-    start_time: start,
-    end_time: end,
-  });
-  els.editEpisodeMeta.textContent = `已把 Episode ${episodeIndex} 的选择区间加入导出计划。`;
 }
 
 async function runEditDryRun() {
@@ -1867,13 +1851,15 @@ els.speed.addEventListener("change", () => {
   for (const video of state.videos) video.playbackRate = Number(els.speed.value);
 });
 els.timeSlider.addEventListener("input", () => setElapsed(Number(els.timeSlider.value)));
-els.markDeleteEpisode.addEventListener("click", markDeleteCurrentEpisode);
+els.markEpisode.addEventListener("click", markCurrentEpisode);
+els.markRange.addEventListener("click", markCurrentRange);
 els.setTrimStart.addEventListener("click", () => setTrimPoint("start"));
 els.setTrimEnd.addEventListener("click", () => setTrimPoint("end"));
-els.markTrimEpisode.addEventListener("click", markTrimCurrentEpisode);
 els.sendEpisodeToBacktest.addEventListener("click", sendCurrentEpisodeToBacktest);
-if (els.selectExportEpisode) els.selectExportEpisode.addEventListener("click", selectExportEpisode);
-if (els.selectExportRange) els.selectExportRange.addEventListener("click", selectExportRange);
+if (els.modeEdit) els.modeEdit.addEventListener("click", () => setEditMode("edit"));
+if (els.modeExport) els.modeExport.addEventListener("click", () => setEditMode("export"));
+if (els.modeEdit2) els.modeEdit2.addEventListener("click", () => setEditMode("edit"));
+if (els.modeExport2) els.modeExport2.addEventListener("click", () => setEditMode("export"));
 els.checkEditTools.addEventListener("click", checkEditTools);
 els.strictValidateDataset.addEventListener("click", strictValidateCurrentDataset);
 els.runEditDryRun.addEventListener("click", runEditDryRun);

@@ -144,14 +144,15 @@
             <div class="section-kicker">Current Episode</div>
             <p id="editEpisodeMeta">选择 episode 后，可以直接用当前播放位置设置裁剪区间。</p>
             <div class="edit-actions">
-              <button id="markDeleteEpisode" type="button">标记删除当前 episode</button>
-              <button id="setTrimStart" type="button">当前时刻设为起点</button>
-              <button id="setTrimEnd" type="button">当前时刻设为终点</button>
-              <button id="markTrimEpisode" type="button">标记保留区间</button>
+              <div class="edit-mode-bar">
+                <button id="modeEdit" type="button" class="mode-option mode-delete active">删除</button>
+                <button id="modeExport" type="button" class="mode-option mode-export">导出</button>
+              </div>
+              <button id="setTrimStart" type="button">设为起点</button>
+              <button id="setTrimEnd" type="button">设为终点</button>
+              <button id="markEpisode" type="button">标记此 episode</button>
+              <button id="markRange" type="button">标记此区间</button>
               <button id="sendEpisodeToBacktest" type="button">用当前 episode 回测</button>
-              <div class="edit-mode-separator"></div>
-              <button id="selectExportEpisode" type="button" class="select-button">选择导出此 episode</button>
-              <button id="selectExportRange" type="button" class="select-button">选择导出此区间</button>
             </div>
             <div id="trimDraft" class="edit-draft">裁剪区间未设置</div>
           </details>
@@ -223,6 +224,10 @@
         <div class="edit-grid">
           <section class="surface">
             <div class="section-kicker">Pending Operations</div>
+            <div class="edit-mode-bar">
+              <button id="modeEdit2" type="button" class="mode-option mode-delete active">删除</button>
+              <button id="modeExport2" type="button" class="mode-option mode-export">导出</button>
+            </div>
             <div id="editOperationList" class="edit-operation-list empty">暂无待应用修改</div>
           </section>
 

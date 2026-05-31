@@ -872,19 +872,43 @@ h3 {
   background: var(--danger);
 }
 
-.edit-mode-separator {
-  width: 100%;
-  margin: 4px 0;
-  border-top: 1px solid var(--line);
+.edit-mode-bar {
+  display: flex;
+  gap: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  margin-bottom: 10px;
 }
 
-.select-button {
-  background: var(--green, #2f9e44);
+.mode-option {
+  padding: 6px 16px;
+  border: none;
+  border-radius: 0;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.mode-delete {
+  background: #f1f5f9;
+  color: #64717f;
+}
+
+.mode-delete.active {
+  background: var(--danger, #c92a2a);
   color: #fff;
 }
 
-.select-button:hover {
-  background: var(--green-hover, #2b8a3e);
+.mode-export {
+  background: #f1f5f9;
+  color: #64717f;
+}
+
+.mode-export.active {
+  background: #2f9e44;
+  color: #fff;
 }
 
 .edit-draft {
