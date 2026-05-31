@@ -945,16 +945,16 @@ function updateEditOperationBadge() {
 function markCurrentEpisode() {
   const episodeIndex = currentEpisodeIndex();
   if (episodeIndex === null) return;
-  const type = state.editMode === “export” ? “select_episode” : “delete_episode”;
+  const type = state.editMode === "export" ? "select_episode" : "delete_episode";
   upsertEditOperation({ type, episode_index: episodeIndex });
-  const label = state.editMode === “export” ? “导出” : “删除”;
+  const label = state.editMode === "export" ? "导出" : "删除";
   els.editEpisodeMeta.textContent = `已标记 Episode ${episodeIndex}（${label}模式）。`;
 }
 
 function setTrimPoint(kind) {
   if (!state.episode) return;
-  if (kind === “start”) state.trimDraftStart = state.currentElapsed;
-  if (kind === “end”) state.trimDraftEnd = state.currentElapsed;
+  if (kind === "start") state.trimDraftStart = state.currentElapsed;
+  if (kind === "end") state.trimDraftEnd = state.currentElapsed;
   updateTrimDraftLabel();
 }
 
@@ -964,12 +964,12 @@ function markCurrentRange() {
   const start = state.trimDraftStart;
   const end = state.trimDraftEnd;
   if (start === null || end === null || end <= start) {
-    els.editDryRunOutput.textContent = “区间无效：请先设置起点和终点，且终点必须大于起点。”;
+    els.editDryRunOutput.textContent = "区间无效：请先设置起点和终点，且终点必须大于起点。";
     return;
   }
-  const type = state.editMode === “export” ? “select_episode_range” : “trim_episode”;
+  const type = state.editMode === "export" ? "select_episode_range" : "trim_episode";
   upsertEditOperation({ type, episode_index: episodeIndex, start_time: start, end_time: end });
-  const label = state.editMode === “export” ? “导出” : “裁剪”;
+  const label = state.editMode === "export" ? "导出" : "裁剪";
   els.editEpisodeMeta.textContent = `已标记 Episode ${episodeIndex} 的区间（${label}模式）。`;
 }
 
