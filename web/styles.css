@@ -963,11 +963,13 @@ h3 {
   gap: 8px;
   color: var(--muted);
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .checkbox-row input {
   width: 16px;
   height: 16px;
+  flex-shrink: 0;
 }
 
 .edit-run-buttons {
@@ -975,6 +977,7 @@ h3 {
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 #applyEditPlan {
