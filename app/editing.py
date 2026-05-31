@@ -1264,22 +1264,42 @@ _INT_EPISODE_COLUMNS = {
 
 
 def _enforce_episode_int_dtypes(episodes: pd.DataFrame) -> None:
-    """Cast known integer columns to Int64 so float values don't leak into parquet.
+    """Cast known integer columns to numpy int64 before writing parquet.
 
-    LeRobot v3.0 uses Python ``str.format()`` with ``{:03d}`` / ``{:d}`` specs
-    when building file paths from ``chunk_index`` and ``file_index``.  Any
-    float value (e.g. ``0.0``) passed to those format specifiers triggers
-    ``ValueError: Unknown format code 'd' for object of type 'float'``.
+    LeRobot v3.0 uses Python ``str.format()`` with ``{:03d}`` / ``{:d}``
+    format specifiers when building file paths from ``chunk_index`` and
+    ``file_index`` (see ``get_video_file_path`` in ``lerobot_dataset.py``).
+    Any float value (e.g. ``0.0``) passed to those specifiers triggers::
+
+        ValueError: Unknown format code 'd' for object of type 'float'
+
+    The primary risk is ``write_edited_videos`` which uses
+    ``episodes.loc[row_mask, col] = int(0)`` — because ``.loc`` with a
+    boolean mask may write NaN to non-matching rows for newly created
+    columns, forcing the entire column to float64.
     """
     for col in _INT_EPISODE_COLUMNS:
         if col in episodes.columns:
-            episodes[col] = episodes[col].astype("Int64").astype(int)
-    # Also cover video index columns added by write_edited_videos.
+            episodes[col] = _cast_to_int64(episodes[col])
+    # Also cover video index columns created by write_edited_videos.
     for col in list(episodes.columns):
         if col.startswith("videos/") and (
             col.endswith("/chunk_index") or col.endswith("/file_index")
         ):
-            episodes[col] = episodes[col].astype("Int64").astype(int)
+            episodes[col] = _cast_to_int64(episodes[col])
+
+
+def _cast_to_int64(series: pd.Series) -> pd.Series:
+    """Safely cast a Series to numpy int64, filling NaN with 0 defensively."""
+    if pd.api.types.is_integer_dtype(series) and not pd.api.types.is_float_dtype(series):
+        return series
+    # Step 1: nullable Int64 handles NaN → pd.NA safely.
+    converted = series.astype("Int64")
+    # Step 2: any remaining pd.NA → 0 (shouldn't exist after
+    # write_edited_videos fills all rows, but be defensive).
+    if converted.isna().any():
+        converted = converted.fillna(0)
+    return converted.astype("int64")
 
 
 def write_dataset(
