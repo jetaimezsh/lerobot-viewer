@@ -2197,7 +2197,7 @@ els.strictValidateDataset.addEventListener("click", strictValidateCurrentDataset
 els.runEditDryRun.addEventListener("click", runEditDryRun);
 els.applyEditPlan.addEventListener("click", applyEditPlan);
 els.addCurrentDatasetToMerge.addEventListener("click", addCurrentDatasetToMerge);
-els.addMergePathBtn.addEventListener("click", openFolderBrowser);
+if (els.addMergePathBtn) els.addMergePathBtn.addEventListener("click", openFolderBrowser);
 els.clearMergeList.addEventListener("click", clearMergeList);
 els.validateMerge.addEventListener("click", validateMergePlan);
 els.applyMerge.addEventListener("click", applyMergePlan);
@@ -2210,9 +2210,27 @@ if (els.folderBrowserSelect) els.folderBrowserSelect.addEventListener("click", (
   closeFolderBrowser();
 });
 if (els.folderBrowserUp) els.folderBrowserUp.addEventListener("click", () => {
-  const current = state._fbBase || "";
-  const parent = current.replace(/[/\\]+$/, "").replace(/[/\\][^/\\]+$/, "") || current.slice(0, 3) || "/";
-  navigateFolderBrowser(parent);
+  let current = (state._fbBase || "").trim()
+    .replace(/[\\/]+$/, "");
+  let parent = "";
+  if (current.length >= 2 && current[1] === ":" && current.length <= 3) {
+    // Windows root, e.g. "D:" — keep it.
+    // Up from "D:/foo" → "D:/".
+  }
+  const lastForward = current.lastIndexOf("/");
+  const lastBack = current.lastIndexOf("\\");
+  const idx = Math.max(lastForward, lastBack);
+  if (idx > 0) {
+    parent = current.substring(0, idx);
+  } else if (idx === 0 && current.length > 1) {
+    parent = "/"; // Unix root
+  } else {
+    parent = current; // already at root, stay
+  }
+  if (!parent && current.length >= 2 && current[1] === ":") {
+    parent = current[0] + ":/";
+  }
+  navigateFolderBrowser(parent || current || "/");
 });
 if (els.folderBrowserPath) els.folderBrowserPath.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
@@ -2225,7 +2243,7 @@ if (els.folderBrowser) els.folderBrowser.addEventListener("click", (event) => {
 });
 
 // Enter key in merge textarea adds path, then clears input
-els.mergePaths.addEventListener("keydown", (event) => {
+if (els.mergePaths) els.mergePaths.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     const text = els.mergePaths.value.trim();
