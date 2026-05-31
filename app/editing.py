@@ -1289,6 +1289,28 @@ def _enforce_episode_int_dtypes(episodes: pd.DataFrame) -> None:
             episodes[col] = _cast_to_int64(episodes[col])
 
 
+_INT_FRAME_COLUMNS = {
+    "episode_index",
+    "frame_index",
+    "index",
+    "task_index",
+}
+
+
+def _enforce_frame_int_dtypes(frames: pd.DataFrame) -> None:
+    """Cast known integer frame-data columns to numpy int64 before parquet.
+
+    ``normalize_frame_columns`` overwrites ``episode_index``, ``frame_index``,
+    and ``index`` with Python int / numpy int64 values, but if the source
+    parquet already had those columns as float64, the assignment leaves the
+    column dtype unchanged.  ``task_index`` is never normalized at all.
+    This is a final safety net.
+    """
+    for col in _INT_FRAME_COLUMNS:
+        if col in frames.columns:
+            frames[col] = _cast_to_int64(frames[col])
+
+
 def _cast_to_int64(series: pd.Series) -> pd.Series:
     """Safely cast a Series to numpy int64, filling NaN with 0 defensively."""
     if pd.api.types.is_integer_dtype(series) and not pd.api.types.is_float_dtype(series):
@@ -1313,6 +1335,7 @@ def write_dataset(
     (output_path / "data/chunk-000").mkdir(parents=True, exist_ok=True)
     (output_path / "meta/episodes/chunk-000").mkdir(parents=True, exist_ok=True)
 
+    _enforce_frame_int_dtypes(frames)
     frames.to_parquet(output_path / "data/chunk-000/file-000.parquet", index=False)
     _enforce_episode_int_dtypes(episodes)
     episodes.to_parquet(output_path / "meta/episodes/chunk-000/file-000.parquet", index=False)
