@@ -914,7 +914,9 @@ def video_encoding_for_key(
     cache: Any, video_key: str, source_video: Path, dataset_fps: float, encoder: str | None = None
 ) -> dict[str, Any]:
     feature = cache.features.get(video_key, {})
-    video_info = feature.get("video_info") or {}
+    # Official key is "info"; accept "video_info" as a fallback for
+    # datasets written by older versions of this tool.
+    video_info = feature.get("info") or feature.get("video_info") or {}
     stream_info = ffprobe_video_stream(source_video)
     codec = normalize_video_codec(stream_info.get("codec_name") or video_info.get("video.codec"))
     pix_fmt = str(stream_info.get("pix_fmt") or video_info.get("video.pix_fmt") or "yuv420p")
@@ -1287,7 +1289,7 @@ def write_dataset(
             feature = info.get("features", {}).get(video_key)
             if not feature or feature.get("dtype") != "video":
                 continue
-            video_info = feature.setdefault("video_info", {})
+            video_info = feature.setdefault("info", {})
             video_info.update(override)
             # Ensure every video feature declares is_depth_map (required by v3.0 spec).
             video_info.setdefault("is_depth_map", False)

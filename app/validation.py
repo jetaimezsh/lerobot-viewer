@@ -131,7 +131,8 @@ def _info_type_precheck(root: Path) -> list[str]:
     for vk, feat in info.get("features", {}).items():
         if not isinstance(feat, dict):
             continue
-        vi = feat.get("video_info")
+        # Official key is "info"; accept either.
+        vi = feat.get("info") or feat.get("video_info")
         if not isinstance(vi, dict):
             continue
         for vi_field in ("video.fps",):
@@ -199,13 +200,19 @@ def validate_info(root: Path, info: dict[str, Any], result: dict[str, Any]) -> N
         result["errors"].append("info.json 有 video feature 但缺少 video_path")
     if not (root / "meta/stats.json").exists():
         result["errors"].append("缺少 meta/stats.json")
-    # Validate video feature video_info completeness.
+    # Validate video feature completeness.
+    # Official LeRobot library auto-detects video_info from video files when
+    # the "info" dict is missing (see update_video_info in lerobot_dataset.py),
+    # so a missing info sub-dict is a warning, not an error.
     for video_key, feature in info.get("features", {}).items():
         if feature.get("dtype") != "video":
             continue
-        video_info = feature.get("video_info")
+        # Official spec uses "info"; some datasets use "video_info". Accept either.
+        video_info = feature.get("info") or feature.get("video_info")
         if not isinstance(video_info, dict):
-            result["errors"].append(f"video feature {video_key} 缺少 video_info")
+            result["warnings"].append(
+                f"video feature {video_key} 缺少 info（官方库会从视频文件自动探测，不影响加载）"
+            )
             continue
         for video_field in ["video.fps", "video.codec", "video.pix_fmt"]:
             if video_field not in video_info:
