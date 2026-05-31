@@ -411,13 +411,16 @@ def apply_merge_plan(caches: list[Any], output_path: Path, overwrite: bool = Fal
     validation = validate_merge_compatibility(caches)
     if not validation["valid"]:
         return {"ok": False, "errors": validation["errors"], "warnings": validation["warnings"], "validation": validation}
+
     if any(cache.video_keys for cache in caches):
-        return {
-            "ok": False,
-            "errors": ["当前执行版本暂不支持含视频数据集的合并落盘；需要先安装并接入 ffmpeg 视频拼接/重写"],
-            "warnings": validation["warnings"],
-            "validation": validation,
-        }
+        executable = ffmpeg_executable()
+        if not executable:
+            return {
+                "ok": False,
+                "errors": ["当前数据集包含视频，执行合并落盘需要 ffmpeg；当前环境未找到可执行的 ffmpeg"],
+                "warnings": validation["warnings"],
+                "validation": validation,
+            }
 
     output_path = output_path.resolve()
     source_roots = {cache.root.resolve() for cache in caches}
@@ -431,12 +434,16 @@ def apply_merge_plan(caches: list[Any], output_path: Path, overwrite: bool = Fal
         shutil.rmtree(output_path)
 
     merged = build_merged_dataset(caches)
+    v_overrides = None
+    if caches[0].video_keys:
+        v_overrides = write_merged_videos(caches, merged["video_jobs"], merged["episodes"], output_path)
     write_dataset(
         cache=caches[0],
         frames=merged["frames"],
         episodes=merged["episodes"],
         output_path=output_path,
         tasks_df=merged["tasks"],
+        video_info_overrides=v_overrides,
     )
     validation = validate_lerobot_v3_dataset(output_path)
     if not validation["valid"]:
@@ -539,13 +546,16 @@ def build_merged_dataset(caches: list[Any]) -> dict[str, pd.DataFrame]:
     fps = float(first.info["fps"])
     merged_frames: list[pd.DataFrame] = []
     merged_episodes: list[dict[str, Any]] = []
+    video_jobs: list[dict[str, Any]] = []
     global_index = 0
     next_episode_index = 0
 
     for cache_index, cache in enumerate(caches):
         task_map = task_maps[cache_index]
         for _, episode in cache.episodes.sort_values("episode_index").iterrows():
+            source_episode_index = int(episode["episode_index"])
             frame_df = read_episode_frames(cache, episode).copy()
+            old_length = len(frame_df)
             if "task_index" in frame_df.columns:
                 frame_df["task_index"] = frame_df["task_index"].map(lambda value: task_map.get(int(value), int(value)))
             frame_df = normalize_frame_columns(frame_df, next_episode_index, global_index, fps)
@@ -569,6 +579,18 @@ def build_merged_dataset(caches: list[Any]) -> dict[str, pd.DataFrame]:
             row.update(flatten_stats_for_episode(frame_df, first.features))
             merged_frames.append(frame_df)
             merged_episodes.append(row)
+            if cache.video_keys:
+                video_jobs.append(
+                    {
+                        "cache_index": cache_index,
+                        "source_episode_index": source_episode_index,
+                        "source_episode": episode.copy(),
+                        "new_episode_index": next_episode_index,
+                        "start_frame": 0,
+                        "end_frame": old_length,
+                        "length": length,
+                    }
+                )
             global_index += length
             next_episode_index += 1
 
@@ -578,6 +600,7 @@ def build_merged_dataset(caches: list[Any]) -> dict[str, pd.DataFrame]:
         "frames": pd.concat(merged_frames, ignore_index=True),
         "episodes": pd.DataFrame(merged_episodes),
         "tasks": tasks_df,
+        "video_jobs": video_jobs,
     }
 
 
@@ -808,18 +831,7 @@ def write_edited_videos(cache: Any, video_jobs: list[dict[str, Any]], episodes: 
         output_video.parent.mkdir(parents=True, exist_ok=True)
         first_source_video = cache.video_file_for_episode(video_jobs[0]["source_episode"], video_key)
         encoding = video_encoding_for_key(cache, video_key, first_source_video, fps)
-        builtin_encoder = _BUILTIN_ENCODERS.get(encoding["codec"])
-        if builtin_encoder and builtin_encoder not in available_encoders:
-            fallback = _pick_encoder_from_set(available_encoders, encoding["codec"])
-            if not fallback:
-                raise RuntimeError(
-                    f"No encoder available for {encoding['codec']}. "
-                    "Please install ffmpeg with the required encoder: "
-                    "conda install -c conda-forge ffmpeg"
-                )
-            encoding["encoder_options"] = ffmpeg_encoder_options(
-                encoding["codec"], encoding["keyframe_interval"], encoder=fallback
-            )
+        _ensure_encoder_available(available_encoders, encoding, executable)
         video_info_overrides[video_key] = {
             "video.fps": encoding["fps"],
             "video.codec": encoding["codec"],
@@ -908,6 +920,115 @@ def write_edited_videos(cache: Any, video_jobs: list[dict[str, Any]], episodes: 
             if not output_video.exists() or output_video.stat().st_size == 0:
                 raise RuntimeError(f"ffmpeg did not create a valid output video: {output_video}")
     return video_info_overrides
+
+
+def write_merged_videos(
+    caches: list[Any], video_jobs: list[dict[str, Any]], episodes: pd.DataFrame, output_path: Path
+) -> dict[str, dict[str, Any]]:
+    """Write concatenated videos for a merged dataset (multi-source)."""
+    executable = ffmpeg_executable()
+    if not executable:
+        raise RuntimeError("ffmpeg is required for video dataset merge")
+    first = caches[0]
+    fps = float(first.info["fps"])
+    if fps <= 0:
+        raise RuntimeError("dataset fps must be positive to rewrite videos")
+    if not video_jobs:
+        raise RuntimeError("merge produced no output episodes")
+
+    available_encoders = _fetch_encoder_list(executable)
+    output_path.mkdir(parents=True, exist_ok=True)
+    video_info_overrides: dict[str, dict[str, Any]] = {}
+    for video_key in first.video_keys:
+        output_video = output_video_path(first, output_path, video_key)
+        output_video.parent.mkdir(parents=True, exist_ok=True)
+        source_cache = caches[video_jobs[0]["cache_index"]]
+        first_source_video = source_cache.video_file_for_episode(video_jobs[0]["source_episode"], video_key)
+        encoding = video_encoding_for_key(first, video_key, first_source_video, fps)
+        _ensure_encoder_available(available_encoders, encoding, executable)
+        video_info_overrides[video_key] = {
+            "video.fps": encoding["fps"],
+            "video.codec": encoding["codec"],
+            "video.pix_fmt": encoding["pix_fmt"],
+            "has_audio": False,
+            "is_depth_map": False,
+        }
+        cumulative = 0.0
+        with tempfile.TemporaryDirectory(dir=output_path) as directory:
+            temp_dir = Path(directory)
+            segment_paths = []
+            for job_index, job in enumerate(video_jobs):
+                job_cache = caches[job["cache_index"]]
+                source_episode = job["source_episode"]
+                source_video = job_cache.video_file_for_episode(source_episode, video_key)
+                prefix = f"videos/{video_key}"
+                from_col = f"{prefix}/from_timestamp"
+                source_from = float(source_episode.get(from_col, 0.0))
+                start_time = source_from + float(job["start_frame"]) / fps
+                duration = float(job["length"]) / fps
+                segment_path = temp_dir / f"segment-{job_index:06d}.mp4"
+                run_ffmpeg(
+                    [
+                        executable, "-hide_banner", "-loglevel", "error", "-y",
+                        "-ss", f"{start_time:.6f}", "-t", f"{duration:.6f}",
+                        "-i", str(source_video), "-an",
+                        "-vf", f"fps={format_fps(encoding['fps'])}",
+                        "-frames:v", str(int(job["length"])),
+                        *encoding["encoder_options"],
+                        "-pix_fmt", encoding["pix_fmt"],
+                        "-movflags", "+faststart",
+                        str(segment_path),
+                    ]
+                )
+                if not segment_path.exists() or segment_path.stat().st_size == 0:
+                    raise RuntimeError(f"ffmpeg did not create a valid segment: {segment_path}")
+                segment_paths.append(segment_path)
+
+                new_episode_index = int(job["new_episode_index"])
+                row_mask = episodes["episode_index"].astype(int) == new_episode_index
+                episode_start = cumulative
+                cumulative += duration
+                episodes.loc[row_mask, f"{prefix}/chunk_index"] = int(0)
+                episodes.loc[row_mask, f"{prefix}/file_index"] = int(0)
+                episodes.loc[row_mask, f"{prefix}/from_timestamp"] = round(episode_start, 6)
+                episodes.loc[row_mask, f"{prefix}/to_timestamp"] = round(cumulative, 6)
+
+            if len(segment_paths) == 1:
+                shutil.copy2(segment_paths[0], output_video)
+            else:
+                concat_list = temp_dir / "concat.txt"
+                concat_list.write_text(
+                    "\n".join(f"file '{ffmpeg_concat_path(path)}'" for path in segment_paths),
+                    encoding="utf-8",
+                )
+                run_ffmpeg(
+                    [
+                        executable, "-hide_banner", "-loglevel", "error", "-y",
+                        "-f", "concat", "-safe", "0",
+                        "-i", str(concat_list), "-c", "copy",
+                        str(output_video),
+                    ]
+                )
+            if not output_video.exists() or output_video.stat().st_size == 0:
+                raise RuntimeError(f"ffmpeg did not create a valid output video: {output_video}")
+    return video_info_overrides
+
+
+def _ensure_encoder_available(
+    available_encoders: set[str], encoding: dict[str, Any], executable: str
+) -> None:
+    builtin_encoder = _BUILTIN_ENCODERS.get(encoding["codec"])
+    if builtin_encoder and builtin_encoder not in available_encoders:
+        fallback = _pick_encoder_from_set(available_encoders, encoding["codec"])
+        if not fallback:
+            raise RuntimeError(
+                f"No encoder available for {encoding['codec']}. "
+                "Please install ffmpeg with the required encoder: "
+                "conda install -c conda-forge ffmpeg"
+            )
+        encoding["encoder_options"] = ffmpeg_encoder_options(
+            encoding["codec"], encoding["keyframe_interval"], encoder=fallback
+        )
 
 
 def video_encoding_for_key(

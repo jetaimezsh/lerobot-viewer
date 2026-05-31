@@ -241,19 +241,28 @@
           <section class="surface">
             <div class="section-kicker">Dataset Merge</div>
             <h3>合并数据集</h3>
-            <p>把多个 schema 兼容的无视频 v3.0 数据集合并到一个新的输出目录。含视频数据集当前会被阻止落盘。</p>
+            <p>把多个 schema 兼容的 v3.0 数据集合并到一个新的输出目录。支持含视频数据集的合并。</p>
             <div class="merge-controls">
               <button id="addCurrentDatasetToMerge" type="button">加入当前数据集</button>
               <button id="clearMergeList" type="button">清空合并列表</button>
+            </div>
+            <textarea id="mergePaths" rows="7" placeholder="每行一个数据集路径"></textarea>
+            <div style="margin-top: 12px;">
+              <input id="mergeOutputPath" type="text" placeholder="输出目录，例如 D:\datasets\merged_dataset">
+              <label class="checkbox-row" style="margin-top: 8px;">
+                <input id="mergeOverwrite" type="checkbox">
+                覆盖已存在输出目录
+              </label>
+            </div>
+            <div class="merge-run-buttons">
               <button id="validateMerge" type="button">检查合并合法性</button>
               <button id="applyMerge" type="button">生成合并数据集</button>
             </div>
-            <textarea id="mergePaths" rows="7" placeholder="每行一个数据集路径"></textarea>
           </section>
 
           <section class="surface">
             <div class="section-kicker">Merge Result</div>
-            <pre id="mergeOutput" class="edit-output">尚未检查合并。</pre>
+            <div id="mergeResult" class="edit-output empty">尚未检查合并。</div>
           </section>
         </div>
       </section>

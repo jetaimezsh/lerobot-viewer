@@ -96,7 +96,9 @@ const els = {
   validateMerge: document.getElementById("validateMerge"),
   applyMerge: document.getElementById("applyMerge"),
   mergePaths: document.getElementById("mergePaths"),
-  mergeOutput: document.getElementById("mergeOutput"),
+  mergeOutputPath: document.getElementById("mergeOutputPath"),
+  mergeOverwrite: document.getElementById("mergeOverwrite"),
+  mergeResult: document.getElementById("mergeResult"),
   checkModelEnv: document.getElementById("checkModelEnv"),
   refreshModels: document.getElementById("refreshModels"),
   modelName: document.getElementById("modelName"),
@@ -1765,60 +1767,85 @@ function setMergePathList(paths) {
 
 function addCurrentDatasetToMerge() {
   if (!state.summary) {
-    els.mergeOutput.textContent = "请先加载数据集。";
+    els.mergeResult.textContent = "请先加载数据集。";
     return;
   }
   setMergePathList([...mergePathList(), state.summary.root]);
-  els.mergeOutput.textContent = `已加入当前数据集: ${state.summary.root}`;
+  els.mergeResult.textContent = `已加入当前数据集: ${state.summary.root}`;
 }
 
 function clearMergeList() {
   els.mergePaths.value = "";
-  els.mergeOutput.textContent = "已清空合并列表。";
+  els.mergeResult.textContent = "已清空合并列表。";
+}
+
+function renderMergeResult(result) {
+  if (!els.mergeResult) return;
+  els.mergeResult.classList.remove("empty");
+  const ok = result.ok;
+  const errors = result.errors || [];
+  const warnings = result.warnings || [];
+  els.mergeResult.innerHTML = `
+    <div class="result-header">
+      <div><h4>合并${ok ? "成功" : "失败"}</h4></div>
+      <span class="result-status ${ok ? "ok" : "fail"}">${ok ? "通过" : "失败"}</span>
+    </div>
+    ${formatIssueList("错误", errors, "error")}
+    ${formatIssueList("警告", warnings, "warning")}
+    ${result.output_path ? `<div class="result-section"><h4>输出目录</h4><div class="result-path">${escapeHtml(result.output_path)}</div></div>` : ""}
+    ${result.summary ? formatSummaryCards(result.summary) : ""}
+    ${result.validation ? formatValidationResult(result.validation, "输出数据集校验") : ""}
+  `;
+}
+
+function addMergeToResult(message) {
+  if (!els.mergeResult) return;
+  els.mergeResult.classList.remove("empty");
+  els.mergeResult.innerHTML = `<div class="result-loading">${escapeHtml(message)}</div>`;
 }
 
 async function validateMergePlan() {
   const paths = mergePathList();
   if (paths.length < 2) {
-    els.mergeOutput.textContent = "至少需要 2 个数据集路径。";
+    if (els.mergeResult) els.mergeResult.textContent = "至少需要 2 个数据集路径。";
     return;
   }
-  els.mergeOutput.textContent = "正在检查合并合法性...";
+  addMergeToResult("正在检查合并合法性...");
   try {
     const result = await api("/api/merge/validate", {
       method: "POST",
       body: JSON.stringify({ paths }),
     });
-    els.mergeOutput.textContent = JSON.stringify(result, null, 2);
+    renderMergeResult(result);
   } catch (error) {
-    els.mergeOutput.textContent = error.message;
+    addMergeToResult(error.message);
   }
 }
 
 async function applyMergePlan() {
   const paths = mergePathList();
   if (paths.length < 2) {
-    els.mergeOutput.textContent = "至少需要 2 个数据集路径。";
+    if (els.mergeResult) els.mergeResult.textContent = "至少需要 2 个数据集路径。";
     return;
   }
-  const outputPath = els.editOutputPath.value.trim();
+  const outputPath = (els.mergeOutputPath?.value || "").trim();
   if (!outputPath) {
-    els.mergeOutput.textContent = "请在上方填写输出目录。";
+    if (els.mergeResult) els.mergeResult.textContent = "请填写输出目录。";
     return;
   }
-  els.mergeOutput.textContent = "正在生成合并数据集...";
+  addMergeToResult("正在生成合并数据集...");
   try {
     const result = await api("/api/merge/apply", {
       method: "POST",
       body: JSON.stringify({
         paths,
         output_path: outputPath,
-        overwrite: els.editOverwrite.checked,
+        overwrite: els.mergeOverwrite?.checked || false,
       }),
     });
-    els.mergeOutput.textContent = JSON.stringify(result, null, 2);
+    renderMergeResult(result);
   } catch (error) {
-    els.mergeOutput.textContent = error.message;
+    addMergeToResult(error.message);
   }
 }
 
