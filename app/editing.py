@@ -1225,61 +1225,27 @@ def _pick_encoder_from_set(available: set[str], codec: str) -> str | None:
     return None
 
 
-def _normalize_info_types(info: dict[str, Any]) -> None:
-    """Coerce integer-valued fields in info.json to Python int.
+def _normalize_info_int_fields(info: dict[str, Any]) -> None:
+    """Force v3.0-spec-mandated integer fields to Python int.
 
-    LeRobot official code may use {:d} format specifiers on fields like
-    ``fps``, ``total_episodes``, ``video.fps``, etc.  If any of these are
-    Python float (e.g. 30.0) the format call raises
+    LeRobot v3.0 specification explicitly types these as ``int``:
+        fps, total_episodes, total_frames, total_tasks, chunks_size
+
+    ``total_episodes`` / ``total_frames`` / ``total_tasks`` are already
+    assigned with ``int()`` inside ``write_dataset()``, so only *fps* and
+    *chunks_size* (inherited from the source via ``copy.deepcopy``) need
+    guarding here.
+
+    If a value is float (e.g. 30.0 from ``json.load`` of ``"fps": 30.0``)
+    and LeRobot official code later tries ``f"{fps:d}"``, Python raises
     ``Unknown format code 'd' for object of type 'float'``.
     """
-    # Top-level integer fields (per v3.0 spec).
-    _force_int(info, "fps")
-    _force_int(info, "total_episodes")
-    _force_int(info, "total_frames")
-    _force_int(info, "total_tasks")
-    _force_int(info, "chunks_size")
-
-    # Video feature video_info sub-dict.
-    for _key, feature in info.get("features", {}).items():
-        if not isinstance(feature, dict):
-            continue
-        # Shape entries should be ints.
-        shape = feature.get("shape")
-        if isinstance(shape, list):
-            feature["shape"] = [_coerce_int(v) for v in shape]
-        fps = feature.get("fps")
-        if fps is not None:
-            feature["fps"] = _coerce_int(fps) if isinstance(fps, (int, float)) and not isinstance(fps, bool) else fps
-
-        video_info = feature.get("video_info")
-        if isinstance(video_info, dict):
-            _force_int(video_info, "video.fps")
-            # has_audio and is_depth_map are bools — keep as-is.
-            _force_bool(video_info, "has_audio")
-            _force_bool(video_info, "is_depth_map")
-
-
-def _force_int(d: dict[str, Any], key: str) -> None:
-    if key in d and d[key] is not None:
-        d[key] = _coerce_int(d[key])
-
-
-def _coerce_int(value: Any) -> Any:
-    """If *value* looks like a whole number, return int, else return as-is."""
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        if value == int(value):
-            return int(value)
-    return value
-
-
-def _force_bool(d: dict[str, Any], key: str) -> None:
-    if key in d and d[key] is not None and not isinstance(d[key], bool):
-        d[key] = bool(d[key])
+    # fps — v3.0 spec: int
+    if "fps" in info:
+        info["fps"] = int(info["fps"])
+    # chunks_size — v3.0 spec: int (default 1000)
+    if "chunks_size" in info:
+        info["chunks_size"] = int(info["chunks_size"])
 
 
 def write_dataset(
@@ -1326,9 +1292,9 @@ def write_dataset(
             # Ensure every video feature declares is_depth_map (required by v3.0 spec).
             video_info.setdefault("is_depth_map", False)
 
-    # Force integer-typed fields to Python int so LeRobot official validation
-    # (which may use {:d} format specifiers) doesn't choke on floats like 30.0.
-    _normalize_info_types(info)
+    # Force spec-mandated integer fields to Python int so LeRobot
+    # official validation doesn't choke on float-typed values like 30.0.
+    _normalize_info_int_fields(info)
     with (output_path / "meta/info.json").open("w", encoding="utf-8") as f:
         json.dump(clean_json_value(info), f, ensure_ascii=False, indent=2)
 
