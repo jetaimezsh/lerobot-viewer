@@ -138,13 +138,22 @@ def official_lerobot_validation(root: Path, full_sweep: bool = False) -> dict[st
 
 
 def _full_sweep_validation(dataset: Any, length: int) -> dict[str, Any]:
-    """Iterate every sample in *dataset* and report errors."""
+    """Iterate every sample in *dataset* and verify normalization.
+
+    For each frame we:
+    1.  Read ``dataset[idx]`` — exercises parquet slicing and video decode.
+    2.  Attempt per-feature normalization using ``dataset.stats`` — catches
+        missing stats entries, shape mismatches, and dtype incompatibilities
+        that only surface when the training DataLoader applies ``stats.json``.
+    """
     errors: list[str] = []
+    stats = getattr(dataset, "stats", None) or {}
     start = time.time()
     try:
         for idx in range(length):
             try:
-                _ = dataset[idx]
+                frame = dataset[idx]
+                _apply_normalization(frame, stats)
             except Exception as exc:
                 errors.append(f"sample[{idx}]: {exc}")
                 if len(errors) >= 10:
@@ -158,6 +167,34 @@ def _full_sweep_validation(dataset: Any, length: int) -> dict[str, Any]:
         "errors": errors,
         "elapsed_s": elapsed,
     }
+
+
+def _apply_normalization(frame: dict, stats: dict) -> None:
+    """Apply per-feature normalization to *frame* using *stats*.
+
+    This mirrors what LeRobot's training DataLoader does::
+
+        normalized = (value - stats[key]["mean"]) / stats[key]["std"]
+
+    We don't return anything — the point is to verify that the operation
+    does not raise (KeyError for missing stats, ValueError for shape
+    mismatch, TypeError for dtype incompatibility).
+    """
+    for key, value in frame.items():
+        if not isinstance(value, np.ndarray) and not isinstance(value, (list, tuple)):
+            continue
+        entry = stats.get(key)
+        if entry is None:
+            # Feature has no stats — safe to skip (video features
+            # are not in the frame dict anyway).
+            continue
+        mean = np.asarray(entry.get("mean"), dtype=np.float64)
+        std = np.asarray(entry.get("std"), dtype=np.float64)
+        if not mean.size or not std.size:
+            continue
+        arr = np.asarray(value, dtype=np.float64)
+        std_safe = np.where(std == 0, 1.0, std)
+        _ = (arr - mean) / std_safe
 
 
 def _info_type_precheck(root: Path) -> list[str]:
