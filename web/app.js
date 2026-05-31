@@ -831,6 +831,7 @@ function renderEditPanel() {
   updateTrimDraftLabel();
   renderEditOperations();
   updateEditOperationBadge();
+  refreshMarkButtons();
 }
 
 function updateTrimDraftLabel() {
@@ -863,6 +864,7 @@ function setEditMode(mode) {
   updateEditOperationBadge();
   if (els.editDryRunOutput) els.editDryRunOutput.textContent = "模式已切换，已标记操作已清空。";
   refreshModeButtons();
+  refreshMarkButtons();
 }
 
 function refreshModeButtons() {
@@ -930,6 +932,7 @@ function renderEditOperations() {
       state.editOperations = state.editOperations.filter((item) => operationKey(item) !== key);
       renderEditOperations();
       if (els.editDryRunOutput) els.editDryRunOutput.textContent = "编辑计划已变化，请重新运行预估。";
+      refreshMarkButtons();
     });
   }
   updateEditOperationBadge();
@@ -942,13 +945,39 @@ function updateEditOperationBadge() {
   els.editOperationBadge.textContent = `${count} 个已标记${count > 0 ? " (" + modeText + ")" : ""}`;
 }
 
+function getEpisodeOpType() {
+  return state.editMode === "export" ? "select_episode" : "delete_episode";
+}
+
+function getRangeOpType() {
+  return state.editMode === "export" ? "select_episode_range" : "trim_episode";
+}
+
+function findEpisodeMark(episodeIndex) {
+  return state.editOperations.find((op) => op.episode_index === episodeIndex);
+}
+
+function removeEpisodeMark(episodeIndex) {
+  state.editOperations = state.editOperations.filter((op) => op.episode_index !== episodeIndex);
+  renderEditOperations();
+  if (els.editDryRunOutput) els.editDryRunOutput.textContent = "标记已变化，请重新运行预估。";
+}
+
 function markCurrentEpisode() {
   const episodeIndex = currentEpisodeIndex();
   if (episodeIndex === null) return;
-  const type = state.editMode === "export" ? "select_episode" : "delete_episode";
-  upsertEditOperation({ type, episode_index: episodeIndex });
+  const targetType = getEpisodeOpType();
+  const existing = findEpisodeMark(episodeIndex);
+  if (existing && existing.type === targetType) {
+    removeEpisodeMark(episodeIndex);
+    els.editEpisodeMeta.textContent = `已取消 Episode ${episodeIndex} 的标记。`;
+    refreshMarkButtons();
+    return;
+  }
+  upsertEditOperation({ type: targetType, episode_index: episodeIndex });
   const label = state.editMode === "export" ? "导出" : "删除";
   els.editEpisodeMeta.textContent = `已标记 Episode ${episodeIndex}（${label}模式）。`;
+  refreshMarkButtons();
 }
 
 function setTrimPoint(kind) {
@@ -967,10 +996,45 @@ function markCurrentRange() {
     els.editDryRunOutput.textContent = "区间无效：请先设置起点和终点，且终点必须大于起点。";
     return;
   }
-  const type = state.editMode === "export" ? "select_episode_range" : "trim_episode";
-  upsertEditOperation({ type, episode_index: episodeIndex, start_time: start, end_time: end });
+  const targetType = getRangeOpType();
+  const existing = findEpisodeMark(episodeIndex);
+  const sameInterval = existing && existing.type === targetType
+    && Math.abs((existing.start_time || 0) - start) < 1e-6
+    && Math.abs((existing.end_time || 0) - end) < 1e-6;
+  if (sameInterval) {
+    removeEpisodeMark(episodeIndex);
+    els.editEpisodeMeta.textContent = `已取消 Episode ${episodeIndex} 的区间标记。`;
+    refreshMarkButtons();
+    return;
+  }
+  upsertEditOperation({ type: targetType, episode_index: episodeIndex, start_time: start, end_time: end });
   const label = state.editMode === "export" ? "导出" : "裁剪";
   els.editEpisodeMeta.textContent = `已标记 Episode ${episodeIndex} 的区间（${label}模式）。`;
+  refreshMarkButtons();
+}
+
+function refreshMarkButtons() {
+  if (!els.markEpisode || !els.markRange) return;
+  const episodeIndex = currentEpisodeIndex();
+  if (episodeIndex === null) {
+    els.markEpisode.classList.remove("active", "mark-delete", "mark-export");
+    els.markRange.classList.remove("active", "mark-delete", "mark-export");
+    return;
+  }
+  const existing = findEpisodeMark(episodeIndex);
+  const episodeType = getEpisodeOpType();
+  const rangeType = getRangeOpType();
+  const colorClass = state.editMode === "export" ? "mark-export" : "mark-delete";
+
+  const epActive = !!(existing && existing.type === episodeType);
+  els.markEpisode.classList.toggle("active", epActive);
+  els.markEpisode.classList.toggle("mark-delete", epActive && colorClass === "mark-delete");
+  els.markEpisode.classList.toggle("mark-export", epActive && colorClass === "mark-export");
+
+  const rangeActive = !!(existing && existing.type === rangeType);
+  els.markRange.classList.toggle("active", rangeActive);
+  els.markRange.classList.toggle("mark-delete", rangeActive && colorClass === "mark-delete");
+  els.markRange.classList.toggle("mark-export", rangeActive && colorClass === "mark-export");
 }
 
 function sendCurrentEpisodeToBacktest() {

@@ -911,6 +911,36 @@ h3 {
   color: #fff;
 }
 
+.mark-button {
+  padding: 8px 16px;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+  background: #334155;
+  color: #e2e8f0;
+}
+
+.mark-button:hover {
+  background: #475569;
+}
+
+.mark-button.active.mark-delete {
+  border-color: var(--danger, #c92a2a);
+  box-shadow: 0 0 0 2px rgba(201, 42, 42, 0.25);
+  background: #4a1a1a;
+  color: #fecaca;
+}
+
+.mark-button.active.mark-export {
+  border-color: #2f9e44;
+  box-shadow: 0 0 0 2px rgba(47, 158, 68, 0.25);
+  background: #1a3a1a;
+  color: #bbf7d0;
+}
+
 .edit-draft {
   margin-top: 12px;
   border: 1px solid var(--line);
