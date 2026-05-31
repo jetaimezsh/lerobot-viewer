@@ -67,28 +67,82 @@ def official_lerobot_validation(root: Path) -> dict[str, Any]:
     if dataset_cls is None:
         return {"status": "failed", "error": "lerobot.datasets.lerobot_dataset 中未找到 LeRobotDataset"}
 
+    # Pre-check: inspect info.json for type issues that would break official validation.
+    pre_check_issues = _info_type_precheck(root)
+
     attempts = [
         {"repo_id": root.name, "root": root},
         {"repo_id": root.name, "root": str(root)},
         {"root": root},
         {"root": str(root)},
     ]
-    errors = []
+    errors: list[str] = []
+    tracebacks: list[str] = []
     for kwargs in attempts:
         try:
             dataset = dataset_cls(**kwargs)
             length = len(dataset)
             if length:
                 _ = dataset[0]
-            return {
+            result: dict[str, Any] = {
                 "status": "passed",
                 "repo_id": kwargs.get("repo_id"),
                 "root": str(kwargs.get("root", root)),
                 "length": int(length),
             }
+            if pre_check_issues:
+                result["pre_check_issues"] = pre_check_issues
+            return result
         except Exception as exc:
-            errors.append(f"{kwargs}: {exc}")
-    return {"status": "failed", "error": " | ".join(errors)}
+            import traceback
+            tb = traceback.format_exc()
+            summary = f"{kwargs}: {exc}"
+            errors.append(summary)
+            tracebacks.append(summary + "\n" + tb)
+
+    failure: dict[str, Any] = {"status": "failed", "error": " | ".join(errors)}
+    failure["tracebacks"] = tracebacks
+    if pre_check_issues:
+        failure["pre_check_issues"] = pre_check_issues
+    return failure
+
+
+def _info_type_precheck(root: Path) -> list[str]:
+    """Scan info.json for type issues that would trip up official LeRobot validation."""
+    import json as _json
+    info_path = root / "meta" / "info.json"
+    if not info_path.exists():
+        return ["info.json not found"]
+    try:
+        info = _json.loads(info_path.read_text(encoding="utf-8"))
+    except Exception:
+        return ["info.json is not valid JSON"]
+
+    issues: list[str] = []
+    # fps declared as int in v3.0 spec.
+    fps = info.get("fps")
+    if isinstance(fps, float) and not isinstance(fps, bool):
+        issues.append(f"info.fps is float ({fps}), should be int")
+    for field in ("total_episodes", "total_frames", "total_tasks", "chunks_size"):
+        val = info.get(field)
+        if isinstance(val, float) and not isinstance(val, bool):
+            issues.append(f"info.{field} is float ({val}), should be int")
+
+    for vk, feat in info.get("features", {}).items():
+        if not isinstance(feat, dict):
+            continue
+        vi = feat.get("video_info")
+        if not isinstance(vi, dict):
+            continue
+        for vi_field in ("video.fps",):
+            v = vi.get(vi_field)
+            if isinstance(v, float) and not isinstance(v, bool) and v == int(v):
+                issues.append(f"features.{vk}.video_info.{vi_field} is float ({v}), should be int")
+        for vi_field in ("has_audio", "is_depth_map"):
+            v = vi.get(vi_field)
+            if v is not None and not isinstance(v, bool):
+                issues.append(f"features.{vk}.video_info.{vi_field} is not bool: {type(v).__name__} = {v!r}")
+    return issues
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -132,6 +186,15 @@ def validate_info(root: Path, info: dict[str, Any], result: dict[str, Any]) -> N
     for key in ["chunks_size", "data_files_size_in_mb", "video_files_size_in_mb"]:
         if key not in info:
             result["warnings"].append(f"info.json 缺少字段: {key}（v3.0 建议包含）")
+
+    # Type checks: LeRobot official code may use {:d} format on these.
+    for int_field in ("fps", "total_episodes", "total_frames", "total_tasks", "chunks_size"):
+        val = info.get(int_field)
+        if isinstance(val, float) and not isinstance(val, bool):
+            result["warnings"].append(
+                f"info.{int_field} 是 float ({val}) 而非 int — LeRobot 官方加载可能报错"
+            )
+
     if any(feature.get("dtype") == "video" for feature in info.get("features", {}).values()) and not info.get("video_path"):
         result["errors"].append("info.json 有 video feature 但缺少 video_path")
     if not (root / "meta/stats.json").exists():
@@ -147,6 +210,12 @@ def validate_info(root: Path, info: dict[str, Any], result: dict[str, Any]) -> N
         for video_field in ["video.fps", "video.codec", "video.pix_fmt"]:
             if video_field not in video_info:
                 result["errors"].append(f"video feature {video_key} video_info 缺少 {video_field}")
+        # video.fps declared as int in many datasets — float can break {:d} formatting.
+        vfps = video_info.get("video.fps")
+        if isinstance(vfps, float) and not isinstance(vfps, bool) and vfps == int(vfps):
+            result["warnings"].append(
+                f"video feature {video_key} video_info.video.fps 是 float ({vfps}) 而非 int"
+            )
         if "has_audio" not in video_info:
             result["warnings"].append(f"video feature {video_key} video_info 缺少 has_audio")
         if "is_depth_map" not in video_info:
