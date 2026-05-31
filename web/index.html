@@ -296,7 +296,10 @@
             <div class="section-kicker">Add Model</div>
             <div class="model-form">
               <input id="modelName" type="text" placeholder="模型名称，例如 ACT pusht">
-              <input id="checkpointPath" type="text" placeholder="checkpoint 路径，例如 /data/checkpoints/pretrained_model">
+              <div style="display:flex; gap:8px;">
+                <input id="checkpointPath" type="text" placeholder="checkpoint 路径，例如 /data/checkpoints/pretrained_model" style="flex:1;">
+                <button id="browseCheckpoint" type="button" style="flex-shrink:0;">选择目录</button>
+              </div>
               <select id="modelAdapterType">
                 <option value="lerobot_official">LeRobot 官方 checkpoint</option>
                 <option value="custom_script">自定义脚本（预留接口）</option>

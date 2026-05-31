@@ -114,6 +114,7 @@ const els = {
   refreshModels: document.getElementById("refreshModels"),
   modelName: document.getElementById("modelName"),
   checkpointPath: document.getElementById("checkpointPath"),
+  browseCheckpoint: document.getElementById("browseCheckpoint"),
   modelAdapterType: document.getElementById("modelAdapterType"),
   modelScriptPath: document.getElementById("modelScriptPath"),
   modelDevice: document.getElementById("modelDevice"),
@@ -1883,10 +1884,14 @@ function clearMergeList() {
 }
 
 // ── Folder Browser for merge path input ────────────────────────────────
-function openFolderBrowser() {
+function openFolderBrowser(targetInput, onSelect) {
   if (!els.folderBrowser) return;
   els.folderBrowser.style.display = "flex";
-  navigateFolderBrowser(els.mergePaths.value.trim() || "");
+  // Store callback to use when user clicks "选择此目录".
+  state._fbOnSelect = onSelect;
+  state._fbTarget = targetInput;
+  const startDir = (targetInput && targetInput.value) ? targetInput.value.trim() : "";
+  navigateFolderBrowser(startDir);
 }
 
 function closeFolderBrowser() {
@@ -2197,7 +2202,9 @@ els.strictValidateDataset.addEventListener("click", strictValidateCurrentDataset
 els.runEditDryRun.addEventListener("click", runEditDryRun);
 els.applyEditPlan.addEventListener("click", applyEditPlan);
 els.addCurrentDatasetToMerge.addEventListener("click", addCurrentDatasetToMerge);
-if (els.addMergePathBtn) els.addMergePathBtn.addEventListener("click", openFolderBrowser);
+if (els.addMergePathBtn) els.addMergePathBtn.addEventListener("click", () => {
+  openFolderBrowser(els.mergePaths, (dir) => { addMergePath(dir); els.mergePaths.value = ""; });
+});
 els.clearMergeList.addEventListener("click", clearMergeList);
 els.validateMerge.addEventListener("click", validateMergePlan);
 els.applyMerge.addEventListener("click", applyMergePlan);
@@ -2206,7 +2213,13 @@ els.applyMerge.addEventListener("click", applyMergePlan);
 if (els.folderBrowserClose) els.folderBrowserClose.addEventListener("click", closeFolderBrowser);
 if (els.folderBrowserSelect) els.folderBrowserSelect.addEventListener("click", () => {
   const dir = (state._fbBase || "").trim();
-  if (dir) { addMergePath(dir); els.mergePaths.value = ""; }
+  if (dir) {
+    if (state._fbOnSelect) {
+      state._fbOnSelect(dir);
+    } else {
+      addMergePath(dir);
+    }
+  }
   closeFolderBrowser();
 });
 if (els.folderBrowserUp) els.folderBrowserUp.addEventListener("click", () => {
@@ -2254,6 +2267,27 @@ if (els.mergePaths) els.mergePaths.addEventListener("keydown", (event) => {
 els.checkModelEnv.addEventListener("click", loadModelEnv);
 els.refreshModels.addEventListener("click", loadModels);
 els.registerModel.addEventListener("click", registerCurrentModel);
+
+// Checkpoint path: folder browser button
+if (els.browseCheckpoint) els.browseCheckpoint.addEventListener("click", () => {
+  openFolderBrowser(els.checkpointPath, (dir) => { els.checkpointPath.value = dir; });
+});
+
+// Checkpoint path: autocomplete via /api/path/suggest
+if (els.checkpointPath) els.checkpointPath.addEventListener("input", async () => {
+  clearTimeout(state._cpTimer);
+  state._cpTimer = setTimeout(async () => {
+    const val = els.checkpointPath.value.trim();
+    if (!val) return;
+    try {
+      const result = await api(`/api/path/suggest?path=${encodeURIComponent(val)}`);
+      if (result && result.base === val && result.items && result.items.length > 0) {
+        // Show first match as a single suggestion below the input
+        // (simple approach: just highlight, no dropdown for now)
+      }
+    } catch (_) {}
+  }, 200);
+});
 els.modelList.addEventListener("click", handleModelAction);
 els.runBacktest.addEventListener("click", runSelectedBacktest);
 els.clearBacktest.addEventListener("click", clearBacktestResult);
