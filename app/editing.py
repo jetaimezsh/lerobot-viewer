@@ -438,19 +438,11 @@ def apply_merge_plan(caches: list[Any], output_path: Path, overwrite: bool = Fal
     if caches[0].video_keys:
         v_overrides = write_merged_videos(caches, merged["video_jobs"], merged["episodes"], output_path)
 
-    # Compute the combined source total_frames so _rebuild_stats
-    # scales video feature stats correctly across all source datasets.
+    # Compute combined source total_frames so _rebuild_stats can
+    # scale the carry-over video stats count proportionally.
+    # Video stats will be overwritten with fresh values by
+    # _recompute_video_stats_from_output after write_dataset.
     merge_source_total = sum(int(c.info.get("total_frames", 0)) for c in caches)
-    # Use the first cache that has video_keys as the source of video
-    # pixel stats (mean/std are per-pixel constants, independent of
-    # which dataset they came from).
-    merge_source_stats = None
-    for c in caches:
-        if c.video_keys:
-            merge_source_stats = _read_source_stats(c)
-            break
-    if merge_source_stats is None:
-        merge_source_stats = _read_source_stats(caches[0])
 
     write_dataset(
         cache=caches[0],
@@ -460,7 +452,6 @@ def apply_merge_plan(caches: list[Any], output_path: Path, overwrite: bool = Fal
         tasks_df=merged["tasks"],
         video_info_overrides=v_overrides,
         stats_source_total=merge_source_total,
-        stats_source=merge_source_stats,
     )
     validation = validate_lerobot_v3_dataset(output_path)
     if not validation["valid"]:
@@ -1520,6 +1511,11 @@ def write_dataset(
     with (output_path / "meta/stats.json").open("w", encoding="utf-8") as f:
         json.dump(clean_json_value(stats), f, ensure_ascii=False, indent=2)
 
+    # If lerobot is installed, sample video frames from the output to
+    # compute fresh pixel-level stats.  This is more accurate than
+    # carrying over stats from the source(s).
+    _recompute_video_stats_from_output(output_path)
+
 
 def flatten_stats_for_episode(df: pd.DataFrame, features: dict[str, dict[str, Any]]) -> dict[str, Any]:
     result = {}
@@ -1535,29 +1531,21 @@ def _rebuild_stats(
     source_total: int | None = None,
     source_stats: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Build output stats.json.
+    """Build initial output stats.json.
 
-    - Non-video features: recompute min / max / mean / std / count from
-      the output frame DataFrame.
-    - Video features: preserve pixel-level stats (min / max / mean / std)
-      from the source ``stats.json``, but **scale** ``count`` proportionally
-      to the new ``total_frames``.  LeRobot's ``compute_episode_stats()``
-      only samples images for video features, so ``count`` is a sample
-      count, not ``total_frames``.  We adjust it to keep the sampling
-      ratio consistent after removing frames.
-
-    *source_total* and *source_stats* override the values read from
-    *cache* — used by the merge path where the combined source spans
-    multiple datasets.
+    Non-video features are recomputed from *frames*.  Video features are
+    carried over from *source_stats* as a placeholder — they will be
+    overwritten with fresh pixel-level stats from the output video files
+    via ``_recompute_video_stats_from_output`` (if lerobot is available).
     """
     if source_stats is None:
         source_stats = _read_source_stats(cache)
     if source_total is None:
         source_total = int(cache.info.get("total_frames", 0))
-    stats: dict[str, dict[str, Any]] = {}
 
     output_total = int(len(frames))
     ratio = output_total / max(source_total, 1)
+    stats: dict[str, dict[str, Any]] = {}
 
     for key, feature in cache.features.items():
         dtype = feature.get("dtype")
@@ -1577,8 +1565,7 @@ def _rebuild_stats(
             "std": clean_json_value(np.nanstd(values, axis=0).tolist()),
             "count": [int(values.shape[0])],
         }
-    # Carry over any source stats keys NOT declared as features
-    # (corner case: old/external datasets may have extra entries).
+    # Carry over source stats keys not declared as features.
     if source_stats:
         for key, value in source_stats.items():
             if key not in stats:
@@ -1608,6 +1595,70 @@ def _read_source_stats(cache: Any) -> dict[str, Any] | None:
             return json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def _recompute_video_stats_from_output(output_path: Path) -> None:
+    """Recompute video pixel stats from the output dataset's video files.
+
+    Loads the output dataset via the official ``LeRobotDataset`` and
+    calls ``compute_episode_stats()`` to sample actual video frames.
+    This gives fresh, correct pixel-level min / max / mean / std rather
+    than statically merging source stats.
+    """
+    try:
+        lerobot_module = importlib.import_module("lerobot.datasets.lerobot_dataset")
+    except Exception:
+        return  # lerobot not installed — no-op
+
+    dataset_cls = getattr(lerobot_module, "LeRobotDataset", None)
+    if dataset_cls is None:
+        return
+
+    try:
+        dataset = dataset_cls(repo_id=output_path.name, root=output_path)
+    except Exception:
+        # If the above fails, try without repo_id.
+        try:
+            dataset = dataset_cls(root=output_path)
+        except Exception:
+            return
+
+    # Collect video keys from the dataset features.
+    meta = getattr(dataset, "meta", None)
+    features = getattr(meta, "features", {}) if meta else {}
+    video_keys = [k for k, v in features.items() if isinstance(v, dict) and v.get("dtype") == "video"]
+    if not video_keys:
+        return
+
+    # Find the official stats computation function.
+    compute_fn = _find_stats_compute_fn(dataset, lerobot_module)
+    if compute_fn is None:
+        return
+
+    try:
+        compute_fn(dataset, video_keys=video_keys)
+    except Exception:
+        pass
+
+
+def _find_stats_compute_fn(dataset: Any, module: Any) -> Any | None:
+    """Locate the LeRobot stats recomputation function for video features."""
+    # v0.5+ : dataset.compute_episode_stats()
+    fn = getattr(dataset, "compute_episode_stats", None)
+    if callable(fn):
+        return fn
+
+    # v0.4+ : lerobot.datasets.stats.compute_episode_stats(dataset)
+    try:
+        stats_module = importlib.import_module("lerobot.datasets.stats")
+    except Exception:
+        stats_module = None
+    if stats_module:
+        fn = getattr(stats_module, "compute_episode_stats", None)
+        if callable(fn):
+            return fn
+
+    return None
 
 
 def global_stats(df: pd.DataFrame, features: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
