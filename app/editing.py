@@ -1511,23 +1511,31 @@ def flatten_stats_for_episode(df: pd.DataFrame, features: dict[str, dict[str, An
 
 
 def _rebuild_stats(frames: pd.DataFrame, cache: Any) -> dict[str, dict[str, Any]]:
-    """Build output stats.json: compute fresh stats for recomputable features,
-    preserve source stats for features we cannot recompute (e.g. video).
+    """Build output stats.json.
 
-    Some LeRobot datasets (including official ones like ``lerobot/pusht``)
-    carry per-channel pixel statistics for video features in their source
-    ``meta/stats.json``.  We cannot recompute those from the frame parquet
-    (video data lives in MP4 files), but downstream training pipelines may
-    expect them to be present.
+    - Non-video features: recompute min / max / mean / std / count from
+      the output frame DataFrame.
+    - Video features: preserve pixel-level stats (min / max / mean / std)
+      from the source ``stats.json``, but **scale** ``count`` proportionally
+      to the new ``total_frames``.  LeRobot's ``compute_episode_stats()``
+      only samples images for video features, so ``count`` is a sample
+      count, not ``total_frames``.  We adjust it to keep the sampling
+      ratio consistent after removing frames.
     """
-    # Start with a shallow copy of the source stats so keys we can't
-    # recompute (video features etc.) are preserved.
     source_stats = _read_source_stats(cache)
-    stats = {k: v for k, v in source_stats.items()} if source_stats else {}
+    stats: dict[str, dict[str, Any]] = {}
 
-    # Overlay fresh stats for every feature we CAN recompute.
+    source_total = int(cache.info.get("total_frames", 0))
+    output_total = int(len(frames))
+    ratio = output_total / max(source_total, 1)
+
     for key, feature in cache.features.items():
-        if key not in frames.columns or feature.get("dtype") == "video":
+        dtype = feature.get("dtype")
+        if dtype == "video":
+            if source_stats and key in source_stats:
+                stats[key] = _scale_video_stats(source_stats[key], ratio)
+            continue
+        if key not in frames.columns:
             continue
         values = column_values(frames[key])
         if values.size == 0:
@@ -1539,7 +1547,25 @@ def _rebuild_stats(frames: pd.DataFrame, cache: Any) -> dict[str, dict[str, Any]
             "std": clean_json_value(np.nanstd(values, axis=0).tolist()),
             "count": [int(values.shape[0])],
         }
+    # Carry over any source stats keys NOT declared as features
+    # (corner case: old/external datasets may have extra entries).
+    if source_stats:
+        for key, value in source_stats.items():
+            if key not in stats:
+                stats[key] = copy.deepcopy(value)
     return stats
+
+
+def _scale_video_stats(
+    source_entry: dict[str, Any], ratio: float
+) -> dict[str, Any]:
+    """Deep-copy *source_entry* and scale its ``count`` by *ratio*."""
+    entry = copy.deepcopy(source_entry)
+    count_spec = entry.get("count")
+    if count_spec and isinstance(count_spec, list) and len(count_spec) == 1:
+        old_count = int(count_spec[0])
+        entry["count"] = [max(1, int(round(old_count * ratio)))]
+    return entry
 
 
 def _read_source_stats(cache: Any) -> dict[str, Any] | None:

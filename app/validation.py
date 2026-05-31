@@ -645,14 +645,13 @@ def validate_stats(root: Path, info: dict[str, Any], result: dict[str, Any]) -> 
                 result["warnings"].append(f"meta/stats.json 缺少 {key}/{stat_name}")
 
         # count vs total_frames consistency check.
-        count = stats[key].get("count")
-        if count and isinstance(count, list) and int(count[0]) != total_frames:
-            # Video stats may legitimately report a count different
-            # from total_frames (e.g. the source dataset had 25650
-            # frames but video stats carried 19619 — the dataset was
-            # already edited).  Downgrade to info for video.
-            msg = f"stats {key}/count ({count[0]}) != total_frames ({total_frames})"
-            if is_video:
-                result["warnings"].append(msg)
-            else:
-                result["warnings"].append(msg)
+        # For video / image features, LeRobot's compute_episode_stats()
+        # samples frames (via sample_images()) and count is the sample
+        # count — it is NOT expected to equal total_frames.
+        # Only warn for non-video features where count MUST match.
+        if not is_video:
+            count = stats[key].get("count")
+            if count and isinstance(count, list) and int(count[0]) != total_frames:
+                result["warnings"].append(
+                    f"stats {key}/count ({count[0]}) != total_frames ({total_frames})"
+                )
