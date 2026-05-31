@@ -872,6 +872,21 @@ h3 {
   background: var(--danger);
 }
 
+.edit-mode-separator {
+  width: 100%;
+  margin: 4px 0;
+  border-top: 1px solid var(--line);
+}
+
+.select-button {
+  background: var(--green, #2f9e44);
+  color: #fff;
+}
+
+.select-button:hover {
+  background: var(--green-hover, #2b8a3e);
+}
+
 .edit-draft {
   margin-top: 12px;
   border: 1px solid var(--line);

@@ -92,17 +92,187 @@ def editing_tool_status(cache: Any | None = None) -> dict[str, Any]:
     }
 
 
+def _classify_mode(operations):
+    """Return 'select', 'edit', 'mixed', or 'none' based on operation types."""
+    has_select = any(
+        op.type in ("select_episode", "select_episode_range")
+        if hasattr(op, "type") else op.get("type") in ("select_episode", "select_episode_range")
+        for op in operations
+    )
+    has_edit = any(
+        op.type in ("delete_episode", "trim_episode")
+        if hasattr(op, "type") else op.get("type") in ("delete_episode", "trim_episode")
+        for op in operations
+    )
+    if has_select and has_edit:
+        return "mixed"
+    if has_select:
+        return "select"
+    if has_edit:
+        return "edit"
+    return "none"
+
+
 def validate_edit_plan(cache: Any, operations: list[EditOperation]) -> dict[str, Any]:
+    mode = _classify_mode(operations)
+    if mode == "mixed":
+        return {
+            "valid": False,
+            "errors": ["不能在同一操作列表中混合使用 select_* 和 delete_*/trim_* 操作。请选择一种模式：选择导出或删除/裁剪。"],
+            "warnings": [],
+            "operations": [],
+            "original": {},
+            "predicted": {},
+            "requires_video_processing": False,
+        }
+
     errors: list[str] = []
     warnings: list[str] = []
     normalized: list[dict[str, Any]] = []
-    deleted: set[int] = set()
-    trimmed: dict[int, int] = {}
     original_lengths = {
         int(row["episode_index"]): int(row.get("length", 0))
         for row in cache.episodes.to_dict(orient="records")
     }
     fps = float(cache.info["fps"])
+
+    if mode == "select":
+        return _validate_select_plan(cache, operations, original_lengths, fps)
+    return _validate_edit_plan(cache, operations, original_lengths, fps)
+
+
+def _normalize_frame_range(
+    op: Any,
+    episode_index: int,
+    length: int,
+    fps: float,
+    errors: list[str],
+) -> dict[str, Any] | None:
+    """Validate and convert start_time/end_time to frame range.  Returns None on error."""
+    start = op.start_time
+    end = op.end_time
+    if start is None or end is None:
+        errors.append(f"episode {episode_index} 操作缺少 start_time 或 end_time")
+        return None
+    if not math.isfinite(start) or not math.isfinite(end):
+        errors.append(f"episode {episode_index} 时间不是有效数字")
+        return None
+    if start < 0 or end <= start:
+        errors.append(f"episode {episode_index} 区间非法: {start} - {end}")
+        return None
+    duration = length / fps
+    if end > duration + 1e-6:
+        errors.append(f"episode {episode_index} 终点超过 episode 时长: {end:.3f}s > {duration:.3f}s")
+        return None
+    start_frame = max(0, min(length - 1, int(math.floor(start * fps))))
+    end_frame = max(start_frame + 1, min(length, int(math.ceil(end * fps))))
+    new_length = end_frame - start_frame
+    return {
+        "type": op.type if hasattr(op, "type") else op.get("type"),
+        "episode_index": episode_index,
+        "start_time": round(start_frame / fps, 6),
+        "end_time": round(end_frame / fps, 6),
+        "start_frame": start_frame,
+        "end_frame": end_frame,
+        "new_length": new_length,
+        "old_length": length,
+    }
+
+
+def _validate_select_plan(
+    cache: Any,
+    operations: list[EditOperation],
+    original_lengths: dict[int, int],
+    fps: float,
+) -> dict[str, Any]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    normalized: list[dict[str, Any]] = []
+    selected: dict[int, dict[str, Any]] = {}
+
+    seen: dict[int, str] = {}
+    for op in operations:
+        op_type = getattr(op, "type", None)
+        if op_type is None and isinstance(op, dict):
+            op_type = op.get("type")
+        episode_index = int(op.episode_index)
+        if episode_index not in original_lengths:
+            errors.append(f"episode 不存在: {episode_index}")
+            continue
+        if episode_index in seen:
+            errors.append(f"episode {episode_index} 有多个操作，当前版本每个 episode 只允许一个操作")
+            continue
+        seen[episode_index] = op_type
+
+        if op_type == "select_episode":
+            length = original_lengths[episode_index]
+            duration = length / fps
+            entry = {
+                "type": "select_episode",
+                "episode_index": episode_index,
+                "start_time": 0.0,
+                "end_time": round(duration, 6),
+                "start_frame": 0,
+                "end_frame": length,
+                "new_length": length,
+                "old_length": length,
+            }
+            selected[episode_index] = entry
+            normalized.append(entry)
+            continue
+
+        if op_type == "select_episode_range":
+            length = original_lengths[episode_index]
+            entry = _normalize_frame_range(op, episode_index, length, fps, errors)
+            if entry is None:
+                continue
+            entry["type"] = "select_episode_range"
+            selected[episode_index] = entry
+            normalized.append(entry)
+            continue
+
+        errors.append(f"未知编辑操作: {op_type}")
+
+    if not selected and not errors:
+        errors.append("选择导出模式下至少需要选择一个 episode 或区间")
+
+    predicted_frames = sum(item["new_length"] for item in selected.values())
+    select_episodes_count = sum(1 for item in normalized if item["type"] == "select_episode")
+    select_ranges_count = sum(1 for item in normalized if item["type"] == "select_episode_range")
+
+    if cache.video_keys and normalized:
+        warnings.append("数据集包含视频，应用编辑时需要同步裁剪/重写视频文件")
+
+    return {
+        "valid": not errors,
+        "errors": errors,
+        "warnings": warnings,
+        "operations": normalized,
+        "original": {
+            "episodes": len(original_lengths),
+            "frames": int(cache.info.get("total_frames", sum(original_lengths.values()))),
+            "video_keys": cache.video_keys,
+        },
+        "predicted": {
+            "episodes": len(selected),
+            "frames": predicted_frames,
+            "selected_episodes": select_episodes_count,
+            "selected_ranges": select_ranges_count,
+        },
+        "requires_video_processing": bool(cache.video_keys and normalized),
+    }
+
+
+def _validate_edit_plan(
+    cache: Any,
+    operations: list[EditOperation],
+    original_lengths: dict[int, int],
+    fps: float,
+) -> dict[str, Any]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    normalized: list[dict[str, Any]] = []
+    deleted: set[int] = set()
+    trimmed: dict[int, int] = {}
 
     seen: dict[int, str] = {}
     for op in operations:
@@ -122,37 +292,11 @@ def validate_edit_plan(cache: Any, operations: list[EditOperation]) -> dict[str,
 
         if op.type == "trim_episode":
             length = original_lengths[episode_index]
-            start = op.start_time
-            end = op.end_time
-            if start is None or end is None:
-                errors.append(f"episode {episode_index} 裁剪操作缺少 start_time 或 end_time")
+            entry = _normalize_frame_range(op, episode_index, length, fps, errors)
+            if entry is None:
                 continue
-            if not math.isfinite(start) or not math.isfinite(end):
-                errors.append(f"episode {episode_index} 裁剪时间不是有效数字")
-                continue
-            if start < 0 or end <= start:
-                errors.append(f"episode {episode_index} 裁剪区间非法: {start} - {end}")
-                continue
-            duration = length / fps
-            if end > duration + 1e-6:
-                errors.append(f"episode {episode_index} 裁剪终点超过 episode 时长: {end:.3f}s > {duration:.3f}s")
-                continue
-            start_frame = max(0, min(length - 1, int(math.floor(start * fps))))
-            end_frame = max(start_frame + 1, min(length, int(math.ceil(end * fps))))
-            new_length = end_frame - start_frame
-            trimmed[episode_index] = new_length
-            normalized.append(
-                {
-                    "type": op.type,
-                    "episode_index": episode_index,
-                    "start_time": round(start_frame / fps, 6),
-                    "end_time": round(end_frame / fps, 6),
-                    "start_frame": start_frame,
-                    "end_frame": end_frame,
-                    "new_length": new_length,
-                    "old_length": length,
-                }
-            )
+            trimmed[episode_index] = entry["new_length"]
+            normalized.append(entry)
             continue
 
         errors.append(f"未知编辑操作: {op.type}")
@@ -497,6 +641,7 @@ def task_text_from_record(record: dict[str, Any]) -> str:
 
 def build_edited_dataset(cache: Any, normalized_operations: list[dict[str, Any]]) -> dict[str, Any]:
     operations_by_episode = {int(op["episode_index"]): op for op in normalized_operations}
+    has_select = any(op["type"] in ("select_episode", "select_episode_range") for op in normalized_operations)
     fps = float(cache.info["fps"])
     new_frames: list[pd.DataFrame] = []
     new_episode_rows: list[dict[str, Any]] = []
@@ -507,12 +652,18 @@ def build_edited_dataset(cache: Any, normalized_operations: list[dict[str, Any]]
     for _, episode in cache.episodes.sort_values("episode_index").iterrows():
         source_episode_index = int(episode["episode_index"])
         operation = operations_by_episode.get(source_episode_index)
-        if operation and operation["type"] == "delete_episode":
-            continue
+        if has_select:
+            # Select mode: skip any episode not explicitly selected.
+            if operation is None:
+                continue
+        else:
+            # Edit mode: skip deleted episodes.
+            if operation and operation["type"] == "delete_episode":
+                continue
 
         frame_df = read_episode_frames(cache, episode)
         old_length = len(frame_df)
-        if operation and operation["type"] == "trim_episode":
+        if operation and operation["type"] in ("trim_episode", "select_episode_range"):
             source_start_frame = int(operation["start_frame"])
             source_end_frame = int(operation["end_frame"])
             frame_df = frame_df.iloc[source_start_frame:source_end_frame].copy()

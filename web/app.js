@@ -75,6 +75,8 @@ const els = {
   setTrimEnd: document.getElementById("setTrimEnd"),
   markTrimEpisode: document.getElementById("markTrimEpisode"),
   sendEpisodeToBacktest: document.getElementById("sendEpisodeToBacktest"),
+  selectExportEpisode: document.getElementById("selectExportEpisode"),
+  selectExportRange: document.getElementById("selectExportRange"),
   trimDraft: document.getElementById("trimDraft"),
   editOperationList: document.getElementById("editOperationList"),
   editOperationBadge: document.getElementById("editOperationBadge"),
@@ -846,7 +848,23 @@ function operationKey(operation) {
   return `${operation.type}:${operation.episode_index}`;
 }
 
+function currentEditMode() {
+  const hasSelect = state.editOperations.some((op) => op.type.startsWith("select_"));
+  const hasEdit = state.editOperations.some((op) => op.type === "delete_episode" || op.type === "trim_episode");
+  if (hasSelect && hasEdit) return "mixed";
+  if (hasSelect) return "select";
+  if (hasEdit) return "edit";
+  return "none";
+}
+
 function upsertEditOperation(operation) {
+  const currentMode = currentEditMode();
+  const opMode = operation.type.startsWith("select_") ? "select" : "edit";
+  if (currentMode !== "none" && currentMode !== opMode) {
+    els.editDryRunOutput.textContent = "不能混合使用选择导出和删除/裁剪操作。请先清空编辑计划再切换模式。";
+    els.editDryRunOutput.classList.remove("empty");
+    return;
+  }
   state.editOperations = state.editOperations.filter((item) => item.episode_index !== operation.episode_index);
   state.editOperations.push(operation);
   renderEditOperations();
@@ -863,12 +881,28 @@ function renderEditOperations() {
   }
   els.editOperationList.classList.remove("empty");
   els.editOperationList.innerHTML = state.editOperations.map((operation) => {
-    const title = operation.type === "delete_episode"
-      ? `删除 Episode ${operation.episode_index}`
-      : `裁剪 Episode ${operation.episode_index}`;
-    const detail = operation.type === "delete_episode"
-      ? "应用后该 episode 会被移除，后续 episode 重新编号。"
-      : `保留 ${fmt(operation.start_time)}s - ${fmt(operation.end_time)}s。`;
+    let title, detail;
+    switch (operation.type) {
+      case "delete_episode":
+        title = `删除 Episode ${operation.episode_index}`;
+        detail = "应用后该 episode 会被移除，后续 episode 重新编号。";
+        break;
+      case "trim_episode":
+        title = `裁剪 Episode ${operation.episode_index}`;
+        detail = `保留 ${fmt(operation.start_time)}s - ${fmt(operation.end_time)}s。`;
+        break;
+      case "select_episode":
+        title = `选择导出 Episode ${operation.episode_index}`;
+        detail = "完整导出该 episode。";
+        break;
+      case "select_episode_range":
+        title = `选择导出区间 Episode ${operation.episode_index}`;
+        detail = `导出区间 ${fmt(operation.start_time)}s - ${fmt(operation.end_time)}s。`;
+        break;
+      default:
+        title = `未知操作 ${operation.type} Episode ${operation.episode_index}`;
+        detail = "";
+    }
     return `
       <div class="edit-operation-item" data-operation-key="${escapeAttr(operationKey(operation))}">
         <div>
@@ -893,7 +927,9 @@ function renderEditOperations() {
 function updateEditOperationBadge() {
   if (!els.editOperationBadge) return;
   const count = state.editOperations.length;
-  els.editOperationBadge.textContent = `${count} 个待处理操作`;
+  const mode = currentEditMode();
+  const modeText = mode === "select" ? "选择导出模式" : mode === "edit" ? "编辑模式" : "无";
+  els.editOperationBadge.textContent = `${count} 个待处理操作${mode !== "none" ? " (" + modeText + ")" : ""}`;
 }
 
 function markDeleteCurrentEpisode() {
@@ -933,6 +969,31 @@ function sendCurrentEpisodeToBacktest() {
   if (episodeIndex === null) return;
   els.backtestEpisodes.value = String(episodeIndex);
   goToModelBacktest();
+}
+
+function selectExportEpisode() {
+  const episodeIndex = currentEpisodeIndex();
+  if (episodeIndex === null) return;
+  upsertEditOperation({ type: "select_episode", episode_index: episodeIndex });
+  els.editEpisodeMeta.textContent = `已把 Episode ${episodeIndex} 加入选择导出计划。`;
+}
+
+function selectExportRange() {
+  const episodeIndex = currentEpisodeIndex();
+  if (episodeIndex === null) return;
+  const start = state.trimDraftStart;
+  const end = state.trimDraftEnd;
+  if (start === null || end === null || end <= start) {
+    els.editDryRunOutput.textContent = "选择区间无效：请先设置起点和终点，且终点必须大于起点。";
+    return;
+  }
+  upsertEditOperation({
+    type: "select_episode_range",
+    episode_index: episodeIndex,
+    start_time: start,
+    end_time: end,
+  });
+  els.editEpisodeMeta.textContent = `已把 Episode ${episodeIndex} 的选择区间加入导出计划。`;
 }
 
 async function runEditDryRun() {
@@ -1113,10 +1174,15 @@ function formatPlanSummary(plan) {
     ["原始 frames", original.frames],
     ["预计 episodes", predicted.episodes],
     ["预计 frames", predicted.frames],
-    ["删除 episodes", predicted.deleted_episodes],
-    ["裁剪 episodes", predicted.trimmed_episodes],
-    ["需要处理视频", plan.requires_video_processing ? "是" : "否"],
   ];
+  if (predicted.selected_episodes !== undefined) {
+    rows.push(["选择导出 episodes", predicted.selected_episodes]);
+    rows.push(["选择导出区间", predicted.selected_ranges]);
+  } else {
+    rows.push(["删除 episodes", predicted.deleted_episodes]);
+    rows.push(["裁剪 episodes", predicted.trimmed_episodes]);
+  }
+  rows.push(["需要处理视频", plan.requires_video_processing ? "是" : "否"]);
   return `
     <div class="result-section">
       <h4>影响范围</h4>
@@ -1139,11 +1205,28 @@ function formatOperationSummary(operations) {
       <h4>操作明细</h4>
       <div class="result-operation-list">
         ${operations.map((operation) => {
-          const isDelete = operation.type === "delete_episode";
-          const title = isDelete ? `删除 Episode ${operation.episode_index}` : `裁剪 Episode ${operation.episode_index}`;
-          const detail = isDelete
-            ? "该 episode 会被移除，后续 episode 会重新编号。"
-            : `保留 ${fmt(operation.start_time)}s - ${fmt(operation.end_time)}s，共 ${operation.new_length ?? "-"} 帧。`;
+          let title, detail;
+          switch (operation.type) {
+            case "delete_episode":
+              title = `删除 Episode ${operation.episode_index}`;
+              detail = "该 episode 会被移除，后续 episode 会重新编号。";
+              break;
+            case "trim_episode":
+              title = `裁剪 Episode ${operation.episode_index}`;
+              detail = `保留 ${fmt(operation.start_time)}s - ${fmt(operation.end_time)}s，共 ${operation.new_length ?? "-"} 帧。`;
+              break;
+            case "select_episode":
+              title = `选择导出 Episode ${operation.episode_index}`;
+              detail = "完整导出该 episode。";
+              break;
+            case "select_episode_range":
+              title = `选择导出区间 Episode ${operation.episode_index}`;
+              detail = `导出区间 ${fmt(operation.start_time)}s - ${fmt(operation.end_time)}s，共 ${operation.new_length ?? "-"} 帧。`;
+              break;
+            default:
+              title = `${operation.type} Episode ${operation.episode_index}`;
+              detail = "";
+          }
           return `
             <div class="result-operation-item">
               <strong>${escapeHtml(title)}</strong>
@@ -1789,6 +1872,8 @@ els.setTrimStart.addEventListener("click", () => setTrimPoint("start"));
 els.setTrimEnd.addEventListener("click", () => setTrimPoint("end"));
 els.markTrimEpisode.addEventListener("click", markTrimCurrentEpisode);
 els.sendEpisodeToBacktest.addEventListener("click", sendCurrentEpisodeToBacktest);
+if (els.selectExportEpisode) els.selectExportEpisode.addEventListener("click", selectExportEpisode);
+if (els.selectExportRange) els.selectExportRange.addEventListener("click", selectExportRange);
 els.checkEditTools.addEventListener("click", checkEditTools);
 els.strictValidateDataset.addEventListener("click", strictValidateCurrentDataset);
 els.runEditDryRun.addEventListener("click", runEditDryRun);
