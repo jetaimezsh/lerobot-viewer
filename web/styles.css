@@ -577,12 +577,138 @@ h3 {
 
 #mergePaths {
   width: 100%;
-  min-height: 160px;
+  min-height: 64px;
   resize: vertical;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   padding: 10px;
   font: inherit;
+}
+
+.merge-path-table {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 8px;
+  min-height: 36px;
+}
+
+.merge-path-table.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f8fafc;
+}
+
+.merge-path-row {
+  display: grid;
+  grid-template-columns: 28px 1fr 96px 32px;
+  align-items: center;
+  padding: 6px 12px;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.merge-path-row:last-child {
+  border-bottom: none;
+}
+
+.merge-path-index {
+  font-size: 12px;
+  color: #94a3b8;
+  font-weight: 600;
+  text-align: right;
+}
+
+.merge-path-text {
+  font-size: 13px;
+  color: #334155;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.merge-path-status {
+  font-size: 12px;
+  text-align: center;
+}
+
+.merge-path-status.status-checking {
+  color: #b76e00;
+}
+
+.merge-path-status.status-valid {
+  color: #2f9e44;
+  font-weight: 600;
+}
+
+.merge-path-status.status-invalid {
+  color: var(--danger, #c92a2a);
+  font-weight: 600;
+}
+
+.merge-path-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #94a3b8;
+  font-size: 16px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.merge-path-remove:hover {
+  color: var(--danger, #c92a2a);
+  background: #fee2e2;
+}
+
+.merge-validation-table {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.merge-validation-row {
+  display: grid;
+  grid-template-columns: 1fr 32px auto;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  gap: 8px;
+}
+
+.merge-validation-row.valid {
+  background: #f0fdf4;
+}
+
+.merge-validation-row.invalid {
+  background: #fef2f2;
+}
+
+.merge-validation-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #334155;
+}
+
+.merge-validation-status {
+  font-weight: 700;
+  text-align: center;
+}
+
+.merge-validation-row.valid .merge-validation-status {
+  color: #2f9e44;
+}
+
+.merge-validation-row.invalid .merge-validation-status {
+  color: var(--danger, #c92a2a);
+}
+
+.merge-validation-detail {
+  font-size: 12px;
+  color: #64717f;
 }
 
 .system-grid {

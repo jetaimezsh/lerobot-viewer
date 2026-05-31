@@ -99,6 +99,8 @@ const els = {
   mergeOutputPath: document.getElementById("mergeOutputPath"),
   mergeOverwrite: document.getElementById("mergeOverwrite"),
   mergeResult: document.getElementById("mergeResult"),
+  mergePathTable: document.getElementById("mergePathTable"),
+  addMergePathBtn: document.getElementById("addMergePathBtn"),
   checkModelEnv: document.getElementById("checkModelEnv"),
   refreshModels: document.getElementById("refreshModels"),
   modelName: document.getElementById("modelName"),
@@ -1762,39 +1764,123 @@ function mergePathList() {
 }
 
 function setMergePathList(paths) {
-  els.mergePaths.value = Array.from(new Set(paths)).join("\n");
+  const deduped = Array.from(new Set(paths));
+  els.mergePaths.value = deduped.join("\n");
+  renderMergePathTable();
+}
+
+function addMergePath(path) {
+  if (!path || !path.trim()) return;
+  const current = mergePathList();
+  if (current.includes(path.trim())) return;
+  setMergePathList([...current, path.trim()]);
+}
+
+function removeMergePath(path) {
+  setMergePathList(mergePathList().filter((p) => p !== path));
+}
+
+function renderMergePathTable() {
+  if (!els.mergePathTable) return;
+  const paths = mergePathList();
+  if (!paths.length) {
+    els.mergePathTable.classList.add("empty");
+    els.mergePathTable.innerHTML = `<span class="merge-empty-hint">用上方按钮或下方输入框添加数据集路径</span>`;
+    return;
+  }
+  els.mergePathTable.classList.remove("empty");
+  els.mergePathTable.innerHTML = paths.map((path, i) => `
+    <div class="merge-path-row" data-path="${escapeAttr(path)}">
+      <span class="merge-path-index">${i + 1}</span>
+      <span class="merge-path-text" title="${escapeAttr(path)}">${escapeHtml(path)}</span>
+      <span class="merge-path-status" data-path="${escapeAttr(path)}">-</span>
+      <button type="button" class="merge-path-remove" data-path="${escapeAttr(path)}">✕</button>
+    </div>
+  `).join("");
+  for (const btn of els.mergePathTable.querySelectorAll(".merge-path-remove")) {
+    btn.addEventListener("click", () => {
+      removeMergePath(btn.dataset.path);
+    });
+  }
 }
 
 function addCurrentDatasetToMerge() {
   if (!state.summary) {
-    els.mergeResult.textContent = "请先加载数据集。";
+    if (els.mergeResult) els.mergeResult.textContent = "请先加载数据集。";
     return;
   }
-  setMergePathList([...mergePathList(), state.summary.root]);
-  els.mergeResult.textContent = `已加入当前数据集: ${state.summary.root}`;
+  addMergePath(state.summary.root);
 }
 
 function clearMergeList() {
   els.mergePaths.value = "";
-  els.mergeResult.textContent = "已清空合并列表。";
+  renderMergePathTable();
+  resetMergeStatus();
+}
+
+function resetMergeStatus() {
+  for (const el of (els.mergePathTable?.querySelectorAll(".merge-path-status") || [])) {
+    el.textContent = "-";
+    el.className = "merge-path-status";
+  }
+  if (els.mergeResult) {
+    els.mergeResult.classList.add("empty");
+    els.mergeResult.innerHTML = "尚未检查合并。";
+  }
 }
 
 function renderMergeResult(result) {
   if (!els.mergeResult) return;
   els.mergeResult.classList.remove("empty");
   const ok = result.ok;
+  const allValid = result.dataset_validations
+    ? result.dataset_validations.every((v) => v.valid)
+    : true;
   const errors = result.errors || [];
   const warnings = result.warnings || [];
   els.mergeResult.innerHTML = `
     <div class="result-header">
-      <div><h4>合并${ok ? "成功" : "失败"}</h4></div>
-      <span class="result-status ${ok ? "ok" : "fail"}">${ok ? "通过" : "失败"}</span>
+      <div><h4>合并检查结果</h4></div>
+      <span class="result-status ${ok && allValid ? "ok" : "fail"}">${ok && allValid ? "通过" : "失败"}</span>
     </div>
-    ${formatIssueList("错误", errors, "error")}
-    ${formatIssueList("警告", warnings, "warning")}
+    ${formatIssueList("合并兼容性错误", errors, "error")}
+    ${formatIssueList("合并兼容性警告", warnings, "warning")}
+    ${result.dataset_validations ? renderDatasetValidationTable(result.dataset_validations) : ""}
+    ${result.predicted ? formatMergePredicted(result.predicted) : ""}
     ${result.output_path ? `<div class="result-section"><h4>输出目录</h4><div class="result-path">${escapeHtml(result.output_path)}</div></div>` : ""}
     ${result.summary ? formatSummaryCards(result.summary) : ""}
     ${result.validation ? formatValidationResult(result.validation, "输出数据集校验") : ""}
+  `;
+}
+
+function renderDatasetValidationTable(validations) {
+  if (!validations || !validations.length) return "";
+  return `
+    <div class="result-section">
+      <h4>各数据集严格校验</h4>
+      <div class="merge-validation-table">
+        ${validations.map((v) => `
+          <div class="merge-validation-row ${v.valid ? "valid" : "invalid"}">
+            <span class="merge-validation-path" title="${escapeAttr(v.path)}">${escapeHtml(v.path.split("/").pop() || v.path)}</span>
+            <span class="merge-validation-status">${v.valid ? "✓" : "✗"}</span>
+            <span class="merge-validation-detail">${v.valid ? `${v.summary?.total_episodes || 0} episodes` : (v.errors || [])[0] || "校验失败"}</span>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function formatMergePredicted(predicted) {
+  return `
+    <div class="result-section">
+      <h4>合并预测</h4>
+      <div class="result-grid">
+        <div class="result-metric"><span>合并后 episodes</span><strong>${predicted.episodes}</strong></div>
+        <div class="result-metric"><span>合并后 frames</span><strong>${predicted.frames}</strong></div>
+        <div class="result-metric"><span>参与数据集</span><strong>${predicted.dataset_count}</strong></div>
+      </div>
+    </div>
   `;
 }
 
@@ -1810,15 +1896,68 @@ async function validateMergePlan() {
     if (els.mergeResult) els.mergeResult.textContent = "至少需要 2 个数据集路径。";
     return;
   }
-  addMergeToResult("正在检查合并合法性...");
+
+  addMergeToResult("正在逐数据集严格校验...");
+  const datasetValidations = [];
+  for (const path of paths) {
+    setMergeStatus(path, "checking");
+    try {
+      const v = await api("/api/datasets/strict-validate", {
+        method: "POST",
+        body: JSON.stringify({ path }),
+      });
+      datasetValidations.push({ path, ...v });
+      setMergeStatus(path, v.valid ? "valid" : "invalid", v);
+    } catch (error) {
+      datasetValidations.push({ path, valid: false, errors: [error.message] });
+      setMergeStatus(path, "invalid");
+    }
+  }
+
+  // Check if all individual validations passed
+  const allValid = datasetValidations.every((v) => v.valid);
+  if (!allValid) {
+    els.mergeResult.innerHTML = renderMergeResult({
+      ok: false,
+      errors: ["部分数据集未通过严格校验，无法继续合并检查。"],
+      dataset_validations: datasetValidations,
+    });
+    return;
+  }
+
+  // Now run merge compatibility check
+  addMergeToResult("正在检查合并兼容性...");
   try {
     const result = await api("/api/merge/validate", {
       method: "POST",
       body: JSON.stringify({ paths }),
     });
+    result.dataset_validations = datasetValidations;
     renderMergeResult(result);
+    // Update status badges with episode counts
+    for (const v of datasetValidations) {
+      setMergeStatus(v.path, "valid", v);
+    }
   } catch (error) {
-    addMergeToResult(error.message);
+    els.mergeResult.innerHTML = renderMergeResult({
+      ok: false,
+      errors: [error.message],
+      dataset_validations: datasetValidations,
+    });
+  }
+}
+
+function setMergeStatus(path, status, validation) {
+  if (!els.mergePathTable) return;
+  const el = els.mergePathTable.querySelector(`.merge-path-status[data-path="${escapeAttr(path)}"]`);
+  if (!el) return;
+  el.className = `merge-path-status status-${status}`;
+  if (status === "checking") {
+    el.textContent = "...";
+  } else if (status === "valid") {
+    el.textContent = "✓ " + (validation?.summary?.total_episodes ?? "?") + " eps";
+  } else {
+    el.textContent = "✗";
   }
 }
 
@@ -1956,9 +2095,23 @@ els.strictValidateDataset.addEventListener("click", strictValidateCurrentDataset
 els.runEditDryRun.addEventListener("click", runEditDryRun);
 els.applyEditPlan.addEventListener("click", applyEditPlan);
 els.addCurrentDatasetToMerge.addEventListener("click", addCurrentDatasetToMerge);
+els.addMergePathBtn.addEventListener("click", () => {
+  addMergePath(els.mergePaths.value.trim());
+  els.mergePaths.value = "";
+  els.mergePaths.focus();
+});
 els.clearMergeList.addEventListener("click", clearMergeList);
 els.validateMerge.addEventListener("click", validateMergePlan);
 els.applyMerge.addEventListener("click", applyMergePlan);
+
+// Enter key in merge textarea adds path
+els.mergePaths.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    addMergePath(els.mergePaths.value.trim());
+    els.mergePaths.value = "";
+  }
+});
 els.checkModelEnv.addEventListener("click", loadModelEnv);
 els.refreshModels.addEventListener("click", loadModels);
 els.registerModel.addEventListener("click", registerCurrentModel);

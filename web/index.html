@@ -242,11 +242,19 @@
             <div class="section-kicker">Dataset Merge</div>
             <h3>合并数据集</h3>
             <p>把多个 schema 兼容的 v3.0 数据集合并到一个新的输出目录。支持含视频数据集的合并。</p>
+
             <div class="merge-controls">
-              <button id="addCurrentDatasetToMerge" type="button">加入当前数据集</button>
-              <button id="clearMergeList" type="button">清空合并列表</button>
+              <button id="addCurrentDatasetToMerge" type="button">+ 加入当前数据集</button>
+              <button id="addMergePathBtn" type="button">+ 添加路径</button>
+              <button id="clearMergeList" type="button">清空</button>
             </div>
-            <textarea id="mergePaths" rows="7" placeholder="每行一个数据集路径"></textarea>
+
+            <div id="mergePathTable" class="merge-path-table empty">
+              <span class="merge-empty-hint">用上方按钮或下方输入框添加数据集路径</span>
+            </div>
+
+            <textarea id="mergePaths" rows="3" placeholder="输入路径后按 Enter 添加，或粘贴多行路径"></textarea>
+
             <div style="margin-top: 12px;">
               <input id="mergeOutputPath" type="text" placeholder="输出目录，例如 D:\datasets\merged_dataset">
               <label class="checkbox-row" style="margin-top: 8px;">
