@@ -7,14 +7,10 @@ bash scripts/start_backend.sh
 # 浏览器打开 http://127.0.0.1:8000
 ```
 
-页面分为 7 个 Tab：
+页面分为 2 个根工作台，每个工作台内再分子页面：
 
-- **总览** — 数据集概览
-- **Episode 播放** — 视频播放与时序图表
-- **数据集编辑** — 编辑/选择导出/合并
-- **模型管理** — 注册与管理模型
-- **模型回测** — 离线推理对比
-- **System 环境** — 后端环境检测
+- **LeRobot 数据** — 总览、Episode 播放、数据集编辑、System 环境
+- **模型回测** — 模型管理、回测任务、action 对比结果
 
 ---
 
@@ -90,16 +86,19 @@ bash scripts/start_backend.sh
 
 ### 运行回测
 
-1. 切换到"模型回测" Tab
-2. 选择模型（勾选 checkbox）
-3. 填写 episode 范围（如 `0,2,5-10`）
-4. 可选：勾选"限制帧数"以快速验证
-5. 点击"运行回测"
+1. 在 **LeRobot 数据 / Episode 播放** 中打开目标 episode
+2. 点击"加入回测样本池"
+3. 如需跨数据集回测，加载另一个数据集并继续加入 episode
+4. 切换到 **模型回测 / 回测任务**
+5. 在样本池表格中确认数据集、路径、episode 编号、帧数、时长、FPS、task 和视频路数
+6. 选择模型（勾选 checkbox）
+7. 可选：勾选"限制帧数"以快速验证
+8. 点击"运行回测"
 
 ### 回测结果
 
-- 结果矩阵（model × episode）：MAE / RMSE / max error
-- Chart：选择 episode 和 action 维度，对比 ground truth / predicted / error
+- 结果矩阵（model × dataset × episode）：MAE / RMSE / max error
+- Chart：选择具体数据集 episode 和 action 维度，对比 ground truth / predicted / error
 
 ---
 
@@ -112,6 +111,7 @@ bash scripts/start_backend.sh
 - 核心依赖包版本（fastapi、pandas、pyarrow 等）
 - 编辑工具可用性（ffmpeg 等）
 - 缺失项和修复建议
+- 操作日志：记录数据集打开、编辑、合并、校验、模型管理和回测任务
 
 ---
 

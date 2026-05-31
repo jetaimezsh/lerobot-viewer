@@ -32,10 +32,16 @@ class ModelDeleteRequest(BaseModel):
     model_id: str
 
 
-class BacktestRunRequest(BaseModel):
+class BacktestEpisodeRef(BaseModel):
     dataset_path: str
+    episode_index: int
+
+
+class BacktestRunRequest(BaseModel):
+    dataset_path: str | None = None
     model_ids: list[str] = Field(default_factory=list)
     episode_indexes: list[int] = Field(default_factory=list)
+    episodes: list[BacktestEpisodeRef] = Field(default_factory=list)
     max_frames: int | None = None
 
 
@@ -293,11 +299,19 @@ def unload_model(model_id: str) -> dict[str, Any]:
     return public_model_record(record)
 
 
-def run_backtest(request: BacktestRunRequest, cache: Any) -> dict[str, Any]:
+def run_backtest(request: BacktestRunRequest, cache_loader: Any) -> dict[str, Any]:
     if not request.model_ids:
         raise ValueError("at least one model is required")
-    if not request.episode_indexes:
+    episode_refs = normalize_backtest_episode_refs(request)
+    if not episode_refs:
         raise ValueError("at least one episode is required")
+
+    caches: dict[str, Any] = {}
+    for ref in episode_refs:
+        dataset_path = str(resolve_dataset_path(ref.dataset_path))
+        if dataset_path not in caches:
+            caches[dataset_path] = cache_loader(dataset_path)
+
     run_id = uuid.uuid4().hex[:12]
     results = []
     for model_id in request.model_ids:
@@ -305,7 +319,7 @@ def run_backtest(request: BacktestRunRequest, cache: Any) -> dict[str, Any]:
         adapter = LOADED_ADAPTERS.get(model_id)
         if adapter is None:
             if record["adapter_type"] == "custom_script":
-                results.extend(failed_results(model_id, request.episode_indexes, "custom script adapter is not enabled yet"))
+                results.extend(failed_results(model_id, episode_refs, "custom script adapter is not enabled yet"))
                 continue
             try:
                 adapter = LeRobotOfficialAdapter(record)
@@ -314,16 +328,28 @@ def run_backtest(request: BacktestRunRequest, cache: Any) -> dict[str, Any]:
                 record["status"] = "loaded"
                 record["loaded"] = True
             except Exception as exc:
-                results.extend(failed_results(model_id, request.episode_indexes, str(exc)))
+                results.extend(failed_results(model_id, episode_refs, str(exc)))
                 continue
-        for episode_index in request.episode_indexes:
-            results.append(run_episode_backtest(cache, adapter, model_id, int(episode_index), request.max_frames))
+        for ref in episode_refs:
+            dataset_path = str(resolve_dataset_path(ref.dataset_path))
+            results.append(
+                run_episode_backtest(
+                    caches[dataset_path],
+                    adapter,
+                    model_id,
+                    int(ref.episode_index),
+                    request.max_frames,
+                    dataset_path=dataset_path,
+                )
+            )
 
     run = {
         "run_id": run_id,
-        "dataset_path": str(cache.root),
+        "dataset_paths": sorted(caches.keys()),
+        "dataset_path": sorted(caches.keys())[0] if len(caches) == 1 else None,
         "model_ids": request.model_ids,
-        "episode_indexes": request.episode_indexes,
+        "episodes": [public_episode_ref(caches[str(resolve_dataset_path(ref.dataset_path))], ref) for ref in episode_refs],
+        "episode_indexes": [int(ref.episode_index) for ref in episode_refs],
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "summary": summarize_results(results),
         "results": results,
@@ -332,20 +358,71 @@ def run_backtest(request: BacktestRunRequest, cache: Any) -> dict[str, Any]:
     return run
 
 
-def failed_results(model_id: str, episode_indexes: list[int], error: str) -> list[dict[str, Any]]:
+def normalize_backtest_episode_refs(request: BacktestRunRequest) -> list[BacktestEpisodeRef]:
+    if request.episodes:
+        return request.episodes
+    if request.dataset_path and request.episode_indexes:
+        return [
+            BacktestEpisodeRef(dataset_path=request.dataset_path, episode_index=int(index))
+            for index in request.episode_indexes
+        ]
+    return []
+
+
+def public_episode_ref(cache: Any, ref: BacktestEpisodeRef) -> dict[str, Any]:
+    episode = cache.episode_record(int(ref.episode_index))
+    fps = float(cache.info.get("fps") or 0)
+    length = int(episode.get("length", 0))
+    return {
+        "dataset_path": str(cache.root),
+        "dataset_name": cache.root.name,
+        "dataset_id": dataset_ref_id(cache.root),
+        "episode_index": int(ref.episode_index),
+        "length": length,
+        "duration": round(length / fps, 6) if fps > 0 else None,
+        "fps": fps if fps > 0 else None,
+        "tasks": clean_sequence(episode.get("tasks", [])),
+        "video_keys": cache.video_keys,
+    }
+
+
+def failed_results(model_id: str, episode_refs: list[BacktestEpisodeRef], error: str) -> list[dict[str, Any]]:
     return [
-        {"model_id": model_id, "episode_index": int(index), "status": "failed", "error": error}
-        for index in episode_indexes
+        {
+            "model_id": model_id,
+            "dataset_path": str(resolve_dataset_path(ref.dataset_path)),
+            "dataset_name": Path(ref.dataset_path).name,
+            "dataset_id": dataset_ref_id(resolve_dataset_path(ref.dataset_path)),
+            "episode_index": int(ref.episode_index),
+            "episode_key": episode_result_key(resolve_dataset_path(ref.dataset_path), int(ref.episode_index)),
+            "status": "failed",
+            "error": error,
+        }
+        for ref in episode_refs
     ]
 
 
-def run_episode_backtest(cache: Any, adapter: BacktestAdapter, model_id: str, episode_index: int, max_frames: int | None = None) -> dict[str, Any]:
+def run_episode_backtest(
+    cache: Any,
+    adapter: BacktestAdapter,
+    model_id: str,
+    episode_index: int,
+    max_frames: int | None = None,
+    dataset_path: str | None = None,
+) -> dict[str, Any]:
     episode = cache.episode_record(episode_index)
+    source = episode_result_source(cache, episode, dataset_path)
     frames = read_episode_frames(cache, episode)
     if max_frames is not None and max_frames > 0:
         frames = frames.head(max_frames)
     if "action" not in frames.columns:
-        return {"model_id": model_id, "episode_index": episode_index, "status": "failed", "error": "episode has no action column"}
+        return {
+            **source,
+            "model_id": model_id,
+            "episode_index": episode_index,
+            "status": "failed",
+            "error": "episode has no action column",
+        }
 
     ground_truth = np.array([flatten_action(value) for value in frames["action"]], dtype=np.float64)
     predictions = []
@@ -360,6 +437,7 @@ def run_episode_backtest(cache: Any, adapter: BacktestAdapter, model_id: str, ep
     predicted = np.array(predictions, dtype=np.float64)
     if predicted.shape != ground_truth.shape:
         return {
+            **source,
             "model_id": model_id,
             "episode_index": episode_index,
             "status": "failed",
@@ -367,6 +445,7 @@ def run_episode_backtest(cache: Any, adapter: BacktestAdapter, model_id: str, ep
         }
     metrics = action_metrics(ground_truth, predicted)
     return {
+        **source,
         "model_id": model_id,
         "episode_index": episode_index,
         "status": "done",
@@ -375,6 +454,44 @@ def run_episode_backtest(cache: Any, adapter: BacktestAdapter, model_id: str, ep
         "metrics": metrics,
         "series": action_series(ground_truth, predicted),
     }
+
+
+def episode_result_source(cache: Any, episode: Any, dataset_path: str | None = None) -> dict[str, Any]:
+    root = Path(dataset_path or cache.root).resolve()
+    fps = float(cache.info.get("fps") or 0)
+    length = int(episode.get("length", 0))
+    episode_index = int(episode.get("episode_index", 0))
+    return {
+        "dataset_path": str(root),
+        "dataset_name": root.name,
+        "dataset_id": dataset_ref_id(root),
+        "episode_key": episode_result_key(root, episode_index),
+        "length": length,
+        "duration": round(length / fps, 6) if fps > 0 else None,
+        "fps": fps if fps > 0 else None,
+        "tasks": clean_sequence(episode.get("tasks", [])),
+        "video_keys": cache.video_keys,
+    }
+
+
+def clean_sequence(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    return [value]
+
+
+def episode_result_key(dataset_path: Path, episode_index: int) -> str:
+    return f"{dataset_ref_id(dataset_path)}:{int(episode_index)}"
+
+
+def dataset_ref_id(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha1(str(Path(path).resolve()).encode("utf-8")).hexdigest()[:12]
 
 
 def build_observation(frame: pd.Series, features: dict[str, dict[str, Any]]) -> dict[str, Any]:

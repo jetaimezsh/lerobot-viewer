@@ -17,7 +17,8 @@ app/
 ├── main.py          FastAPI 路由、请求模型、DatasetCache
 ├── editing.py       编辑引擎、合并引擎、视频处理
 ├── validation.py    v3.0 严格校验、官方 LeRobotDataset 加载
-└── backtesting.py   模型注册、加载、回测
+├── backtesting.py   模型注册、加载、回测
+└── operation_log.py JSONL 操作日志
 ```
 
 ### 数据流
@@ -119,6 +120,17 @@ info.json 字段分级（基于 LeRobot v3.0 官方规范）：
 | POST | `/api/models/unload` | 卸载模型 |
 | POST | `/api/models/delete` | 删除模型 |
 | POST | `/api/backtests/run` | 运行回测 |
+| GET | `/api/operations/logs` | 读取操作日志 |
+
+### 操作日志
+
+`app/operation_log.py` 提供统一的 `log_operation()` 和 `read_operation_logs()`。日志文件为 `logs/operations.jsonl`，每行一条 JSON 记录：
+
+```json
+{"timestamp":"...","action":"edit_apply","status":"success","target":"D:/datasets/src","details":{"output_path":"D:/datasets/out"}}
+```
+
+日志只记录操作摘要和错误信息，不参与主业务流程；写日志失败不会阻断数据编辑、合并或回测。
 
 ### 视频处理流程
 
@@ -169,21 +181,23 @@ info.json 中 v3.0 spec 明确要求 int 的字段（`fps`, `chunks_size`）由 
 
 ```
 web/
-├── index.html    # 7 个 view + 侧边栏 + episode 面板 + edit 面板
+├── index.html    # 2 个根工作台 + 子 view + 侧边栏 + episode/edit/backtest 面板
 ├── app.js        # 全局 state + DOM refs + 所有交互逻辑
 └── styles.css    # CSS 变量 + 响应式布局
 ```
 
-### 页面（View）
+### 页面（Root / View）
 
-| View ID | 说明 |
-|---------|------|
-| `overviewView` | 数据集总览、features、tasks、模型概览 |
-| `episodeView` | Episode 播放、视频同步、时序图、编辑/导出标记 |
-| `datasetEditView` | 编辑操作列表、预览预估、合并区域 |
-| `modelManagerView` | 模型注册与管理 |
-| `modelBacktestView` | 回测配置与 action 对比 |
-| `envView` | 系统环境检测 |
+| Root | View ID | 说明 |
+|------|---------|------|
+| `data` | `overviewView` | 数据集总览、features、tasks |
+| `data` | `episodeView` | Episode 播放、视频同步、时序图、编辑/导出标记、加入回测样本池 |
+| `data` | `datasetEditView` | 编辑操作列表、预览预估、合并区域 |
+| `data` | `envView` | 系统环境检测 |
+| `model` | `modelManagerView` | 模型注册与管理 |
+| `model` | `modelBacktestView` | 回测样本池、模型选择、运行回测与 action 对比 |
+
+模型回测不再依赖文本框输入 episode，而是由数据查看页向 `state.backtestEpisodes` 写入结构化样本。每个样本包含 `dataset_path`、`dataset_name`、`episode_index`、`length`、`duration`、`fps`、`tasks` 和 `video_keys`，因此可以同时回测来自不同数据集的 episode。
 
 ### 全局状态（`state`）
 
@@ -194,11 +208,12 @@ state = {
     currentElapsed, duration,
     playing, primaryVideo, videos,
     chartStart, chartEnd, panMode,
-    currentView,
+    currentRoot, currentView,
     editMode,           // "edit" | "export"
     editOperations,     // 当前标记列表
     trimDraftStart, trimDraftEnd,
     models, modelEnv,
+    backtestEpisodes,   // [{dataset_path, episode_index, ...}]
     backtestResult, visibleBacktestModels,
 }
 ```

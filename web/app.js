@@ -18,6 +18,7 @@ const state = {
   primaryVideo: null,
   videos: [],
   raf: null,
+  currentRoot: "data",
   currentView: "overviewView",
   editMode: "edit",
   mergePaths: [],   // source of truth for merge path list
@@ -26,6 +27,7 @@ const state = {
   trimDraftEnd: null,
   models: [],
   modelEnv: null,
+  backtestEpisodes: [],
   backtestResult: null,
   visibleBacktestModels: new Set(),
 };
@@ -40,10 +42,10 @@ const els = {
   installRequirements: document.getElementById("installRequirements"),
   installOutput: document.getElementById("installOutput"),
   episodeList: document.getElementById("episodeList"),
+  episodeSideSection: document.getElementById("episodeSideSection"),
   datasetSummary: document.getElementById("datasetSummary"),
   featureList: document.getElementById("featureList"),
   taskList: document.getElementById("taskList"),
-  modelOverview: document.getElementById("modelOverview"),
   pageTitle: document.getElementById("pageTitle"),
   statusPill: document.getElementById("statusPill"),
   episodeTitle: document.getElementById("episodeTitle"),
@@ -85,6 +87,7 @@ const els = {
   editOperationList: document.getElementById("editOperationList"),
   editOperationBadge: document.getElementById("editOperationBadge"),
   checkEditTools: document.getElementById("checkEditTools"),
+  loadOperationLogs: document.getElementById("loadOperationLogs"),
   strictValidateDataset: document.getElementById("strictValidateDataset"),
   fullSweep: document.getElementById("fullSweep"),
   runEditDryRun: document.getElementById("runEditDryRun"),
@@ -93,6 +96,7 @@ const els = {
   editOverwrite: document.getElementById("editOverwrite"),
   editDryRunOutput: document.getElementById("editDryRunOutput"),
   toolStatusReport: document.getElementById("toolStatusReport"),
+  operationLogReport: document.getElementById("operationLogReport"),
   addCurrentDatasetToMerge: document.getElementById("addCurrentDatasetToMerge"),
   clearMergeList: document.getElementById("clearMergeList"),
   validateMerge: document.getElementById("validateMerge"),
@@ -121,7 +125,8 @@ const els = {
   registerModel: document.getElementById("registerModel"),
   modelEnvReport: document.getElementById("modelEnvReport"),
   modelList: document.getElementById("modelList"),
-  backtestEpisodes: document.getElementById("backtestEpisodes"),
+  backtestSelectionTable: document.getElementById("backtestSelectionTable"),
+  clearBacktestSelection: document.getElementById("clearBacktestSelection"),
   limitBacktestFrames: document.getElementById("limitBacktestFrames"),
   backtestModelChoices: document.getElementById("backtestModelChoices"),
   runBacktest: document.getElementById("runBacktest"),
@@ -139,34 +144,21 @@ const els = {
 // work even if JS event listeners silently fail to attach.
 window._openMergeBrowser = function () {
   try {
-    console.log("DEBUG _openMergeBrowser: called");
-    if (typeof openFolderBrowser !== "function") { console.error("openFolderBrowser not a function"); return; }
-    console.log("DEBUG _openMergeBrowser: els.mergePaths =", els.mergePaths);
+    if (typeof openFolderBrowser !== "function") return;
     openFolderBrowser(els.mergePaths, function (dir) {
-      console.log("DEBUG _openMergeBrowser callback: dir =", dir);
       addMergePath(dir);
       if (els.mergePaths) els.mergePaths.value = "";
-      console.log("DEBUG _openMergeBrowser callback: done, state.mergePaths =", state.mergePaths);
     });
-  } catch (e) {
-    console.error("DEBUG _openMergeBrowser error:", e);
-  }
+  } catch (_) {}
 };
 window._openCheckpointBrowser = function () {
   try {
-    console.log("DEBUG _openCheckpointBrowser: called");
-    if (typeof openFolderBrowser !== "function") { console.error("openFolderBrowser not a function"); return; }
-    console.log("DEBUG _openCheckpointBrowser: els.checkpointPath =", els.checkpointPath);
+    if (typeof openFolderBrowser !== "function") return;
     openFolderBrowser(els.checkpointPath, function (dir) {
-      console.log("DEBUG _openCheckpointBrowser callback: dir =", dir);
       if (els.checkpointPath) els.checkpointPath.value = dir;
-      console.log("DEBUG _openCheckpointBrowser callback: done");
     });
-  } catch (e) {
-    console.error("DEBUG _openCheckpointBrowser error:", e);
-  }
+  } catch (_) {}
 };
-console.log("DEBUG: window._openMergeBrowser and _openCheckpointBrowser initialized");
 
 const palette = ["#087f8c", "#b76e00", "#2f6fbb", "#7a5195", "#2f9e44", "#c92a2a", "#5f6c72", "#805ad5"];
 
@@ -259,7 +251,33 @@ function chartElapsedFromEvent(event) {
   return state.chartStart + ratio * chartSpan();
 }
 
+function rootForView(viewId) {
+  const button = document.querySelector(`.nav-button[data-view="${viewId}"]`);
+  return button?.dataset?.root || "data";
+}
+
+function setRoot(root, switchView = true) {
+  state.currentRoot = root;
+  document.querySelectorAll(".root-nav-button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.root === root);
+  });
+  document.querySelectorAll("[data-root-nav]").forEach((nav) => {
+    nav.classList.toggle("active", nav.dataset.rootNav === root);
+  });
+  if (els.episodeSideSection) {
+    els.episodeSideSection.classList.toggle("hidden", root !== "data");
+  }
+  if (switchView) {
+    const currentRoot = rootForView(state.currentView);
+    if (currentRoot !== root) {
+      setView(root === "model" ? "modelManagerView" : "overviewView");
+    }
+  }
+}
+
 function setView(viewId) {
+  const root = rootForView(viewId);
+  if (root !== state.currentRoot) setRoot(root, false);
   state.currentView = viewId;
   document.querySelectorAll(".view").forEach((view) => {
     view.classList.toggle("active", view.id === viewId);
@@ -274,12 +292,9 @@ function setView(viewId) {
   }
   if (viewId === "modelBacktestView") {
     loadModels();
+    renderBacktestSelectionTable();
     requestAnimationFrame(drawBacktestChart);
   }
-}
-
-function goToDatasetEditor() {
-  setView("datasetEditView");
 }
 
 function goToModelBacktest() {
@@ -345,7 +360,6 @@ async function openDataset() {
     renderSummary();
     renderFeatures();
     renderTasks();
-    renderModelOverview();
     renderEpisodes();
     resetEpisodeView();
     await loadHistory();
@@ -494,33 +508,6 @@ function renderTasks() {
     const text = task.task ?? task.name ?? JSON.stringify(task);
     return `<div class="task-row"><strong>${escapeHtml(taskIndex)}</strong> ${escapeHtml(text)}</div>`;
   }).join("");
-}
-
-function renderModelOverview() {
-  if (!els.modelOverview) return;
-  if (!state.models.length) {
-    els.modelOverview.classList.add("empty");
-    els.modelOverview.innerHTML = "尚未注册模型。";
-    return;
-  }
-  els.modelOverview.classList.remove("empty");
-  const loaded = state.models.filter((model) => model.loaded).length;
-  els.modelOverview.innerHTML = `
-    <div class="model-overview-row">
-      <strong>${state.models.length}</strong>
-      <span>已注册模型</span>
-    </div>
-    <div class="model-overview-row">
-      <strong>${loaded}</strong>
-      <span>已加载模型</span>
-    </div>
-    ${state.models.slice(0, 3).map((model) => `
-      <div class="model-overview-item">
-        <strong>${escapeHtml(model.name)}</strong>
-        <span>${escapeHtml(model.inspection?.policy_type || model.adapter_type)} · ${escapeHtml(model.status)}</span>
-      </div>
-    `).join("")}
-  `;
 }
 
 function renderEpisodes() {
@@ -916,10 +903,6 @@ function operationKey(operation) {
   return `${operation.type}:${operation.episode_index}`;
 }
 
-function currentEditMode() {
-  return state.editMode;
-}
-
 function setEditMode(mode) {
   if (state.editMode === mode) return;
   state.editMode = mode;
@@ -1102,10 +1085,43 @@ function refreshMarkButtons() {
 }
 
 function sendCurrentEpisodeToBacktest() {
-  const episodeIndex = currentEpisodeIndex();
-  if (episodeIndex === null) return;
-  els.backtestEpisodes.value = String(episodeIndex);
+  addCurrentEpisodeToBacktest();
   goToModelBacktest();
+}
+
+function backtestEpisodeKey(item) {
+  return `${item.dataset_path}::${item.episode_index}`;
+}
+
+function addCurrentEpisodeToBacktest() {
+  const episodeIndex = currentEpisodeIndex();
+  if (episodeIndex === null || !state.summary || !state.episode) return;
+  const length = Number(state.episode.length || state.elapsed.length || 0);
+  const fps = Number(state.summary.fps || 0);
+  const item = {
+    dataset_id: state.summary.id,
+    dataset_path: state.summary.root,
+    dataset_name: datasetName(state.summary.root),
+    episode_index: episodeIndex,
+    length,
+    duration: fps > 0 ? length / fps : state.duration,
+    fps,
+    tasks: Array.isArray(state.episode.tasks) ? state.episode.tasks : [],
+    video_keys: state.summary.video_keys || [],
+  };
+  if (!state.backtestEpisodes.some((existing) => backtestEpisodeKey(existing) === backtestEpisodeKey(item))) {
+    state.backtestEpisodes.push(item);
+  }
+  renderBacktestSelectionTable();
+  if (els.editEpisodeMeta) {
+    els.editEpisodeMeta.textContent = `已加入回测样本池：${item.dataset_name} / Episode ${episodeIndex}。`;
+  }
+}
+
+function datasetName(path) {
+  const text = String(path || "").replace(/[\\/]+$/, "");
+  const parts = text.split(/[\\/]/);
+  return parts[parts.length - 1] || text || "-";
 }
 
 async function runEditDryRun() {
@@ -1162,6 +1178,47 @@ async function checkEditTools() {
   } catch (error) {
     els.toolStatusReport.textContent = error.message;
   }
+}
+
+async function loadOperationLogs() {
+  if (!els.operationLogReport) return;
+  els.operationLogReport.classList.remove("empty");
+  els.operationLogReport.textContent = "正在加载操作日志...";
+  try {
+    const logs = await api("/api/operations/logs?limit=200");
+    renderOperationLogs(logs);
+  } catch (error) {
+    els.operationLogReport.textContent = error.message;
+  }
+}
+
+function renderOperationLogs(logs) {
+  if (!logs.length) {
+    els.operationLogReport.classList.add("empty");
+    els.operationLogReport.textContent = "暂无操作日志。";
+    return;
+  }
+  els.operationLogReport.classList.remove("empty");
+  els.operationLogReport.innerHTML = logs.slice().reverse().map((item) => `
+    <div class="operation-log-row ${escapeAttr(item.status || "unknown")}">
+      <div>
+        <strong>${escapeHtml(item.action || "-")}</strong>
+        <span>${escapeHtml(item.target || "")}</span>
+      </div>
+      <div class="operation-log-meta">
+        <span>${escapeHtml(item.status || "-")}</span>
+        <time>${escapeHtml(formatTimestamp(item.timestamp))}</time>
+      </div>
+      ${item.error ? `<small>${escapeHtml(item.error)}</small>` : ""}
+    </div>
+  `).join("");
+}
+
+function formatTimestamp(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString();
 }
 
 function formatToolStatus(result) {
@@ -1471,7 +1528,6 @@ async function loadModels() {
   try {
     state.models = await api("/api/models");
     renderModels();
-    renderModelOverview();
     renderBacktestModelChoices();
   } catch (error) {
     if (els.modelList) els.modelList.textContent = error.message;
@@ -1591,41 +1647,66 @@ function selectedBacktestModelIds() {
   return Array.from(els.backtestModelChoices.querySelectorAll("input:checked")).map((input) => input.value);
 }
 
-function parseEpisodeSelection(raw) {
-  const result = new Set();
-  for (const part of raw.split(/[\s,]+/).map((item) => item.trim()).filter(Boolean)) {
-    if (part.includes("-")) {
-      const [start, end] = part.split("-").map((item) => Number(item.trim()));
-      if (!Number.isInteger(start) || !Number.isInteger(end) || end < start) throw new Error(`episode 范围无效: ${part}`);
-      for (let index = start; index <= end; index += 1) result.add(index);
-    } else {
-      const value = Number(part);
-      if (!Number.isInteger(value)) throw new Error(`episode 无效: ${part}`);
-      result.add(value);
-    }
+function renderBacktestSelectionTable() {
+  if (!els.backtestSelectionTable) return;
+  if (!state.backtestEpisodes.length) {
+    els.backtestSelectionTable.classList.add("empty");
+    els.backtestSelectionTable.innerHTML = "尚未选择 episode。请先到 LeRobot 数据 / Episode 播放页加入样本。";
+    return;
   }
-  return Array.from(result).sort((a, b) => a - b);
+  els.backtestSelectionTable.classList.remove("empty");
+  els.backtestSelectionTable.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>数据集</th>
+          <th>路径</th>
+          <th>Episode</th>
+          <th>帧数</th>
+          <th>时长</th>
+          <th>FPS</th>
+          <th>Task</th>
+          <th>视频</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${state.backtestEpisodes.map((item) => `
+          <tr data-backtest-episode="${escapeAttr(backtestEpisodeKey(item))}">
+            <td><strong>${escapeHtml(item.dataset_name || datasetName(item.dataset_path))}</strong></td>
+            <td class="path-cell">${escapeHtml(item.dataset_path)}</td>
+            <td>${escapeHtml(item.episode_index)}</td>
+            <td>${escapeHtml(item.length ?? "-")}</td>
+            <td>${item.duration !== null && item.duration !== undefined ? `${fmt(Number(item.duration))}s` : "-"}</td>
+            <td>${escapeHtml(item.fps ?? "-")}</td>
+            <td>${escapeHtml(Array.isArray(item.tasks) ? item.tasks.join(", ") : item.tasks || "-")}</td>
+            <td>${escapeHtml(Array.isArray(item.video_keys) ? item.video_keys.length : 0)} 路</td>
+            <td><button type="button" data-backtest-remove="${escapeAttr(backtestEpisodeKey(item))}">移除</button></td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function removeBacktestEpisode(key) {
+  state.backtestEpisodes = state.backtestEpisodes.filter((item) => backtestEpisodeKey(item) !== key);
+  renderBacktestSelectionTable();
+}
+
+function clearBacktestSelection() {
+  state.backtestEpisodes = [];
+  renderBacktestSelectionTable();
 }
 
 async function runSelectedBacktest() {
-  if (!state.summary) {
-    els.backtestResult.textContent = "请先加载数据集。";
-    return;
-  }
   const modelIds = selectedBacktestModelIds();
   if (!modelIds.length) {
     els.backtestResult.textContent = "请至少选择一个模型。";
     return;
   }
-  let episodeIndexes;
-  try {
-    episodeIndexes = parseEpisodeSelection(els.backtestEpisodes.value.trim());
-  } catch (error) {
-    els.backtestResult.textContent = error.message;
-    return;
-  }
-  if (!episodeIndexes.length) {
-    els.backtestResult.textContent = "请填写要回测的 episode。";
+  if (!state.backtestEpisodes.length) {
+    els.backtestResult.textContent = "请先从 Episode 播放页加入回测样本。";
     return;
   }
   els.backtestResult.classList.remove("empty");
@@ -1634,9 +1715,11 @@ async function runSelectedBacktest() {
     state.backtestResult = await api("/api/backtests/run", {
       method: "POST",
       body: JSON.stringify({
-        dataset_path: state.summary.root,
         model_ids: modelIds,
-        episode_indexes: episodeIndexes,
+        episodes: state.backtestEpisodes.map((item) => ({
+          dataset_path: item.dataset_path,
+          episode_index: Number(item.episode_index),
+        })),
         max_frames: els.limitBacktestFrames.checked ? 20 : null,
       }),
     });
@@ -1675,7 +1758,7 @@ function renderBacktestResult() {
     <div class="result-header">
       <div>
         <h4>回测任务 ${escapeHtml(run.run_id)}</h4>
-        <p>${escapeHtml(run.dataset_path)}</p>
+        <p>${escapeHtml((run.dataset_paths || []).join(" · "))}</p>
       </div>
       <span class="result-status ${summary.failed ? "fail" : "ok"}">${summary.failed ? "部分失败" : "完成"}</span>
     </div>
@@ -1684,7 +1767,7 @@ function renderBacktestResult() {
       ${(run.results || []).map((item) => `
         <div class="backtest-cell ${item.status === "done" ? "ok" : "fail"}">
           <strong>${escapeHtml(modelName(item.model_id))}</strong>
-          <span>Episode ${escapeHtml(item.episode_index)} · ${escapeHtml(item.status)}</span>
+          <span>${escapeHtml(item.dataset_name || datasetName(item.dataset_path))} / Episode ${escapeHtml(item.episode_index)} · ${escapeHtml(item.status)}</span>
           ${item.metrics ? `<small>MAE ${escapeHtml(item.metrics.mae)} · RMSE ${escapeHtml(item.metrics.rmse)}</small>` : `<small>${escapeHtml(item.error || "")}</small>`}
         </div>
       `).join("")}
@@ -1696,8 +1779,16 @@ function renderBacktestResult() {
 
 function populateBacktestChartControls() {
   const done = doneBacktestResults();
-  const episodes = Array.from(new Set(done.map((item) => item.episode_index))).sort((a, b) => a - b);
-  els.backtestEpisodeSelect.innerHTML = episodes.map((index) => `<option value="${index}">Episode ${index}</option>`).join("");
+  const episodeMap = new Map();
+  for (const item of done) {
+    const key = item.episode_key || `${item.dataset_path}::${item.episode_index}`;
+    if (!episodeMap.has(key)) {
+      episodeMap.set(key, `${item.dataset_name || datasetName(item.dataset_path)} / Episode ${item.episode_index}`);
+    }
+  }
+  els.backtestEpisodeSelect.innerHTML = Array.from(episodeMap.entries())
+    .map(([key, label]) => `<option value="${escapeAttr(key)}">${escapeHtml(label)}</option>`)
+    .join("");
   const first = done[0];
   const dims = first?.series?.length || 0;
   els.backtestDimSelect.innerHTML = Array.from({ length: dims }, (_, index) => `<option value="${index}">action[${index}]</option>`).join("");
@@ -1714,10 +1805,13 @@ function doneBacktestResults() {
 }
 
 function selectedChartResults() {
-  const episode = Number(els.backtestEpisodeSelect.value);
+  const episodeKey = els.backtestEpisodeSelect.value;
   const visible = new Set(Array.from(els.backtestSeriesToggles.querySelectorAll("input:checked")).map((input) => input.value));
   state.visibleBacktestModels = visible;
-  return doneBacktestResults().filter((item) => item.episode_index === episode && visible.has(item.model_id));
+  return doneBacktestResults().filter((item) => {
+    const key = item.episode_key || `${item.dataset_path}::${item.episode_index}`;
+    return key === episodeKey && visible.has(item.model_id);
+  });
 }
 
 function drawBacktestChart() {
@@ -1831,12 +1925,6 @@ function mergePathList() {
   return state.mergePaths.slice();
 }
 
-function setMergePathList(paths) {
-  state.mergePaths = Array.from(new Set(paths));
-  renderMergePathTable();
-  updateMergePathCount();
-}
-
 function addMergePath(path) {
   if (!path || !path.trim()) return 0;
   const incoming = path.split(/\r?\n/).map((p) => p.trim()).filter(Boolean);
@@ -1918,77 +2006,44 @@ function clearMergeList() {
 
 // ── Folder Browser for merge path input ────────────────────────────────
 function openFolderBrowser(targetInput, onSelect) {
-  try {
-    console.log("DEBUG openFolderBrowser: entry, targetInput =", targetInput, "onSelect =", typeof onSelect);
-    if (!els.folderBrowser) {
-      console.error("DEBUG openFolderBrowser: #folderBrowser is NULL — DOM element missing");
-      return;
-    }
-    console.log("DEBUG openFolderBrowser: els.folderBrowser =", els.folderBrowser);
-    console.log("DEBUG openFolderBrowser: current display =", els.folderBrowser.style.display);
-    els.folderBrowser.style.display = "flex";
-    console.log("DEBUG openFolderBrowser: set display=flex, new display =", els.folderBrowser.style.display);
-    state._fbOnSelect = onSelect;
-    state._fbTarget = targetInput;
-    var startDir = (targetInput && targetInput.value) ? targetInput.value.trim() : "";
-    console.log("DEBUG openFolderBrowser: startDir =", startDir);
-    if (typeof navigateFolderBrowser !== "function") {
-      console.error("DEBUG openFolderBrowser: navigateFolderBrowser is NOT a function");
-      return;
-    }
-    console.log("DEBUG openFolderBrowser: calling navigateFolderBrowser...");
-    navigateFolderBrowser(startDir);
-  } catch (e) {
-    console.error("DEBUG openFolderBrowser error:", e);
-  }
+  if (!els.folderBrowser) return;
+  els.folderBrowser.style.display = "flex";
+  state._fbOnSelect = onSelect;
+  state._fbTarget = targetInput;
+  const startDir = (targetInput && targetInput.value) ? targetInput.value.trim() : "";
+  navigateFolderBrowser(startDir);
 }
 
 function closeFolderBrowser() {
-  try {
-    console.log("DEBUG closeFolderBrowser: called");
-    if (!els.folderBrowser) { console.error("DEBUG closeFolderBrowser: no #folderBrowser"); return; }
-    els.folderBrowser.style.display = "none";
-    console.log("DEBUG closeFolderBrowser: set display=none");
-  } catch (e) {
-    console.error("DEBUG closeFolderBrowser error:", e);
-  }
+  if (els.folderBrowser) els.folderBrowser.style.display = "none";
 }
 
 async function navigateFolderBrowser(dir) {
   try {
-    console.log("DEBUG navigateFolderBrowser: entry, dir =", dir);
-    if (!els.folderBrowserList) { console.error("DEBUG navigateFolderBrowser: #folderBrowserList missing"); return; }
-    if (!els.folderBrowserCurrent) { console.error("DEBUG navigateFolderBrowser: #folderBrowserCurrent missing"); return; }
-    console.log("DEBUG navigateFolderBrowser: calling API /api/path/suggest?path=" + encodeURIComponent(dir));
-    var result = await api("/api/path/suggest?path=" + encodeURIComponent(dir));
-    console.log("DEBUG navigateFolderBrowser: API response base =", result.base, "items count =", (result.items || []).length);
+    if (!els.folderBrowserList || !els.folderBrowserCurrent) return;
+    const result = await api("/api/path/suggest?path=" + encodeURIComponent(dir));
     state._fbBase = result.base || dir;
     state._fbItems = result.items || [];
     els.folderBrowserCurrent.textContent = result.base || dir || "/";
     els.folderBrowserPath.value = "";
     if (!state._fbItems.length) {
-      console.log("DEBUG navigateFolderBrowser: no items, showing empty");
       els.folderBrowserList.innerHTML = "<span class=\"fb-empty\">此目录下没有子文件夹</span>";
       return;
     }
-    var html = state._fbItems.map(function (item) {
+    const html = state._fbItems.map(function (item) {
       return `<button class="fb-item" type="button" data-path="${escapeAttr(item.path)}">
         <span>📁 ${escapeHtml(item.name)}</span>
         ${item.has_dataset_marker ? "<strong>dataset</strong>" : ""}
       </button>`;
     }).join("");
-    console.log("DEBUG navigateFolderBrowser: rendering " + state._fbItems.length + " items, html length = " + html.length);
     els.folderBrowserList.innerHTML = html;
-    var buttons = els.folderBrowserList.querySelectorAll(".fb-item");
-    console.log("DEBUG navigateFolderBrowser: found " + buttons.length + " fb-item buttons in DOM");
-    for (var i = 0; i < buttons.length; i++) {
+    const buttons = els.folderBrowserList.querySelectorAll(".fb-item");
+    for (let i = 0; i < buttons.length; i++) {
       buttons[i].addEventListener("click", (function (path) {
         return function () { navigateFolderBrowser(path); };
       })(buttons[i].dataset.path));
     }
-    console.log("DEBUG navigateFolderBrowser: all " + buttons.length + " listeners attached");
   } catch (error) {
-    console.error("DEBUG navigateFolderBrowser error:", error);
     els.folderBrowserList.innerHTML = "<span class=\"fb-empty\">" + escapeHtml(error.message) + "</span>";
   }
 }
@@ -2230,6 +2285,9 @@ function escapeAttr(value) {
 document.querySelectorAll(".nav-button").forEach((button) => {
   button.addEventListener("click", () => setView(button.dataset.view));
 });
+document.querySelectorAll(".root-nav-button").forEach((button) => {
+  button.addEventListener("click", () => setRoot(button.dataset.root));
+});
 
 els.loadDataset.addEventListener("click", openDataset);
 els.datasetPath.addEventListener("keydown", (event) => {
@@ -2266,6 +2324,7 @@ if (els.modeExport) els.modeExport.addEventListener("click", () => setEditMode("
 if (els.modeEdit2) els.modeEdit2.addEventListener("click", () => setEditMode("edit"));
 if (els.modeExport2) els.modeExport2.addEventListener("click", () => setEditMode("export"));
 els.checkEditTools.addEventListener("click", checkEditTools);
+if (els.loadOperationLogs) els.loadOperationLogs.addEventListener("click", loadOperationLogs);
 els.strictValidateDataset.addEventListener("click", strictValidateCurrentDataset);
 els.runEditDryRun.addEventListener("click", runEditDryRun);
 els.applyEditPlan.addEventListener("click", applyEditPlan);
@@ -2275,25 +2334,19 @@ els.clearMergeList.addEventListener("click", clearMergeList);
 els.validateMerge.addEventListener("click", validateMergePlan);
 els.applyMerge.addEventListener("click", applyMergePlan);
 
-// Folder browser events — each handler logs entry for debugging.
-console.log("DEBUG init: attaching folder browser events...");
 if (els.folderBrowserClose) els.folderBrowserClose.addEventListener("click", closeFolderBrowser);
 if (els.folderBrowserSelect) els.folderBrowserSelect.addEventListener("click", () => {
-  console.log("DEBUG folderBrowserSelect click: _fbBase =", state._fbBase);
   const dir = (state._fbBase || "").trim();
   if (dir) {
     if (state._fbOnSelect) {
-      console.log("DEBUG selector: calling _fbOnSelect with", dir);
       state._fbOnSelect(dir);
     } else {
-      console.log("DEBUG selector: calling addMergePath with", dir);
       addMergePath(dir);
     }
   }
   closeFolderBrowser();
 });
 if (els.folderBrowserUp) els.folderBrowserUp.addEventListener("click", () => {
-  console.log("DEBUG folderBrowserUp click: _fbBase =", state._fbBase);
   let current = (state._fbBase || "").trim().replace(/[\\/]+$/, "");
   let parent = "";
   const lastForward = current.lastIndexOf("/");
@@ -2309,18 +2362,15 @@ if (els.folderBrowserUp) els.folderBrowserUp.addEventListener("click", () => {
   if (!parent && current.length >= 2 && current[1] === ":") {
     parent = current[0] + ":/";
   }
-  console.log("DEBUG up: navigating to parent =", parent || current || "/");
   navigateFolderBrowser(parent || current || "/");
 });
 if (els.folderBrowserPath) els.folderBrowserPath.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
-    console.log("DEBUG path input: navigating to", els.folderBrowserPath.value.trim());
     navigateFolderBrowser(els.folderBrowserPath.value.trim());
   }
 });
 if (els.folderBrowser) els.folderBrowser.addEventListener("click", (event) => {
-  console.log("DEBUG overlay click: target =", event.target, "folderBrowser =", els.folderBrowser);
   if (event.target === els.folderBrowser) closeFolderBrowser();
 });
 
@@ -2355,6 +2405,13 @@ if (els.checkpointPath) els.checkpointPath.addEventListener("input", async () =>
   }, 200);
 });
 els.modelList.addEventListener("click", handleModelAction);
+if (els.backtestSelectionTable) {
+  els.backtestSelectionTable.addEventListener("click", (event) => {
+    const key = event.target?.dataset?.backtestRemove;
+    if (key) removeBacktestEpisode(key);
+  });
+}
+if (els.clearBacktestSelection) els.clearBacktestSelection.addEventListener("click", clearBacktestSelection);
 els.runBacktest.addEventListener("click", runSelectedBacktest);
 els.clearBacktest.addEventListener("click", clearBacktestResult);
 els.backtestEpisodeSelect.addEventListener("change", drawBacktestChart);

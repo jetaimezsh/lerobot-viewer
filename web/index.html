@@ -37,16 +37,24 @@
         <div id="historyList" class="history-list empty">暂无历史记录</div>
       </section>
 
-      <nav class="nav">
-        <button class="nav-button active" data-view="overviewView">总览</button>
-        <button class="nav-button" data-view="episodeView">Episode 播放</button>
-        <button class="nav-button" data-view="datasetEditView">数据集编辑</button>
-        <button class="nav-button" data-view="modelManagerView">模型管理</button>
-        <button class="nav-button" data-view="modelBacktestView">模型回测</button>
-        <button class="nav-button" data-view="envView">System环境</button>
+      <nav class="root-nav">
+        <button class="root-nav-button active" data-root="data">LeRobot 数据</button>
+        <button class="root-nav-button" data-root="model">模型回测</button>
       </nav>
 
-      <section class="side-section">
+      <nav class="nav sub-nav active" data-root-nav="data">
+        <button class="nav-button active" data-root="data" data-view="overviewView">总览</button>
+        <button class="nav-button" data-root="data" data-view="episodeView">Episode 播放</button>
+        <button class="nav-button" data-root="data" data-view="datasetEditView">数据集编辑</button>
+        <button class="nav-button" data-root="data" data-view="envView">System环境</button>
+      </nav>
+
+      <nav class="nav sub-nav" data-root-nav="model">
+        <button class="nav-button" data-root="model" data-view="modelManagerView">模型管理</button>
+        <button class="nav-button" data-root="model" data-view="modelBacktestView">回测任务</button>
+      </nav>
+
+      <section id="episodeSideSection" class="side-section">
         <div class="side-title">Episodes</div>
         <div id="episodeList" class="episode-list empty">加载数据集后显示 episode</div>
       </section>
@@ -82,10 +90,6 @@
           <section class="surface">
             <div class="section-kicker">Tasks</div>
             <div id="taskList" class="task-list empty">暂无任务信息</div>
-          </section>
-          <section class="surface">
-            <div class="section-kicker">Models</div>
-            <div id="modelOverview" class="model-overview empty">尚未注册模型。</div>
           </section>
         </div>
       </section>
@@ -155,7 +159,7 @@
               <button id="setTrimEnd" type="button">设为终点</button>
               <button id="markEpisode" type="button" class="mark-button">标记此 episode</button>
               <button id="markRange" type="button" class="mark-button">标记此区间</button>
-              <button id="sendEpisodeToBacktest" type="button">用当前 episode 回测</button>
+              <button id="sendEpisodeToBacktest" type="button">加入回测样本池</button>
             </div>
             <div id="trimDraft" class="edit-draft">裁剪区间未设置</div>
           </details>
@@ -339,8 +343,14 @@
         <div class="backtest-grid">
           <section class="surface">
             <div class="section-kicker">Backtest Setup</div>
-            <label class="field-label" for="backtestEpisodes">Episodes</label>
-            <textarea id="backtestEpisodes" rows="4" placeholder="例如：0 或 0,1,2 或 0-5"></textarea>
+            <div class="selection-head">
+              <div>
+                <h4>回测样本池</h4>
+                <p>从 Episode 播放页加入样本，支持不同数据集的 episode 混合回测。</p>
+              </div>
+              <button id="clearBacktestSelection" type="button">清空样本</button>
+            </div>
+            <div id="backtestSelectionTable" class="backtest-selection-table empty">尚未选择 episode。</div>
             <label class="checkbox-row">
               <input id="limitBacktestFrames" type="checkbox">
               仅测试前 20 帧
@@ -380,6 +390,7 @@
           </div>
           <div class="env-actions">
             <button id="checkEditTools" type="button">检测数据修改工具</button>
+            <button id="loadOperationLogs" type="button">查看操作日志</button>
             <button id="installRequirements">安装 requirements.txt</button>
           </div>
         </section>
@@ -392,6 +403,10 @@
           <section class="surface">
             <div class="section-kicker">Dataset Editing Tools</div>
             <div id="toolStatusReport" class="tool-status-report empty">尚未检测数据修改工具。</div>
+          </section>
+          <section class="surface operation-log-surface">
+            <div class="section-kicker">Operation Logs</div>
+            <div id="operationLogReport" class="operation-log-report empty">尚未加载操作日志。</div>
           </section>
         </div>
       </section>

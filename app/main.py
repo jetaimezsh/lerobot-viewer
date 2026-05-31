@@ -46,6 +46,7 @@ from app.editing import (
     validate_edit_plan,
     validate_merge_compatibility,
 )
+from app.operation_log import log_operation, read_operation_logs
 from app.validation import validate_lerobot_v3_dataset
 
 
@@ -237,6 +238,28 @@ class DatasetCache:
 DATASETS: dict[str, DatasetCache] = {}
 
 
+def require_dataset_root(raw_path: str) -> Path:
+    root = resolve_dataset_path(raw_path)
+    if not root.exists() or not root.is_dir():
+        raise ValueError(f"数据集目录不存在: {root}")
+    return root
+
+
+def cache_for_path(raw_path: str, remember: bool = False) -> DatasetCache:
+    root = require_dataset_root(raw_path)
+    key = dataset_id(root)
+    cache = DATASETS.get(key)
+    if cache is None:
+        cache = DatasetCache(root)
+        if remember:
+            DATASETS[key] = cache
+    return cache
+
+
+def log_failure(action: str, target: str | None, exc: Exception, details: dict[str, Any] | None = None) -> None:
+    log_operation(action, "failed", target=target, details=details, error=str(exc))
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
     return (WEB_ROOT / "index.html").read_text(encoding="utf-8")
@@ -267,7 +290,9 @@ def env_info() -> dict[str, Any]:
 
 @app.get("/api/models/env")
 def model_env_info() -> dict[str, Any]:
-    return model_runtime_status()
+    result = model_runtime_status()
+    log_operation("model_env_check", "success", details={"ready": result.get("ready_for_lerobot_backtest")})
+    return result
 
 
 @app.get("/api/models")
@@ -278,53 +303,84 @@ def models_list() -> list[dict[str, Any]]:
 @app.post("/api/models/register")
 def model_register(request: ModelRegisterRequest) -> dict[str, Any]:
     try:
-        return register_model(request)
+        result = register_model(request)
+        log_operation(
+            "model_register",
+            "success",
+            target=request.checkpoint_path,
+            details={"model_id": result.get("id"), "name": result.get("name"), "adapter_type": request.adapter_type},
+        )
+        return result
     except Exception as exc:
+        log_failure("model_register", request.checkpoint_path, exc, {"adapter_type": request.adapter_type})
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/models/inspect")
 def model_inspect(request: ModelLoadRequest) -> dict[str, Any]:
     try:
-        return inspect_model(request.model_id)
+        result = inspect_model(request.model_id)
+        log_operation("model_inspect", "success", target=request.model_id)
+        return result
     except Exception as exc:
+        log_failure("model_inspect", request.model_id, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/models/load")
 def model_load(request: ModelLoadRequest) -> dict[str, Any]:
     try:
-        return load_model(request.model_id)
+        result = load_model(request.model_id)
+        log_operation("model_load", "success", target=request.model_id)
+        return result
     except Exception as exc:
+        log_failure("model_load", request.model_id, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/models/unload")
 def model_unload(request: ModelLoadRequest) -> dict[str, Any]:
     try:
-        return unload_model(request.model_id)
+        result = unload_model(request.model_id)
+        log_operation("model_unload", "success", target=request.model_id)
+        return result
     except Exception as exc:
+        log_failure("model_unload", request.model_id, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/models/delete")
 def model_delete(request: ModelDeleteRequest) -> dict[str, Any]:
     try:
-        return delete_model(request.model_id)
+        result = delete_model(request.model_id)
+        log_operation("model_delete", "success", target=request.model_id)
+        return result
     except Exception as exc:
+        log_failure("model_delete", request.model_id, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/backtests/run")
 def backtest_run(request: BacktestRunRequest) -> dict[str, Any]:
-    root = resolve_dataset_path(request.dataset_path)
-    if not root.exists() or not root.is_dir():
-        raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
-    cache = DatasetCache(root)
     try:
-        return run_backtest(request, cache)
+        result = run_backtest(request, load_backtest_cache)
+        log_operation(
+            "backtest_run",
+            "success",
+            details={
+                "models": request.model_ids,
+                "episodes": result.get("episodes", []),
+                "summary": result.get("summary", {}),
+            },
+        )
+        return result
     except Exception as exc:
+        log_failure("backtest_run", None, exc, {"models": request.model_ids})
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def load_backtest_cache(raw_path: str) -> DatasetCache:
+    return cache_for_path(raw_path, remember=True)
 
 
 def conda_info() -> dict[str, Any]:
@@ -367,31 +423,49 @@ def shutil_which_conda() -> str | None:
 @app.post("/api/env/install-requirements")
 def install_requirements() -> dict[str, Any]:
     requirements = APP_ROOT / "requirements.txt"
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-r", str(requirements)],
-        cwd=APP_ROOT,
-        text=True,
-        capture_output=True,
-        timeout=600,
-        check=False,
-    )
-    return {
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-r", str(requirements)],
+            cwd=APP_ROOT,
+            text=True,
+            capture_output=True,
+            timeout=600,
+            check=False,
+        )
+    except Exception as exc:
+        log_failure("install_requirements", str(requirements), exc)
+        raise
+    payload = {
         "returncode": result.returncode,
         "stdout": result.stdout[-8000:],
         "stderr": result.stderr[-8000:],
     }
+    log_operation(
+        "install_requirements",
+        "success" if result.returncode == 0 else "failed",
+        target=str(requirements),
+        details={"returncode": result.returncode},
+        error=result.stderr[-1000:] if result.returncode else None,
+    )
+    return payload
 
 
 @app.post("/api/datasets/open")
 def open_dataset(request: OpenDatasetRequest) -> dict[str, Any]:
-    root = Path(request.path).expanduser().resolve()
-    if not root.exists() or not root.is_dir():
-        raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
-    cache = DatasetCache(root)
-    key = dataset_id(root)
-    DATASETS[key] = cache
-    save_history_item(cache.summary())
-    return cache.summary()
+    try:
+        cache = cache_for_path(request.path, remember=True)
+        summary = cache.summary()
+        save_history_item(summary)
+        log_operation(
+            "dataset_open",
+            "success",
+            target=str(cache.root),
+            details={"episodes": summary.get("total_episodes"), "frames": summary.get("total_frames")},
+        )
+        return summary
+    except Exception as exc:
+        log_failure("dataset_open", request.path, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/history")
@@ -414,95 +488,160 @@ def delete_history_item(request: DeleteHistoryRequest) -> dict[str, Any]:
         with HISTORY_PATH.open("w", encoding="utf-8") as f:
             json.dump(new_items, f, ensure_ascii=False, indent=2)
     except OSError as exc:
+        log_failure("history_delete", target, exc)
         raise HTTPException(status_code=500, detail=f"无法写入历史文件: {exc}")
+    log_operation("history_delete", "success", target=target)
     return {"ok": True, "deleted": target}
 
 
 @app.post("/api/edit/dry-run")
 def edit_dry_run(request: EditDryRunRequest) -> dict[str, Any]:
-    root = resolve_dataset_path(request.path)
-    if not root.exists() or not root.is_dir():
-        raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
-    cache = DatasetCache(root)
-    return validate_edit_plan(cache, request.operations)
+    try:
+        cache = cache_for_path(request.path)
+        result = validate_edit_plan(cache, request.operations)
+        log_operation(
+            "edit_dry_run",
+            "success" if result.get("valid") else "failed",
+            target=str(cache.root),
+            details={"operations": [op.model_dump() for op in request.operations]},
+            error="; ".join(result.get("errors", [])) if result.get("errors") else None,
+        )
+        return result
+    except Exception as exc:
+        log_failure("edit_dry_run", request.path, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/edit/apply")
 def edit_apply(request: EditApplyRequest) -> dict[str, Any]:
-    root = resolve_dataset_path(request.path)
-    if not root.exists() or not root.is_dir():
-        raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
-    cache = DatasetCache(root)
-    result = apply_edit_plan(
-        cache=cache,
-        operations=request.operations,
-        output_path=resolve_dataset_path(request.output_path),
-        overwrite=request.overwrite,
-    )
-    if not result.get("ok"):
-        raise HTTPException(status_code=400, detail=result)
-    return result
+    try:
+        cache = cache_for_path(request.path)
+        result = apply_edit_plan(
+            cache=cache,
+            operations=request.operations,
+            output_path=resolve_dataset_path(request.output_path),
+            overwrite=request.overwrite,
+        )
+        log_operation(
+            "edit_apply",
+            "success" if result.get("ok") else "failed",
+            target=str(cache.root),
+            details={
+                "output_path": request.output_path,
+                "overwrite": request.overwrite,
+                "operations": [op.model_dump() for op in request.operations],
+            },
+            error=str(result) if not result.get("ok") else None,
+        )
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result)
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log_failure("edit_apply", request.path, exc, {"output_path": request.output_path})
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/edit/tool-status")
 def edit_tool_status(request: EditToolStatusRequest | None = None) -> dict[str, Any]:
     if request is None or not request.path:
-        return editing_tool_status()
-    root = resolve_dataset_path(request.path)
-    if not root.exists() or not root.is_dir():
-        raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
-    cache = DatasetCache(root)
-    return editing_tool_status(cache)
+        result = editing_tool_status()
+        log_operation("edit_tool_status", "success")
+        return result
+    try:
+        cache = cache_for_path(request.path)
+        result = editing_tool_status(cache)
+        log_operation("edit_tool_status", "success", target=str(cache.root))
+        return result
+    except Exception as exc:
+        log_failure("edit_tool_status", request.path, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/datasets/validate")
 def validate_dataset(request: OpenDatasetRequest) -> dict[str, Any]:
-    root = resolve_dataset_path(request.path)
-    if not root.exists() or not root.is_dir():
-        raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
-    cache = DatasetCache(root)
-    return dataset_validation_summary(cache)
+    try:
+        cache = cache_for_path(request.path)
+        result = dataset_validation_summary(cache)
+        log_operation("dataset_validate", "success", target=str(cache.root), details={"valid": result.get("valid")})
+        return result
+    except Exception as exc:
+        log_failure("dataset_validate", request.path, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/datasets/strict-validate")
 def strict_validate_dataset(request: OpenDatasetRequest) -> dict[str, Any]:
-    root = resolve_dataset_path(request.path)
-    if not root.exists() or not root.is_dir():
-        raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
-    return validate_lerobot_v3_dataset(root, full_sweep=request.full_sweep)
+    try:
+        root = require_dataset_root(request.path)
+        result = validate_lerobot_v3_dataset(root, full_sweep=request.full_sweep)
+        log_operation(
+            "dataset_strict_validate",
+            "success" if result.get("valid") else "failed",
+            target=str(root),
+            details={"full_sweep": request.full_sweep, "summary": result.get("summary")},
+            error="; ".join(result.get("errors", [])) if result.get("errors") else None,
+        )
+        return result
+    except Exception as exc:
+        log_failure("dataset_strict_validate", request.path, exc, {"full_sweep": request.full_sweep})
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/merge/validate")
 def validate_merge(request: MergeValidationRequest) -> dict[str, Any]:
     if not request.paths:
         raise HTTPException(status_code=400, detail="请提供要合并的数据集路径")
-    caches = []
-    for raw_path in request.paths:
-        root = resolve_dataset_path(raw_path)
-        if not root.exists() or not root.is_dir():
-            raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
-        caches.append(DatasetCache(root))
-    return validate_merge_compatibility(caches)
+    try:
+        caches = [cache_for_path(raw_path) for raw_path in request.paths]
+        result = validate_merge_compatibility(caches)
+        log_operation(
+            "merge_validate",
+            "success" if result.get("valid") else "failed",
+            details={"paths": [str(cache.root) for cache in caches]},
+            error="; ".join(result.get("errors", [])) if result.get("errors") else None,
+        )
+        return result
+    except Exception as exc:
+        log_failure("merge_validate", None, exc, {"paths": request.paths})
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/api/merge/apply")
 def apply_merge(request: MergeApplyRequest) -> dict[str, Any]:
     if not request.paths:
         raise HTTPException(status_code=400, detail="请提供要合并的数据集路径")
-    caches = []
-    for raw_path in request.paths:
-        root = resolve_dataset_path(raw_path)
-        if not root.exists() or not root.is_dir():
-            raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
-        caches.append(DatasetCache(root))
-    result = apply_merge_plan(
-        caches=caches,
-        output_path=resolve_dataset_path(request.output_path),
-        overwrite=request.overwrite,
-    )
-    if not result.get("ok"):
-        raise HTTPException(status_code=400, detail=result)
-    return result
+    try:
+        caches = [cache_for_path(raw_path) for raw_path in request.paths]
+        result = apply_merge_plan(
+            caches=caches,
+            output_path=resolve_dataset_path(request.output_path),
+            overwrite=request.overwrite,
+        )
+        log_operation(
+            "merge_apply",
+            "success" if result.get("ok") else "failed",
+            details={
+                "paths": [str(cache.root) for cache in caches],
+                "output_path": request.output_path,
+                "overwrite": request.overwrite,
+            },
+            error=str(result) if not result.get("ok") else None,
+        )
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result)
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log_failure("merge_apply", None, exc, {"paths": request.paths, "output_path": request.output_path})
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/operations/logs")
+def operation_logs(limit: int = Query(200, ge=1, le=1000)) -> list[dict[str, Any]]:
+    return read_operation_logs(limit)
 
 
 @app.get("/api/path/suggest")

@@ -14,7 +14,7 @@
 | **严格校验** | 按 LeRobot v3.0 规范严格校验，支持官方 `LeRobotDataset` 加载验证 |
 | **模型管理** | 注册 checkpoint、检查文件结构、加载/卸载模型 |
 | **模型回测** | 离线 action 推理对比（MAE/RMSE/维度级误差），Linux 推理，Windows 管理 |
-| **环境检测** | conda/venv 状态、依赖版本、ffmpeg 可用性检查 |
+| **环境检测与日志** | conda/venv 状态、依赖版本、ffmpeg 可用性检查，记录关键操作日志 |
 
 ## 项目结构
 
@@ -25,7 +25,8 @@ lerobot-viewer/
 │   ├── main.py          # FastAPI 应用、路径补全、历史记录
 │   ├── editing.py       # 编辑/选择导出/合并引擎、视频处理
 │   ├── validation.py    # v3.0 严格校验、官方 LeRobotDataset 加载验证
-│   └── backtesting.py   # 模型注册/加载/回测
+│   ├── backtesting.py   # 模型注册/加载/回测
+│   └── operation_log.py # JSONL 操作日志
 ├── web/
 │   ├── index.html       # 单页应用
 │   ├── app.js           # 前端逻辑
@@ -129,6 +130,11 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 ## 使用方式
 
+页面现在分为两个根工作台：
+
+- **LeRobot 数据**：负责数据集加载、episode 播放、数据编辑、选择导出、合并和系统环境检测。
+- **模型回测**：负责 checkpoint 管理、回测样本池、模型选择和 action 对比结果。
+
 ### 数据集浏览
 
 1. 输入数据集根目录，点击"加载"
@@ -156,8 +162,34 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 1. "模型管理"页面注册 checkpoint（路径 + adapter 类型）
 2. 检查 → 加载模型
-3. "模型回测"页面选择模型和 episode → 运行回测
-4. 查看 MAE/RMSE / 维度级 action 对比曲线
+3. 在 **LeRobot 数据 / Episode 播放** 页面点击"加入回测样本池"
+4. 可以切换并加载其他数据集，继续加入不同数据集的 episode
+5. 在 **模型回测 / 回测任务** 页面用表格确认样本所属数据集、路径、episode 编号、帧数、时长、任务和视频路数
+6. 选择一个或多个模型 → 运行回测
+7. 查看 MAE/RMSE / 维度级 action 对比曲线
+
+回测 API 支持多数据集 episode 引用：
+
+```json
+{
+  "model_ids": ["model-a", "model-b"],
+  "episodes": [
+    {"dataset_path": "D:/datasets/pusht", "episode_index": 0},
+    {"dataset_path": "D:/datasets/pick", "episode_index": 4}
+  ],
+  "max_frames": 20
+}
+```
+
+### 操作日志
+
+关键操作会写入 `logs/operations.jsonl`，包括数据集打开、编辑 dry-run/apply、严格校验、合并校验/生成、模型注册/加载/删除和回测运行。
+
+也可以在 **LeRobot 数据 / System 环境** 页面点击"查看操作日志"，或调用：
+
+```text
+GET /api/operations/logs?limit=200
+```
 
 ## 本地验证
 
