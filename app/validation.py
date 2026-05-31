@@ -525,15 +525,44 @@ def ffmpeg_duration(executable: Path, path: Path) -> float | None:
 def validate_stats(root: Path, info: dict[str, Any], result: dict[str, Any]) -> None:
     stats = read_json(root / "meta/stats.json")
     total_frames = int(info.get("total_frames", 0))
+
+    # Collect all features declared in info.json — video or not.
     for key, feature in info.get("features", {}).items():
-        if feature.get("dtype") == "video":
+        if not isinstance(feature, dict):
             continue
+
+        is_video = feature.get("dtype") == "video"
+
+        # Primary check: key should exist in stats.json.
         if key not in stats:
-            result["warnings"].append(f"meta/stats.json 缺少 feature stats: {key}")
+            if is_video:
+                # Some official datasets carry video pixel stats (e.g.
+                # lerobot/pusht has per-channel RGB normalization in
+                # stats.json).  Missing them is a warning because
+                # downstream training pipelines may depend on them.
+                result["warnings"].append(
+                    f"meta/stats.json 缺少 video feature stats: {key}"
+                    "（编辑/合并后本应已从源保留，可能被错误丢弃）"
+                )
+            else:
+                result["warnings"].append(f"meta/stats.json 缺少 feature stats: {key}")
             continue
-        for stat_name in ["min", "max", "mean", "std", "count"]:
+
+        # Structural check: each stats entry should have the five
+        # standard fields.
+        for stat_name in ("min", "max", "mean", "std", "count"):
             if stat_name not in stats[key]:
                 result["warnings"].append(f"meta/stats.json 缺少 {key}/{stat_name}")
+
+        # count vs total_frames consistency check.
         count = stats[key].get("count")
         if count and isinstance(count, list) and int(count[0]) != total_frames:
-            result["warnings"].append(f"stats {key}/count 与 total_frames 不一致: {count[0]} != {total_frames}")
+            # Video stats may legitimately report a count different
+            # from total_frames (e.g. the source dataset had 25650
+            # frames but video stats carried 19619 — the dataset was
+            # already edited).  Downgrade to info for video.
+            msg = f"stats {key}/count ({count[0]}) != total_frames ({total_frames})"
+            if is_video:
+                result["warnings"].append(msg)
+            else:
+                result["warnings"].append(msg)
