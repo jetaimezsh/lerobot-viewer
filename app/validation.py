@@ -102,10 +102,11 @@ def official_lerobot_validation(root: Path, full_sweep: bool = False) -> dict[st
                     result["pre_check_issues"] = pre_check_issues
                 return result
 
-            # Quick sanity: access first and last samples.
-            _ = dataset[0]
+            # Quick sanity: load first and last samples, verify
+            # normalization works on both.
+            _ = _load_and_normalize(dataset, 0)
             if length > 1:
-                _ = dataset[length - 1]
+                _ = _load_and_normalize(dataset, length - 1)
 
             # Full-sweep: iterate every frame.
             sweep = None
@@ -137,6 +138,14 @@ def official_lerobot_validation(root: Path, full_sweep: bool = False) -> dict[st
     return failure
 
 
+def _load_and_normalize(dataset: Any, idx: int) -> Any:
+    """Load a single sample and verify normalization via dataset.stats."""
+    frame = dataset[idx]
+    stats = getattr(dataset, "stats", None) or {}
+    _apply_normalization(frame, stats)
+    return frame
+
+
 def _full_sweep_validation(dataset: Any, length: int) -> dict[str, Any]:
     """Iterate every sample in *dataset* and verify normalization.
 
@@ -147,13 +156,11 @@ def _full_sweep_validation(dataset: Any, length: int) -> dict[str, Any]:
         that only surface when the training DataLoader applies ``stats.json``.
     """
     errors: list[str] = []
-    stats = getattr(dataset, "stats", None) or {}
     start = time.time()
     try:
         for idx in range(length):
             try:
-                frame = dataset[idx]
-                _apply_normalization(frame, stats)
+                _load_and_normalize(dataset, idx)
             except Exception as exc:
                 errors.append(f"sample[{idx}]: {exc}")
                 if len(errors) >= 10:
