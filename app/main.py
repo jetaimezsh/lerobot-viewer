@@ -60,6 +60,7 @@ app.mount("/static", StaticFiles(directory=WEB_ROOT), name="static")
 
 class OpenDatasetRequest(BaseModel):
     path: str
+    full_sweep: bool = False
 
 
 class DatasetCache:
@@ -449,7 +450,7 @@ def strict_validate_dataset(request: OpenDatasetRequest) -> dict[str, Any]:
     root = resolve_dataset_path(request.path)
     if not root.exists() or not root.is_dir():
         raise HTTPException(status_code=400, detail=f"数据集目录不存在: {root}")
-    return validate_lerobot_v3_dataset(root)
+    return validate_lerobot_v3_dataset(root, full_sweep=request.full_sweep)
 
 
 @app.post("/api/merge/validate")

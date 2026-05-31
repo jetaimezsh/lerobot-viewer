@@ -5,6 +5,7 @@ import json
 import math
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,9 @@ import numpy as np
 import pandas as pd
 
 
-def validate_lerobot_v3_dataset(root: Path, run_official: bool = True) -> dict[str, Any]:
+def validate_lerobot_v3_dataset(
+    root: Path, run_official: bool = True, full_sweep: bool = False
+) -> dict[str, Any]:
     root = root.resolve()
     result = {
         "valid": True,
@@ -20,7 +23,7 @@ def validate_lerobot_v3_dataset(root: Path, run_official: bool = True) -> dict[s
         "warnings": [],
         "root": str(root),
         "summary": {},
-        "official": official_lerobot_validation(root) if run_official else {"status": "skipped"},
+        "official": official_lerobot_validation(root, full_sweep=full_sweep) if run_official else {"status": "skipped"},
     }
 
     try:
@@ -53,7 +56,14 @@ def validate_lerobot_v3_dataset(root: Path, run_official: bool = True) -> dict[s
     return result
 
 
-def official_lerobot_validation(root: Path) -> dict[str, Any]:
+def official_lerobot_validation(root: Path, full_sweep: bool = False) -> dict[str, Any]:
+    """Try to load the dataset with the official LeRobotDataset loader.
+
+    When *full_sweep* is True, additionally iterate through **every**
+    frame in the dataset to catch deep issues (float dtypes in parquet,
+    video timestamp mismatches, shape inconsistencies, etc.) that only
+    surface when individual samples are accessed.
+    """
     try:
         module = importlib.import_module("lerobot.datasets.lerobot_dataset")
     except Exception as exc:
@@ -67,7 +77,6 @@ def official_lerobot_validation(root: Path) -> dict[str, Any]:
     if dataset_cls is None:
         return {"status": "failed", "error": "lerobot.datasets.lerobot_dataset 中未找到 LeRobotDataset"}
 
-    # Pre-check: inspect info.json for type issues that would break official validation.
     pre_check_issues = _info_type_precheck(root)
 
     attempts = [
@@ -82,9 +91,28 @@ def official_lerobot_validation(root: Path) -> dict[str, Any]:
         try:
             dataset = dataset_cls(**kwargs)
             length = len(dataset)
-            if length:
-                _ = dataset[0]
-            result: dict[str, Any] = {
+            if not length:
+                result: dict[str, Any] = {
+                    "status": "passed",
+                    "repo_id": kwargs.get("repo_id"),
+                    "root": str(kwargs.get("root", root)),
+                    "length": 0,
+                }
+                if pre_check_issues:
+                    result["pre_check_issues"] = pre_check_issues
+                return result
+
+            # Quick sanity: access first and last samples.
+            _ = dataset[0]
+            if length > 1:
+                _ = dataset[length - 1]
+
+            # Full-sweep: iterate every frame.
+            sweep = None
+            if full_sweep:
+                sweep = _full_sweep_validation(dataset, length)
+
+            result = {
                 "status": "passed",
                 "repo_id": kwargs.get("repo_id"),
                 "root": str(kwargs.get("root", root)),
@@ -92,6 +120,8 @@ def official_lerobot_validation(root: Path) -> dict[str, Any]:
             }
             if pre_check_issues:
                 result["pre_check_issues"] = pre_check_issues
+            if sweep:
+                result["full_sweep"] = sweep
             return result
         except Exception as exc:
             import traceback
@@ -105,6 +135,29 @@ def official_lerobot_validation(root: Path) -> dict[str, Any]:
     if pre_check_issues:
         failure["pre_check_issues"] = pre_check_issues
     return failure
+
+
+def _full_sweep_validation(dataset: Any, length: int) -> dict[str, Any]:
+    """Iterate every sample in *dataset* and report errors."""
+    errors: list[str] = []
+    start = time.time()
+    try:
+        for idx in range(length):
+            try:
+                _ = dataset[idx]
+            except Exception as exc:
+                errors.append(f"sample[{idx}]: {exc}")
+                if len(errors) >= 10:
+                    errors.append(f"… 已发现 10 处错误，停止遍历。共 {length} 帧。")
+                    break
+    except Exception as exc:
+        errors.append(f"遍历中断: {exc}")
+    elapsed = round(time.time() - start, 3)
+    return {
+        "scanned": length if not errors else idx + 1,
+        "errors": errors,
+        "elapsed_s": elapsed,
+    }
 
 
 def _info_type_precheck(root: Path) -> list[str]:

@@ -85,6 +85,7 @@ const els = {
   editOperationBadge: document.getElementById("editOperationBadge"),
   checkEditTools: document.getElementById("checkEditTools"),
   strictValidateDataset: document.getElementById("strictValidateDataset"),
+  fullSweep: document.getElementById("fullSweep"),
   runEditDryRun: document.getElementById("runEditDryRun"),
   applyEditPlan: document.getElementById("applyEditPlan"),
   editOutputPath: document.getElementById("editOutputPath"),
@@ -1075,11 +1076,13 @@ async function strictValidateCurrentDataset() {
     els.editDryRunOutput.classList.add("empty");
     return;
   }
-  setEditOutputLoading("正在进行严格校验...");
+  const fullSweep = els.fullSweep?.checked || false;
+  const message = fullSweep ? "正在进行严格校验（含全量遍历）..." : "正在进行严格校验...";
+  setEditOutputLoading(message);
   try {
     const result = await api("/api/datasets/strict-validate", {
       method: "POST",
-      body: JSON.stringify({ path: state.summary.root }),
+      body: JSON.stringify({ path: state.summary.root, full_sweep: fullSweep }),
     });
     renderEditResult(result, "strict-validation");
   } catch (error) {
@@ -1297,6 +1300,10 @@ function formatValidationResult(result, title) {
   const officialText = official.status
     ? `${official.status}${official.reason ? `：${official.reason}` : ""}${official.error ? `：${official.error}` : ""}`
     : "未返回官方校验结果";
+  const sweep = official.full_sweep || {};
+  const sweepText = sweep.scanned !== undefined
+    ? `全量遍历：${sweep.scanned} 帧 · ${sweep.elapsed_s}s ${sweep.errors?.length ? "· 发现 " + sweep.errors.length + " 处错误" : "· ✓"}`
+    : "";
   return `
     <div class="result-header">
       <div>
@@ -1307,6 +1314,7 @@ function formatValidationResult(result, title) {
     </div>
     ${formatIssueList("错误", result.errors || [], "error")}
     ${formatIssueList("警告", result.warnings || [], "warning")}
+    ${sweepText ? `<div class="result-section"><h4>LeRobot 全量遍历</h4><div class="result-path">${escapeHtml(sweepText)}</div>${formatIssueList("遍历错误", sweep.errors || [], "error")}</div>` : ""}
     ${result.summary ? formatSummaryCards(result.summary) : ""}
     <div class="result-section">
       <h4>官方 LeRobot 校验</h4>
