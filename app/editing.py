@@ -874,8 +874,8 @@ def write_edited_videos(cache: Any, video_jobs: list[dict[str, Any]], episodes: 
                 row_mask = episodes["episode_index"].astype(int) == new_episode_index
                 episode_start = cumulative
                 cumulative += duration
-                episodes.loc[row_mask, f"{prefix}/chunk_index"] = 0
-                episodes.loc[row_mask, f"{prefix}/file_index"] = 0
+                episodes.loc[row_mask, f"{prefix}/chunk_index"] = int(0)
+                episodes.loc[row_mask, f"{prefix}/file_index"] = int(0)
                 episodes.loc[row_mask, f"{prefix}/from_timestamp"] = round(episode_start, 6)
                 episodes.loc[row_mask, f"{prefix}/to_timestamp"] = round(cumulative, 6)
 
@@ -1250,6 +1250,38 @@ def _normalize_info_int_fields(info: dict[str, Any]) -> None:
         info["chunks_size"] = int(info["chunks_size"])
 
 
+_INT_EPISODE_COLUMNS = {
+    "episode_index",
+    "length",
+    "task_index",
+    "dataset_from_index",
+    "dataset_to_index",
+    "data/chunk_index",
+    "data/file_index",
+    "meta/episodes/chunk_index",
+    "meta/episodes/file_index",
+}
+
+
+def _enforce_episode_int_dtypes(episodes: pd.DataFrame) -> None:
+    """Cast known integer columns to Int64 so float values don't leak into parquet.
+
+    LeRobot v3.0 uses Python ``str.format()`` with ``{:03d}`` / ``{:d}`` specs
+    when building file paths from ``chunk_index`` and ``file_index``.  Any
+    float value (e.g. ``0.0``) passed to those format specifiers triggers
+    ``ValueError: Unknown format code 'd' for object of type 'float'``.
+    """
+    for col in _INT_EPISODE_COLUMNS:
+        if col in episodes.columns:
+            episodes[col] = episodes[col].astype("Int64").astype(int)
+    # Also cover video index columns added by write_edited_videos.
+    for col in list(episodes.columns):
+        if col.startswith("videos/") and (
+            col.endswith("/chunk_index") or col.endswith("/file_index")
+        ):
+            episodes[col] = episodes[col].astype("Int64").astype(int)
+
+
 def write_dataset(
     cache: Any,
     frames: pd.DataFrame,
@@ -1262,6 +1294,7 @@ def write_dataset(
     (output_path / "meta/episodes/chunk-000").mkdir(parents=True, exist_ok=True)
 
     frames.to_parquet(output_path / "data/chunk-000/file-000.parquet", index=False)
+    _enforce_episode_int_dtypes(episodes)
     episodes.to_parquet(output_path / "meta/episodes/chunk-000/file-000.parquet", index=False)
     if tasks_df is None:
         shutil.copy2(cache.root / "meta/tasks.parquet", output_path / "meta/tasks.parquet")
