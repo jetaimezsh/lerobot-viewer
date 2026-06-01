@@ -2226,13 +2226,18 @@ async function navigateFolderBrowser(dir) {
       return;
     }
     const html = state._fbItems.map(function (item) {
-      return `<button class="fb-item" type="button" data-path="${escapeAttr(item.path)}">
-        <span>📁 ${escapeHtml(item.name)}</span>
-        ${item.has_dataset_marker ? "<strong>dataset</strong>" : ""}
-      </button>`;
+      if (item.is_dir) {
+        return `<button class="fb-item" type="button" data-path="${escapeAttr(item.path)}">
+          <span>📁 ${escapeHtml(item.name)}</span>
+          ${item.has_dataset_marker ? "<strong>dataset</strong>" : ""}
+        </button>`;
+      }
+      return `<div class="fb-item fb-file">
+        <span>📄 ${escapeHtml(item.name)}</span>
+      </div>`;
     }).join("");
     els.folderBrowserList.innerHTML = html;
-    const buttons = els.folderBrowserList.querySelectorAll(".fb-item");
+    const buttons = els.folderBrowserList.querySelectorAll(".fb-item:not(.fb-file)");
     for (let i = 0; i < buttons.length; i++) {
       buttons[i].addEventListener("click", (function (path) {
         return function () { navigateFolderBrowser(path); };
@@ -2545,22 +2550,37 @@ if (els.folderBrowserSelect) els.folderBrowserSelect.addEventListener("click", (
   closeFolderBrowser();
 });
 if (els.folderBrowserUp) els.folderBrowserUp.addEventListener("click", () => {
-  let current = (state._fbBase || "").trim().replace(/[\\/]+$/, "");
-  let parent = "";
-  const lastForward = current.lastIndexOf("/");
-  const lastBack = current.lastIndexOf("\\");
-  const idx = Math.max(lastForward, lastBack);
+  const current = (state._fbBase || "").trim();
+  // Windows 盘符根目录（D:\）→ 退回盘符列表
+  if (/^[A-Za-z]:[\\/]$/.test(current)) {
+    navigateFolderBrowser("");
+    return;
+  }
+  // Unix 根目录 / → 不再往上
+  if (current === "/") {
+    navigateFolderBrowser("/");
+    return;
+  }
+  // 先去掉末尾分隔符再找上级
+  const stripped = current.replace(/[\\/]+$/, "");
+  const idx = Math.max(stripped.lastIndexOf("/"), stripped.lastIndexOf("\\"));
+  let parent;
   if (idx > 0) {
-    parent = current.substring(0, idx);
-  } else if (idx === 0 && current.length > 1) {
+    parent = stripped.substring(0, idx);
+    // Windows: D: → D:\
+    if (/^[A-Za-z]:$/.test(parent)) parent += "\\";
+  } else if (idx === 0) {
+    // Unix: /home → /
     parent = "/";
   } else {
-    parent = current;
+    // 无分隔符（如裸 D:）→ 退回盘符列表
+    if (/^[A-Za-z]:$/.test(stripped)) {
+      navigateFolderBrowser("");
+      return;
+    }
+    parent = stripped;
   }
-  if (!parent && current.length >= 2 && current[1] === ":") {
-    parent = current[0] + ":/";
-  }
-  navigateFolderBrowser(parent || current || "/");
+  navigateFolderBrowser(parent);
 });
 if (els.folderBrowserPath) els.folderBrowserPath.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {

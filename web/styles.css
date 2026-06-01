@@ -907,6 +907,12 @@ h3 {
 }
 .fb-item:hover { background: #f1f5f9; }
 .fb-item strong { font-size: 11px; color: #2f9e44; }
+.fb-item.fb-file {
+  cursor: default;
+  color: #94a3b8;
+  opacity: 0.72;
+}
+.fb-item.fb-file:hover { background: none; }
 
 .fb-empty { color: #94a3b8; font-size: 13px; padding: 12px 0; text-align: center; }
 

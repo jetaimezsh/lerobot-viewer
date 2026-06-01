@@ -812,8 +812,8 @@ def build_path_suggestions(raw_path: str) -> dict[str, Any]:
     items = []
     try:
         children = sorted(
-            [child for child in parent.iterdir() if child.is_dir()],
-            key=lambda child: child.name.lower(),
+            parent.iterdir(),
+            key=lambda child: (not child.is_dir(), child.name.lower()),
         )
     except OSError:
         children = []
@@ -825,11 +825,10 @@ def build_path_suggestions(raw_path: str) -> dict[str, Any]:
             {
                 "name": child.name,
                 "path": str(child),
-                "has_dataset_marker": (child / "meta" / "info.json").exists(),
+                "is_dir": child.is_dir(),
+                "has_dataset_marker": child.is_dir() and (child / "meta" / "info.json").exists(),
             }
         )
-        if len(items) >= 30:
-            break
 
     return {"base": str(parent), "query": query, "items": items}
 
@@ -845,7 +844,7 @@ def list_windows_drives() -> list[dict[str, Any]]:
     for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
         drive = Path(f"{letter}:\\")
         if drive.exists():
-            drives.append({"name": f"{letter}:\\", "path": str(drive), "has_dataset_marker": False})
+            drives.append({"name": f"{letter}:\\", "path": str(drive), "is_dir": True, "has_dataset_marker": False})
     return drives
 
 
@@ -866,6 +865,7 @@ def list_posix_start_points() -> list[dict[str, Any]]:
             {
                 "name": name,
                 "path": str(resolved),
+                "is_dir": True,
                 "has_dataset_marker": (resolved / "meta" / "info.json").exists(),
             }
         )
