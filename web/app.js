@@ -915,8 +915,12 @@ function updateTrimDraftLabel() {
   const hasRangeMark = mark
     && (mark.type === "trim_episode" || mark.type === "select_episode_range")
     && mark.start_time != null && mark.end_time != null;
+  // draft 与已提交标记一致时才显示"已标记"，不一致则显示 draft（用户正在重新调整）
+  const draftMatchesMark = hasRangeMark
+    && Math.abs((state.trimDraftStart ?? 0) - mark.start_time) < 1e-6
+    && Math.abs((state.trimDraftEnd ?? 0) - mark.end_time) < 1e-6;
 
-  if (hasRangeMark) {
+  if (hasRangeMark && draftMatchesMark) {
     const modeLabel = state.editMode === "export" ? "导出" : "裁剪";
     els.trimDraft.textContent = `已标记保留区间（${modeLabel}）: ${fmt(mark.start_time)}s - ${fmt(mark.end_time)}s`;
   } else {
