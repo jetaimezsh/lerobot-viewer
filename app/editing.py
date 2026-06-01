@@ -1913,8 +1913,8 @@ def build_edit_capabilities(checks: list[dict[str, Any]]) -> dict[str, dict[str,
         "merge_video": {
             "id": "merge_video",
             "name": "合并多个数据集（含视频）",
-            "available": False,
-            "blocked_by": (video_missing + ["视频合并功能待实现"]) if video_missing else ["视频合并功能待实现"],
+            "available": not video_missing,
+            "blocked_by": video_missing,
         },
     }
 
