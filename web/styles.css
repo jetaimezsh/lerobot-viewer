@@ -155,9 +155,34 @@ h3 {
 }
 
 .load-row {
-  display: grid;
-  grid-template-columns: 1fr 64px;
+  display: flex;
   gap: 8px;
+}
+
+.load-row .path-field {
+  flex: 1;
+  min-width: 0;
+}
+
+.browse-btn {
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  background: #334155;
+  color: #e2e8f0;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.browse-btn:hover {
+  background: #475569;
+}
+
+#loadDataset {
+  flex-shrink: 0;
 }
 
 .path-field,
@@ -1380,6 +1405,16 @@ h3 {
 
 .edit-actions button {
   background: #334155;
+}
+
+@keyframes trimSetFlash {
+  0% { background: #334155; transform: scale(1); }
+  40% { background: #2f9e44; box-shadow: 0 0 0 4px rgba(47, 158, 68, 0.35); transform: scale(1.06); }
+  100% { background: #334155; transform: scale(1); }
+}
+
+.trim-set-flash {
+  animation: trimSetFlash 0.35s ease-out;
 }
 
 #markDeleteEpisode {

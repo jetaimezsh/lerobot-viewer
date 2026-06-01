@@ -27,6 +27,7 @@
             <input id="datasetPath" type="text" autocomplete="off" placeholder="D:\datasets\my_lerobot_dataset">
             <div id="pathSuggestions" class="path-suggestions"></div>
           </div>
+          <button id="browseRoot" type="button" class="browse-btn" onclick="window._openRootBrowser && window._openRootBrowser()">选择目录</button>
           <button id="loadDataset">加载</button>
         </div>
         <div id="loadError" class="error"></div>
@@ -274,7 +275,7 @@
               </label>
             </div>
             <div class="merge-run-buttons">
-              <button id="validateMerge" type="button">检查合并合法性</button>
+              <button id="validateMerge" type="button">数据集一致性校验</button>
               <button id="applyMerge" type="button">生成合并数据集</button>
             </div>
           </section>
@@ -437,7 +438,7 @@
   </div>
 </div>
 
-  <script src="/static/app.js?v=20260531-v3"></script>
+  <script src="/static/app.js?v=20260601-v1"></script>
 
 </body>
 </html>

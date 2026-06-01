@@ -64,7 +64,7 @@ bash scripts/start_backend.sh
 
 1. 在"数据集编辑" Tab 的合并区域输入数据集路径（每行一个）
 2. 点击"+ 加入当前数据集"快速添加已加载的数据集
-3. 点击"检查合并合法性"验证 fps / features / video_keys 一致性
+3. 点击"数据集一致性校验"验证 fps / features / video_keys 一致性
 4. 填写输出目录 → 勾选是否覆盖 → 点击"生成合并数据集"
 
 要求：

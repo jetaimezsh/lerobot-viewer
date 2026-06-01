@@ -107,6 +107,7 @@ const els = {
   mergeResult: document.getElementById("mergeResult"),
   mergePathTable: document.getElementById("mergePathTable"),
   addMergePathBtn: document.getElementById("addMergePathBtn"),
+  browseRoot: document.getElementById("browseRoot"),
   folderBrowser: document.getElementById("folderBrowser"),
   folderBrowserClose: document.getElementById("folderBrowserClose"),
   folderBrowserUp: document.getElementById("folderBrowserUp"),
@@ -159,6 +160,14 @@ window._openCheckpointBrowser = function () {
     if (typeof openFolderBrowser !== "function") return;
     openFolderBrowser(els.checkpointPath, function (dir) {
       if (els.checkpointPath) els.checkpointPath.value = dir;
+    });
+  } catch (_) {}
+};
+window._openRootBrowser = function () {
+  try {
+    if (typeof openFolderBrowser !== "function") return;
+    openFolderBrowser(els.datasetPath, function (dir) {
+      if (els.datasetPath) els.datasetPath.value = dir;
     });
   } catch (_) {}
 };
@@ -389,8 +398,8 @@ function renderHistory() {
   els.historyList.innerHTML = state.history.map((item) => {
     const videos = Array.isArray(item.video_keys) ? item.video_keys.length : 0;
     return `
-      <div class="history-item-row" data-path="${escapeAttr(item.path)}">
-        <button class="history-item">
+      <div class="history-item-row">
+        <button class="history-item" data-path="${escapeAttr(item.path)}">
           <strong>${escapeHtml(item.name || item.path)}</strong>
           <small>${escapeHtml(item.path)}</small>
           <span>${item.total_episodes ?? "-"} episodes · ${videos} views · ${escapeHtml(item.opened_at || "")}</span>
@@ -597,6 +606,8 @@ async function loadEpisode(index) {
   })));
   state.duration = Math.max(timelineDuration, videoDuration);
   state.currentElapsed = 0;
+  state.trimDraftStart = 0;
+  state.trimDraftEnd = state.duration;
   resetChartWindow();
 
   for (const item of els.episodeList.querySelectorAll(".episode-item")) {
@@ -1036,6 +1047,9 @@ function setTrimPoint(kind) {
   if (kind === "start") state.trimDraftStart = state.currentElapsed;
   if (kind === "end") state.trimDraftEnd = state.currentElapsed;
   updateTrimDraftLabel();
+  const btn = kind === "start" ? els.setTrimStart : els.setTrimEnd;
+  btn.classList.add("trim-set-flash");
+  setTimeout(() => btn.classList.remove("trim-set-flash"), 350);
 }
 
 function markCurrentRange() {
@@ -2448,6 +2462,9 @@ els.datasetPath.addEventListener("keydown", (event) => {
 els.datasetPath.addEventListener("input", schedulePathSuggestions);
 els.datasetPath.addEventListener("focus", schedulePathSuggestions);
 els.datasetPath.addEventListener("blur", () => setTimeout(hideSuggestions, 120));
+if (els.browseRoot) els.browseRoot.addEventListener("click", () => {
+  window._openRootBrowser && window._openRootBrowser();
+});
 els.installRequirements.addEventListener("click", async () => {
   els.installOutput.style.display = "block";
   els.installOutput.textContent = "正在安装...";
