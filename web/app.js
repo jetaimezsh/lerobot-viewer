@@ -608,6 +608,14 @@ async function loadEpisode(index) {
   state.currentElapsed = 0;
   state.trimDraftStart = 0;
   state.trimDraftEnd = state.duration;
+  // 如果当前 episode 已有区间标记，恢复为标记的实际范围
+  const existingMark = findEpisodeMark(index);
+  if (existingMark
+      && (existingMark.type === "trim_episode" || existingMark.type === "select_episode_range")
+      && existingMark.start_time != null && existingMark.end_time != null) {
+    state.trimDraftStart = existingMark.start_time;
+    state.trimDraftEnd = existingMark.end_time;
+  }
   resetChartWindow();
 
   for (const item of els.episodeList.querySelectorAll(".episode-item")) {
@@ -902,12 +910,23 @@ function renderEditPanel() {
 
 function updateTrimDraftLabel() {
   if (!els.trimDraft) return;
-  const start = state.trimDraftStart;
-  const end = state.trimDraftEnd;
-  if (start === null && end === null) {
-    els.trimDraft.textContent = "裁剪区间未设置";
+  const episodeIndex = currentEpisodeIndex();
+  const mark = episodeIndex !== null ? findEpisodeMark(episodeIndex) : null;
+  const hasRangeMark = mark
+    && (mark.type === "trim_episode" || mark.type === "select_episode_range")
+    && mark.start_time != null && mark.end_time != null;
+
+  if (hasRangeMark) {
+    const modeLabel = state.editMode === "export" ? "导出" : "裁剪";
+    els.trimDraft.textContent = `已标记保留区间（${modeLabel}）: ${fmt(mark.start_time)}s - ${fmt(mark.end_time)}s`;
   } else {
-    els.trimDraft.textContent = `保留区间: ${start === null ? "未设置" : `${fmt(start)}s`} - ${end === null ? "未设置" : `${fmt(end)}s`}`;
+    const start = state.trimDraftStart;
+    const end = state.trimDraftEnd;
+    if (start === null && end === null) {
+      els.trimDraft.textContent = "裁剪区间未设置";
+    } else {
+      els.trimDraft.textContent = `保留区间: ${start === null ? "未设置" : `${fmt(start)}s`} - ${end === null ? "未设置" : `${fmt(end)}s`}`;
+    }
   }
   if (els.editEpisodeMeta && state.episode) {
     els.editEpisodeMeta.textContent = `${state.episode.length || state.elapsed.length} frames · 当前 ${fmt(state.currentElapsed)}s / ${fmt(state.duration)}s`;
@@ -995,6 +1014,7 @@ function renderEditOperations() {
       renderEditOperations();
       if (els.editDryRunOutput) els.editDryRunOutput.textContent = "编辑计划已变化，请重新运行预估。";
       refreshMarkButtons();
+      updateTrimDraftLabel();
     });
   }
   updateEditOperationBadge();
@@ -1023,6 +1043,7 @@ function removeEpisodeMark(episodeIndex) {
   state.editOperations = state.editOperations.filter((op) => op.episode_index !== episodeIndex);
   renderEditOperations();
   if (els.editDryRunOutput) els.editDryRunOutput.textContent = "标记已变化，请重新运行预估。";
+  updateTrimDraftLabel();
 }
 
 function markCurrentEpisode() {
@@ -1034,12 +1055,14 @@ function markCurrentEpisode() {
     removeEpisodeMark(episodeIndex);
     els.editEpisodeMeta.textContent = `已取消 Episode ${episodeIndex} 的标记。`;
     refreshMarkButtons();
+    updateTrimDraftLabel();
     return;
   }
   upsertEditOperation({ type: targetType, episode_index: episodeIndex });
   const label = state.editMode === "export" ? "导出" : "删除";
   els.editEpisodeMeta.textContent = `已标记 Episode ${episodeIndex}（${label}模式）。`;
   refreshMarkButtons();
+  updateTrimDraftLabel();
 }
 
 function setTrimPoint(kind) {
@@ -1070,12 +1093,14 @@ function markCurrentRange() {
     removeEpisodeMark(episodeIndex);
     els.editEpisodeMeta.textContent = `已取消 Episode ${episodeIndex} 的区间标记。`;
     refreshMarkButtons();
+    updateTrimDraftLabel();
     return;
   }
   upsertEditOperation({ type: targetType, episode_index: episodeIndex, start_time: start, end_time: end });
   const label = state.editMode === "export" ? "导出" : "裁剪";
   els.editEpisodeMeta.textContent = `已标记 Episode ${episodeIndex} 的区间（${label}模式）。`;
   refreshMarkButtons();
+  updateTrimDraftLabel();
 }
 
 function refreshMarkButtons() {
