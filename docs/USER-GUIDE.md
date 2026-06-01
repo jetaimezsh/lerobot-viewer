@@ -10,7 +10,7 @@ bash scripts/start_backend.sh
 页面分为 2 个根工作台，每个工作台内再分子页面：
 
 - **LeRobot 数据** — 总览、Episode 播放、数据集编辑、System 环境
-- **模型回测** — 模型管理、回测任务、action 对比结果
+- **模型工作台** — 模型管理、回测任务、训练配方、训练队列、训练流水线
 
 ---
 
@@ -76,13 +76,14 @@ bash scripts/start_backend.sh
 
 ## 四、模型回测
 
-### 模型管理
+### 模型档案
 
-1. 切换到"模型管理" Tab
-2. 填写 checkpoint 路径（目录或文件）
-3. 选择 adapter 类型（LeRobot 官方 / 自定义脚本）
-4. 点击"注册"，检查文件 → 加载模型
-5. 可以加载多个模型
+1. 切换到"模型档案" Tab
+2. 选择模板，填写 profile id、名称、checkpoint 路径、设备
+3. 在参数表格中编辑运行期参数和自定义参数；点击"添加行"增加 key/type/value
+4. 点击"新建档案"保存到 `state/model_profiles/`
+5. 点击"检查"读取 checkpoint 文件结构；在 Linux 推理环境中点击"加载"
+6. 可在数据查看页选中一个 episode 后，回到模型档案页点击"真实帧测试"
 
 ### 运行回测
 
@@ -91,18 +92,56 @@ bash scripts/start_backend.sh
 3. 如需跨数据集回测，加载另一个数据集并继续加入 episode
 4. 切换到 **模型回测 / 回测任务**
 5. 在样本池表格中确认数据集、路径、episode 编号、帧数、时长、FPS、task 和视频路数
-6. 选择模型（勾选 checkbox）
+6. 选择 profile（勾选 checkbox）
 7. 可选：勾选"限制帧数"以快速验证
-8. 点击"运行回测"
+8. 点击"运行回测"；多个任务会进入后台队列并依次执行，可在队列表格中刷新查看状态
 
 ### 回测结果
 
-- 结果矩阵（model × dataset × episode）：MAE / RMSE / max error
+- 结果矩阵（profile × dataset × episode）：MAE / RMSE / max error
 - Chart：选择具体数据集 episode 和 action 维度，对比 ground truth / predicted / error
+- 历史结果保存到 `state/backtests/`，每条结果包含当次 profile 快照，支持 HTML / CSV / JSON 导出
 
 ---
 
-## 五、环境检测
+## 五、模型训练
+
+### 训练配方
+
+1. 切换到 **模型工作台 / 训练配方**
+2. 选择训练模板，填写 recipe id、名称、训练数据集路径、输出 checkpoint 目录
+3. 在训练超参数表格中编辑 batch size、epochs、learning rate、policy_type 等参数
+4. 按需填写自定义参数；这些参数会随 recipe 一起保存，便于追溯实验
+5. 勾选"训练完成后自动创建回测档案"，训练成功后会生成标准 Model Profile
+6. 点击"新建配方"或"保存"
+
+### 训练队列
+
+1. 在训练配方页点击"提交训练"，或在配方列表中点击"提交训练"
+2. 作业进入 `state/training_jobs/`，单 worker 顺序执行
+3. 切换到 **模型工作台 / 训练队列**，点击"刷新队列"查看状态
+4. 点击"日志"查看 stdout/stderr 日志
+5. 排队或运行中的作业可以取消；已结束作业可以重新排队或删除
+
+说明：
+- `lerobot_train` 框架封装 `lerobot-train` CLI，真实训练建议在 Linux 环境执行
+- 当前测试使用 `mock` 训练框架覆盖队列、日志、失败、自动 profile 生成等链路
+- 服务重启后，已落盘的 queued 作业会在下次访问训练 API 时恢复调度；原 running 作业会标记为 failed
+
+### 训练流水线
+
+**模型工作台 / 训练流水线** 当前提供轻量流水线记录：
+
+- 选择一个训练配方
+- 选择要对比的已有 profile
+- 使用 Episode 播放页加入的回测样本池
+- 创建后会提交训练作业并记录流水线状态
+
+自动训练完成后触发回测属于后续增强，目前训练完成后可直接使用自动生成的 profile 进入回测任务。
+
+---
+
+## 六、环境检测
 
 "System 环境" Tab 显示：
 

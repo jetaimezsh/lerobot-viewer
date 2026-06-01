@@ -1,6 +1,6 @@
 # LeRobot Dataset v3.0 本地管理与编辑工具
 
-基于 Python/FastAPI 的 LeRobot Dataset v3.0 数据集本地查看、编辑、合并与模型回测工具。前端为静态 HTML/CSS/JS，无需 Node.js。
+基于 Python/FastAPI 的 LeRobot Dataset v3.0 数据集本地查看、编辑、合并、模型回测与模型训练管理工具。前端为静态 HTML/CSS/JS，无需 Node.js。
 
 ## 功能概览
 
@@ -12,8 +12,9 @@
 | **选择导出** | 选择特定 episode 或区间，导出为独立新数据集 |
 | **数据集合并** | 合并多个 schema 兼容的数据集（含视频），自动合并 task 表 |
 | **严格校验** | 按 LeRobot v3.0 规范严格校验，支持官方 `LeRobotDataset` 加载验证 |
-| **模型管理** | 注册 checkpoint、检查文件结构、加载/卸载模型 |
+| **模型档案** | 持久化 profile，管理 checkpoint、设备、运行期参数、检查/加载/卸载 |
 | **模型回测** | 离线 action 推理对比（MAE/RMSE/维度级误差），Linux 推理，Windows 管理 |
+| **模型训练** | v4.1 训练配方、持久化训练队列、日志查看、完成后自动生成回测 profile |
 | **环境检测与日志** | conda/venv 状态、依赖版本、ffmpeg 可用性检查，记录关键操作日志 |
 
 ## 项目结构
@@ -25,8 +26,16 @@ lerobot-viewer/
 │   ├── main.py          # FastAPI 应用、路径补全、历史记录
 │   ├── editing.py       # 编辑/选择导出/合并引擎、视频处理
 │   ├── validation.py    # v3.0 严格校验、官方 LeRobotDataset 加载验证
-│   ├── backtesting.py   # 模型注册/加载/回测、后台 worker 队列
+│   ├── profile_store.py # 模型 profile 持久化 CRUD
+│   ├── model_templates.py # 内置 profile 模板
+│   ├── adapters/        # LeRobot 官方 / mock 回测适配器
+│   ├── trainers/        # LeRobot CLI / mock 训练框架适配器
+│   ├── backtesting.py   # profile-based 回测、真实帧测试、后台 worker 队列
 │   ├── backtest_store.py # 回测结果持久化与 JSON/CSV/HTML 导出
+│   ├── training_templates.py # 内置训练模板
+│   ├── training_store.py # 训练 recipe/job/pipeline 落盘存储
+│   ├── training_executor.py # 单 worker 训练队列、日志采集、profile 桥接
+│   ├── training_pipeline.py # 轻量训练流水线记录
 │   └── operation_log.py # JSONL 操作日志
 ├── web/
 │   ├── index.html       # 单页应用
@@ -36,7 +45,8 @@ lerobot-viewer/
 │   ├── setup_venv.sh / .ps1
 │   ├── start_backend.sh / .ps1
 │   ├── smoke_test.py
-│   └── backtest_smoke_test.py
+│   ├── backtest_smoke_test.py
+│   └── train_smoke_test.py
 ├── docs/
 │   ├── ARCHITECTURE.md
 │   ├── DATASET-V3-SPEC.md
@@ -134,7 +144,7 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 页面现在分为两个根工作台：
 
 - **LeRobot 数据**：负责数据集加载、episode 播放、数据编辑、选择导出、合并和系统环境检测。
-- **模型回测**：负责 checkpoint 管理、回测样本池、模型选择和 action 对比结果。
+- **模型工作台**：负责模型档案、回测任务、训练配方、训练队列和训练流水线。
 
 ### 数据集浏览
 
@@ -161,22 +171,23 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 ### 模型回测
 
-1. "模型管理"页面注册 checkpoint（路径 + adapter 类型）
-2. 检查 → 加载模型
-3. 在 **LeRobot 数据 / Episode 播放** 页面点击"加入回测样本池"
-4. 可以切换并加载其他数据集，继续加入不同数据集的 episode
-5. 在 **模型回测 / 回测任务** 页面用表格确认样本所属数据集、路径、episode 编号、帧数、时长、任务和视频路数
-6. 选择一个或多个模型 → 运行回测；任务会提交到后台 worker，页面轮询任务状态
-7. 查看 MAE/RMSE / 维度级 action 对比曲线
-8. 历史结果会写入 `state/backtests/`，可在页面重新打开，也可导出 HTML/CSV/JSON 报告
+1. "模型档案"页面创建 profile（id、checkpoint 路径、adapter、设备、运行期参数）
+2. 运行期参数和自定义参数使用表格编辑，可点击"添加行"增加 key/type/value
+3. 检查 profile；如需在当前机器推理，加载 profile
+4. 在 **LeRobot 数据 / Episode 播放** 页面点击"加入回测样本池"
+5. 可以切换并加载其他数据集，继续加入不同数据集的 episode
+6. 在 **模型回测 / 回测任务** 页面用表格确认样本所属数据集、路径、episode 编号、帧数、时长、任务和视频路数
+7. 选择一个或多个 profile → 运行回测；任务会提交到后台队列，多个任务按提交顺序缓存并依次执行
+8. 查看 MAE/RMSE / 维度级 action 对比曲线
+9. 历史结果会写入 `state/backtests/`，可在页面重新打开，也可导出 HTML/CSV/JSON 报告
 
-说明：官方 LeRobot checkpoint 推理在 v3 阶段仅支持 Linux；Windows 可做 checkpoint 管理、数据选择、历史查看和报告导出。
+说明：官方 LeRobot checkpoint 推理在 v4 阶段仍仅支持 Linux；Windows 可做 profile 编辑、checkpoint 结构检查、数据选择、历史查看和报告导出。测试环境没有真实模型时，可用 mock adapter 做功能链路验证。
 
 回测 API 支持多数据集 episode 引用：
 
 ```json
 {
-  "model_ids": ["model-a", "model-b"],
+  "profile_ids": ["act_pusht", "dp_push_t"],
   "episodes": [
     {"dataset_path": "D:/datasets/pusht", "episode_index": 0},
     {"dataset_path": "D:/datasets/pick", "episode_index": 4}
@@ -185,9 +196,26 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 }
 ```
 
+### 模型训练
+
+1. 在 **模型工作台 / 训练配方** 创建 recipe，填写数据集路径、输出目录、训练框架、设备和超参数。
+2. 超参数和自定义参数使用表格编辑，支持 string / number / boolean / null / json。
+3. 点击"检查"验证 recipe；`lerobot_train` 会检查数据集路径、输出目录父目录和 `lerobot-train` 命令。
+4. 点击"提交训练"后作业写入 `state/training_jobs/`，单 worker 顺序执行，日志写入同目录 `.log` 文件。
+5. 训练完成后，如果开启"自动创建回测档案"，会在 `state/model_profiles/` 生成标准 profile，可直接进入回测任务使用。
+6. 当前真实 LeRobot CLI 训练主要面向 Linux；Windows 可编辑 recipe、查看队列和使用 mock trainer 做功能链路测试。
+
+训练 API 示例：
+
+```json
+{
+  "recipe_id": "act_bs64_lr1e4"
+}
+```
+
 ### 操作日志
 
-关键操作会写入 `logs/operations.jsonl`，包括数据集打开、编辑 dry-run/apply、严格校验、合并校验/生成、模型注册/加载/删除和回测运行。
+关键操作会写入 `logs/operations.jsonl`，包括数据集打开、编辑 dry-run/apply、严格校验、合并校验/生成、profile 创建/检查/加载/删除、回测运行和训练队列操作。
 
 也可以在 **LeRobot 数据 / System 环境** 页面点击"查看操作日志"，或调用：
 
@@ -200,6 +228,7 @@ GET /api/operations/logs?limit=200
 ```powershell
 python scripts/smoke_test.py
 python scripts/backtest_smoke_test.py
+python scripts/train_smoke_test.py
 ```
 
 ## 设计文档
@@ -207,6 +236,8 @@ python scripts/backtest_smoke_test.py
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — 架构设计与数据流
 - [DATASET-V3-SPEC.md](docs/DATASET-V3-SPEC.md) — v3.0 规范合规对照
 - [USER-GUIDE.md](docs/USER-GUIDE.md) — 操作指南
+- [v4.0-模型回测设计文档.md](docs/v4.0-模型回测设计文档.md) — 模型回测框架
+- [v4.1-模型训练框架设计文档.md](docs/v4.1-模型训练框架设计文档.md) — 模型训练框架
 
 ## License
 

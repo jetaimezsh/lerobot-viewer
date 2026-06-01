@@ -26,10 +26,18 @@ const state = {
   trimDraftStart: null,
   trimDraftEnd: null,
   models: [],
+  profileTemplates: [],
+  selectedProfileId: null,
   modelEnv: null,
   backtestEpisodes: [],
   backtestResult: null,
   visibleBacktestModels: new Set(),
+  trainingFrameworks: [],
+  trainingTemplates: [],
+  trainingRecipes: [],
+  selectedTrainingRecipeId: null,
+  trainingJobs: [],
+  trainingPipelines: [],
 };
 
 const els = {
@@ -117,11 +125,23 @@ const els = {
   folderBrowserCurrent: document.getElementById("folderBrowserCurrent"),
   checkModelEnv: document.getElementById("checkModelEnv"),
   refreshModels: document.getElementById("refreshModels"),
+  profileId: document.getElementById("profileId"),
+  profileTemplate: document.getElementById("profileTemplate"),
+  profileDescription: document.getElementById("profileDescription"),
+  profileRuntimeParams: document.getElementById("profileRuntimeParams"),
+  profileExtraParams: document.getElementById("profileExtraParams"),
+  addRuntimeParam: document.getElementById("addRuntimeParam"),
+  addExtraParam: document.getElementById("addExtraParam"),
+  profileSave: document.getElementById("profileSave"),
+  profileInspect: document.getElementById("profileInspect"),
+  profileLoad: document.getElementById("profileLoad"),
+  profileUnload: document.getElementById("profileUnload"),
+  profileTest: document.getElementById("profileTest"),
+  profileDelete: document.getElementById("profileDelete"),
   modelName: document.getElementById("modelName"),
   checkpointPath: document.getElementById("checkpointPath"),
   browseCheckpoint: document.getElementById("browseCheckpoint"),
   modelAdapterType: document.getElementById("modelAdapterType"),
-  modelScriptPath: document.getElementById("modelScriptPath"),
   modelDevice: document.getElementById("modelDevice"),
   registerModel: document.getElementById("registerModel"),
   modelEnvReport: document.getElementById("modelEnvReport"),
@@ -131,10 +151,12 @@ const els = {
   limitBacktestFrames: document.getElementById("limitBacktestFrames"),
   backtestModelChoices: document.getElementById("backtestModelChoices"),
   runBacktest: document.getElementById("runBacktest"),
+  refreshBacktestJobs: document.getElementById("refreshBacktestJobs"),
   clearBacktest: document.getElementById("clearBacktest"),
   refreshBacktestHistory: document.getElementById("refreshBacktestHistory"),
   backtestExportActions: document.getElementById("backtestExportActions"),
   backtestResult: document.getElementById("backtestResult"),
+  backtestJobQueue: document.getElementById("backtestJobQueue"),
   backtestHistory: document.getElementById("backtestHistory"),
   backtestEpisodeSelect: document.getElementById("backtestEpisodeSelect"),
   backtestDimSelect: document.getElementById("backtestDimSelect"),
@@ -142,6 +164,40 @@ const els = {
   showBacktestError: document.getElementById("showBacktestError"),
   backtestSeriesToggles: document.getElementById("backtestSeriesToggles"),
   backtestChart: document.getElementById("backtestChart"),
+  refreshTrainingRecipes: document.getElementById("refreshTrainingRecipes"),
+  checkTrainingEnv: document.getElementById("checkTrainingEnv"),
+  trainingRecipeId: document.getElementById("trainingRecipeId"),
+  trainingTemplate: document.getElementById("trainingTemplate"),
+  trainingRecipeName: document.getElementById("trainingRecipeName"),
+  trainingRecipeDescription: document.getElementById("trainingRecipeDescription"),
+  trainingFramework: document.getElementById("trainingFramework"),
+  trainingDevice: document.getElementById("trainingDevice"),
+  trainingDatasetPath: document.getElementById("trainingDatasetPath"),
+  trainingEpisodeFilter: document.getElementById("trainingEpisodeFilter"),
+  trainingOutputDir: document.getElementById("trainingOutputDir"),
+  trainingAutoProfile: document.getElementById("trainingAutoProfile"),
+  trainingProfileName: document.getElementById("trainingProfileName"),
+  trainingProfileAdapter: document.getElementById("trainingProfileAdapter"),
+  trainingHyperparams: document.getElementById("trainingHyperparams"),
+  addTrainingHyperparam: document.getElementById("addTrainingHyperparam"),
+  trainingExtraParams: document.getElementById("trainingExtraParams"),
+  addTrainingExtraParam: document.getElementById("addTrainingExtraParam"),
+  createTrainingRecipe: document.getElementById("createTrainingRecipe"),
+  saveTrainingRecipe: document.getElementById("saveTrainingRecipe"),
+  inspectTrainingRecipe: document.getElementById("inspectTrainingRecipe"),
+  submitTrainingJob: document.getElementById("submitTrainingJob"),
+  deleteTrainingRecipe: document.getElementById("deleteTrainingRecipe"),
+  trainingEnvReport: document.getElementById("trainingEnvReport"),
+  trainingRecipeList: document.getElementById("trainingRecipeList"),
+  refreshTrainingJobs: document.getElementById("refreshTrainingJobs"),
+  trainingJobList: document.getElementById("trainingJobList"),
+  trainingJobLog: document.getElementById("trainingJobLog"),
+  createTrainingPipeline: document.getElementById("createTrainingPipeline"),
+  refreshTrainingPipelines: document.getElementById("refreshTrainingPipelines"),
+  pipelineRecipe: document.getElementById("pipelineRecipe"),
+  pipelineProfileChoices: document.getElementById("pipelineProfileChoices"),
+  pipelineEpisodeList: document.getElementById("pipelineEpisodeList"),
+  trainingPipelineList: document.getElementById("trainingPipelineList"),
 };
 
 // Expose folder-browser entry points on window so onclick handlers
@@ -168,6 +224,22 @@ window._openRootBrowser = function () {
     if (typeof openFolderBrowser !== "function") return;
     openFolderBrowser(els.datasetPath, function (dir) {
       if (els.datasetPath) els.datasetPath.value = dir;
+    });
+  } catch (_) {}
+};
+window._openTrainingDatasetBrowser = function () {
+  try {
+    if (typeof openFolderBrowser !== "function") return;
+    openFolderBrowser(els.trainingDatasetPath, function (dir) {
+      if (els.trainingDatasetPath) els.trainingDatasetPath.value = dir;
+    });
+  } catch (_) {}
+};
+window._openTrainingOutputBrowser = function () {
+  try {
+    if (typeof openFolderBrowser !== "function") return;
+    openFolderBrowser(els.trainingOutputDir, function (dir) {
+      if (els.trainingOutputDir) els.trainingOutputDir.value = dir;
     });
   } catch (_) {}
 };
@@ -300,13 +372,29 @@ function setView(viewId) {
   if (viewId === "episodeView") requestAnimationFrame(drawChart);
   if (viewId === "modelManagerView") {
     loadModelEnv();
+    loadProfileTemplates();
     loadModels();
   }
   if (viewId === "modelBacktestView") {
     loadModels();
+    loadBacktestJobs();
     loadBacktestHistory();
     renderBacktestSelectionTable();
     requestAnimationFrame(drawBacktestChart);
+  }
+  if (viewId === "trainingRecipeView") {
+    loadTrainingFrameworks();
+    loadTrainingTemplates();
+    loadTrainingRecipes();
+  }
+  if (viewId === "trainingQueueView") {
+    loadTrainingJobs();
+  }
+  if (viewId === "trainingPipelineView") {
+    loadTrainingRecipes();
+    loadModels();
+    loadTrainingPipelines();
+    renderPipelineSetup();
   }
 }
 
@@ -1160,6 +1248,7 @@ function addCurrentEpisodeToBacktest() {
     state.backtestEpisodes.push(item);
   }
   renderBacktestSelectionTable();
+  renderPipelineSetup();
   if (els.editEpisodeMeta) {
     els.editEpisodeMeta.textContent = `已加入回测样本池：${item.dataset_name} / Episode ${episodeIndex}。`;
   }
@@ -1534,7 +1623,7 @@ async function loadModelEnv() {
   els.modelEnvReport.classList.remove("empty");
   els.modelEnvReport.textContent = "正在检测模型环境...";
   try {
-    state.modelEnv = await api("/api/models/env");
+    state.modelEnv = await api("/api/profiles/env");
     renderModelEnv();
   } catch (error) {
     els.modelEnvReport.textContent = error.message;
@@ -1550,6 +1639,7 @@ function renderModelEnv() {
     ["LeRobot 回测", env.ready_for_lerobot_backtest ? "可运行" : "不可运行"],
     ["CUDA", env.cuda?.available ? `${env.cuda.device_count} 个设备` : "不可用"],
     ["缺失项", env.missing?.length ? env.missing.join(", ") : "无"],
+    ["已加载档案", env.profiles_loaded?.length ? env.profiles_loaded.join(", ") : "无"],
   ];
   els.modelEnvReport.innerHTML = `
     <div class="model-env-grid">
@@ -1571,36 +1661,171 @@ function renderModelEnv() {
   `;
 }
 
+async function loadProfileTemplates() {
+  if (!els.profileTemplate) return;
+  try {
+    state.profileTemplates = await api("/api/profiles/templates");
+    els.profileTemplate.innerHTML = state.profileTemplates.map((template) => `
+      <option value="${escapeAttr(template.id)}">${escapeHtml(template.label || template.id)}</option>
+    `).join("");
+    applySelectedTemplate(false);
+  } catch (error) {
+    if (els.modelEnvReport) els.modelEnvReport.textContent = error.message;
+  }
+}
+
+function applySelectedTemplate(overwrite = true) {
+  if (!els.profileTemplate || !state.profileTemplates.length) return;
+  const template = state.profileTemplates.find((item) => item.id === els.profileTemplate.value) || state.profileTemplates[0];
+  if (template.adapter && els.modelAdapterType) els.modelAdapterType.value = template.adapter;
+  if (overwrite || !paramRows(els.profileRuntimeParams).length) {
+    renderParamTable(els.profileRuntimeParams, template.runtime_params || {});
+  }
+}
+
+function renderParamTable(container, params = {}) {
+  if (!container) return;
+  const entries = Object.entries(params || {});
+  container.classList.toggle("empty", entries.length === 0);
+  container.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>参数名</th>
+          <th>类型</th>
+          <th>值</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${entries.map(([key, value]) => paramRowHtml(key, value)).join("")}
+      </tbody>
+    </table>
+    ${entries.length ? "" : `<div class="param-empty">暂无参数，点击添加行。</div>`}
+  `;
+}
+
+function paramRowHtml(key = "", value = "") {
+  const type = inferParamType(value);
+  return `
+    <tr>
+      <td><input class="param-key" type="text" value="${escapeAttr(key)}" placeholder="key"></td>
+      <td>
+        <select class="param-type">
+          ${["string", "number", "boolean", "null", "json"].map((item) => `<option value="${item}" ${item === type ? "selected" : ""}>${item}</option>`).join("")}
+        </select>
+      </td>
+      <td><input class="param-value" type="text" value="${escapeAttr(paramValueText(value, type))}" placeholder="value"></td>
+      <td><button type="button" data-param-remove="1">删除</button></td>
+    </tr>
+  `;
+}
+
+function inferParamType(value) {
+  if (value === null) return "null";
+  if (typeof value === "boolean") return "boolean";
+  if (typeof value === "number") return "number";
+  if (typeof value === "string") return "string";
+  return "json";
+}
+
+function paramValueText(value, type = inferParamType(value)) {
+  if (type === "null") return "";
+  if (type === "json") return JSON.stringify(value);
+  return String(value ?? "");
+}
+
+function paramRows(container) {
+  return Array.from(container?.querySelectorAll("tbody tr") || []);
+}
+
+function addParamRow(container, key = "", value = "") {
+  if (!container) return;
+  if (!container.querySelector("table")) renderParamTable(container, {});
+  const tbody = container.querySelector("tbody");
+  tbody.insertAdjacentHTML("beforeend", paramRowHtml(key, value));
+  container.classList.remove("empty");
+  const empty = container.querySelector(".param-empty");
+  if (empty) empty.remove();
+}
+
+function readParamTable(container, label) {
+  const result = {};
+  for (const row of paramRows(container)) {
+    const key = row.querySelector(".param-key")?.value.trim();
+    if (!key) continue;
+    if (Object.prototype.hasOwnProperty.call(result, key)) {
+      throw new Error(`${label} 存在重复参数名：${key}`);
+    }
+    const type = row.querySelector(".param-type")?.value || "string";
+    const raw = row.querySelector(".param-value")?.value ?? "";
+    result[key] = parseParamValue(raw, type, `${label}.${key}`);
+  }
+  return result;
+}
+
+function parseParamValue(raw, type, label) {
+  if (type === "string") return raw;
+  if (type === "number") {
+    const value = Number(raw);
+    if (Number.isNaN(value)) throw new Error(`${label} 必须是数字`);
+    return value;
+  }
+  if (type === "boolean") {
+    const normalized = raw.trim().toLowerCase();
+    if (["true", "1", "yes", "是"].includes(normalized)) return true;
+    if (["false", "0", "no", "否"].includes(normalized)) return false;
+    throw new Error(`${label} 必须是 boolean，可填 true/false`);
+  }
+  if (type === "null") return null;
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`${label} JSON 格式错误：${error.message}`);
+  }
+}
+
+function handleParamTableClick(event) {
+  const button = event.target?.closest?.("[data-param-remove]");
+  if (!button) return;
+  const container = button.closest(".param-table");
+  button.closest("tr")?.remove();
+  if (container && !paramRows(container).length) renderParamTable(container, {});
+}
+
 async function loadModels() {
   try {
-    state.models = await api("/api/models");
+    state.models = await api("/api/profiles");
     renderModels();
     renderBacktestModelChoices();
+    renderPipelineSetup();
   } catch (error) {
     if (els.modelList) els.modelList.textContent = error.message;
   }
 }
 
 async function registerCurrentModel() {
-  const checkpointPath = els.checkpointPath.value.trim();
-  if (!checkpointPath) {
-    els.modelList.textContent = "请填写 checkpoint 路径。";
+  const profileId = els.profileId.value.trim();
+  if (!profileId) {
+    els.modelList.textContent = "请填写 profile id。";
     return;
   }
   try {
-    await api("/api/models/register", {
+    await api("/api/profiles", {
       method: "POST",
       body: JSON.stringify({
+        id: profileId,
+        template_id: els.profileTemplate?.value || "blank",
         name: els.modelName.value.trim() || null,
-        checkpoint_path: checkpointPath,
-        adapter_type: els.modelAdapterType.value,
+        description: els.profileDescription.value.trim() || null,
+        checkpoint_path: els.checkpointPath.value.trim() || "",
+        adapter: els.modelAdapterType.value,
         device: els.modelDevice.value,
-        script_path: els.modelScriptPath.value.trim() || null,
+        runtime_params: readParamTable(els.profileRuntimeParams, "运行期参数"),
+        extra_params: readParamTable(els.profileExtraParams, "自定义参数"),
       }),
     });
-    els.modelName.value = "";
-    els.checkpointPath.value = "";
-    els.modelScriptPath.value = "";
+    state.selectedProfileId = profileId;
     await loadModels();
   } catch (error) {
     els.modelList.textContent = error.message;
@@ -1611,7 +1836,7 @@ function renderModels() {
   if (!els.modelList) return;
   if (!state.models.length) {
     els.modelList.classList.add("empty");
-    els.modelList.innerHTML = "尚未注册模型。";
+    els.modelList.innerHTML = "尚未创建模型档案。";
     return;
   }
   els.modelList.classList.remove("empty");
@@ -1624,9 +1849,9 @@ function renderModels() {
         <div class="model-card-head">
           <div>
             <strong>${escapeHtml(model.name)}</strong>
-            <span>${escapeHtml(model.adapter_type)} · ${escapeHtml(model.device)} · ${escapeHtml(model.status)}</span>
+            <span>${escapeHtml(model.adapter)} · ${escapeHtml(model.device)} · ${escapeHtml(model.status)}</span>
           </div>
-          <span class="result-status ${model.loaded ? "ok" : errors.length ? "fail" : "neutral"}">${model.loaded ? "已加载" : errors.length ? "无效" : "已注册"}</span>
+          <span class="result-status ${model.loaded ? "ok" : errors.length ? "fail" : "neutral"}">${model.loaded ? "已加载" : errors.length ? "无效" : "已保存"}</span>
         </div>
         <div class="model-card-path">${escapeHtml(model.checkpoint_path)}</div>
         <div class="model-card-meta">
@@ -1635,9 +1860,11 @@ function renderModels() {
           <span>files: ${escapeHtml(inspection.file_count ?? 0)}</span>
           ${inspection.parameter_count ? `<span>params: ${escapeHtml(inspection.parameter_count)}</span>` : ""}
         </div>
+        <div class="model-card-path">runtime: ${escapeHtml(JSON.stringify(model.runtime_params || {}))}</div>
         ${errors.length ? `<div class="model-card-issues error">${errors.map(escapeHtml).join("<br>")}</div>` : ""}
         ${warnings.length ? `<div class="model-card-issues warning">${warnings.map(escapeHtml).join("<br>")}</div>` : ""}
         <div class="model-card-actions">
+          <button type="button" data-model-action="select">编辑</button>
           <button type="button" data-model-action="inspect">检查</button>
           <button type="button" data-model-action="load">加载</button>
           <button type="button" data-model-action="unload">卸载</button>
@@ -1654,28 +1881,550 @@ async function handleModelAction(event) {
   const card = event.target.closest(".model-card");
   const modelId = card?.dataset?.modelId;
   if (!modelId) return;
-  const endpoint = {
-    inspect: "/api/models/inspect",
-    load: "/api/models/load",
-    unload: "/api/models/unload",
-    delete: "/api/models/delete",
-  }[action];
   try {
-    await api(endpoint, {
-      method: "POST",
-      body: JSON.stringify({ model_id: modelId }),
-    });
+    if (action === "select") {
+      fillProfileEditor(state.models.find((model) => model.id === modelId) || await api(`/api/profiles/${encodeURIComponent(modelId)}`));
+      return;
+    }
+    if (action === "delete") {
+      await api(`/api/profiles/${encodeURIComponent(modelId)}`, { method: "DELETE" });
+      if (state.selectedProfileId === modelId) clearProfileEditor();
+    } else {
+      await api(`/api/profiles/${encodeURIComponent(modelId)}/${action}`, { method: "POST" });
+    }
     await loadModels();
   } catch (error) {
     card.insertAdjacentHTML("beforeend", `<div class="model-card-issues error">${escapeHtml(error.message)}</div>`);
   }
 }
 
+function fillProfileEditor(profile) {
+  state.selectedProfileId = profile.id;
+  els.profileId.value = profile.id || "";
+  els.profileId.disabled = true;
+  els.modelName.value = profile.name || "";
+  els.profileDescription.value = profile.description || "";
+  els.checkpointPath.value = profile.checkpoint_path || "";
+  els.modelAdapterType.value = profile.adapter || "lerobot_official";
+  els.modelDevice.value = profile.device || "cuda";
+  renderParamTable(els.profileRuntimeParams, profile.runtime_params || {});
+  renderParamTable(els.profileExtraParams, profile.extra_params || {});
+}
+
+function clearProfileEditor() {
+  state.selectedProfileId = null;
+  if (els.profileId) {
+    els.profileId.value = "";
+    els.profileId.disabled = false;
+  }
+  if (els.modelName) els.modelName.value = "";
+  if (els.profileDescription) els.profileDescription.value = "";
+  if (els.checkpointPath) els.checkpointPath.value = "";
+  if (els.modelDevice) els.modelDevice.value = "cuda";
+  applySelectedTemplate(true);
+  renderParamTable(els.profileExtraParams, {});
+}
+
+async function saveCurrentProfile() {
+  if (!state.selectedProfileId) {
+    await registerCurrentModel();
+    return;
+  }
+  try {
+    await api(`/api/profiles/${encodeURIComponent(state.selectedProfileId)}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        name: els.modelName.value.trim() || state.selectedProfileId,
+        description: els.profileDescription.value.trim() || "",
+        checkpoint_path: els.checkpointPath.value.trim() || "",
+        adapter: els.modelAdapterType.value,
+        device: els.modelDevice.value,
+        runtime_params: readParamTable(els.profileRuntimeParams, "运行期参数"),
+        extra_params: readParamTable(els.profileExtraParams, "自定义参数"),
+      }),
+    });
+    await loadModels();
+  } catch (error) {
+    els.modelList.textContent = error.message;
+  }
+}
+
+async function runProfileEditorAction(action) {
+  const profileId = state.selectedProfileId || els.profileId?.value?.trim();
+  if (!profileId) {
+    els.modelList.textContent = "请先选择或创建 profile。";
+    return;
+  }
+  try {
+    if (action === "delete") {
+      await api(`/api/profiles/${encodeURIComponent(profileId)}`, { method: "DELETE" });
+      clearProfileEditor();
+    } else if (action === "test") {
+      if (!state.summary || currentEpisodeIndex() === null) {
+        throw new Error("请先在数据查看中加载数据集并选择一个 episode，再做真实帧测试。");
+      }
+      const result = await api(`/api/profiles/${encodeURIComponent(profileId)}/test`, {
+        method: "POST",
+        body: JSON.stringify({
+          dataset_path: state.summary.root,
+          episode_index: currentEpisodeIndex(),
+          frame_index: currentFrameIndex(),
+        }),
+      });
+      els.modelEnvReport.classList.remove("empty");
+      els.modelEnvReport.innerHTML = formatKeyValueGrid([
+        ["Profile", result.profile?.id],
+        ["Episode", result.episode_index],
+        ["Frame", result.frame_index],
+        ["Action shape", result.action_shape],
+        ["Elapsed", `${result.elapsed_ms} ms`],
+        ["Action preview", result.action_preview],
+      ]);
+    } else {
+      await api(`/api/profiles/${encodeURIComponent(profileId)}/${action}`, { method: "POST" });
+    }
+    await loadModels();
+  } catch (error) {
+    els.modelEnvReport.classList.remove("empty");
+    els.modelEnvReport.textContent = error.message;
+  }
+}
+
+async function loadTrainingFrameworks() {
+  if (!els.trainingFramework) return;
+  try {
+    state.trainingFrameworks = await api("/api/train/frameworks");
+    els.trainingFramework.innerHTML = state.trainingFrameworks.map((framework) => `
+      <option value="${escapeAttr(framework.id)}">${escapeHtml(framework.label || framework.id)}</option>
+    `).join("");
+  } catch (error) {
+    showTrainingMessage(error.message);
+  }
+}
+
+async function loadTrainingTemplates() {
+  if (!els.trainingTemplate) return;
+  try {
+    state.trainingTemplates = await api("/api/train/templates");
+    els.trainingTemplate.innerHTML = state.trainingTemplates.map((template) => `
+      <option value="${escapeAttr(template.id)}">${escapeHtml(template.label || template.id)}</option>
+    `).join("");
+    applyTrainingTemplate(false);
+  } catch (error) {
+    showTrainingMessage(error.message);
+  }
+}
+
+function applyTrainingTemplate(overwrite = true) {
+  if (!els.trainingTemplate || !state.trainingTemplates.length) return;
+  const template = state.trainingTemplates.find((item) => item.id === els.trainingTemplate.value) || state.trainingTemplates[0];
+  if (template.framework && els.trainingFramework) els.trainingFramework.value = template.framework;
+  if (overwrite || !paramRows(els.trainingHyperparams).length) {
+    renderParamTable(els.trainingHyperparams, template.hyperparams || {});
+  }
+}
+
+async function loadTrainingEnv() {
+  if (!els.trainingEnvReport) return;
+  try {
+    const env = await api("/api/train/env");
+    els.trainingEnvReport.classList.remove("empty");
+    els.trainingEnvReport.innerHTML = `
+      <div class="model-env-grid">
+        <div class="model-env-cell"><span>Worker</span><strong>${escapeHtml(env.worker?.worker_alive ? "运行中" : "空闲")}</strong></div>
+        <div class="model-env-cell"><span>Queued</span><strong>${escapeHtml(env.worker?.queued ?? 0)}</strong></div>
+        <div class="model-env-cell"><span>Running</span><strong>${escapeHtml(env.worker?.running || "无")}</strong></div>
+      </div>
+      <div class="model-env-checks">
+        ${(env.frameworks || []).map((item) => `
+          <div class="tool-check ok"><strong>${escapeHtml(item.label || item.id)}</strong><span>${escapeHtml(item.id)}</span></div>
+        `).join("")}
+      </div>
+    `;
+  } catch (error) {
+    showTrainingMessage(error.message);
+  }
+}
+
+async function loadTrainingRecipes() {
+  try {
+    state.trainingRecipes = await api("/api/train/recipes");
+    renderTrainingRecipes();
+    renderPipelineSetup();
+  } catch (error) {
+    if (els.trainingRecipeList) els.trainingRecipeList.textContent = error.message;
+  }
+}
+
+function renderTrainingRecipes() {
+  if (!els.trainingRecipeList) return;
+  if (!state.trainingRecipes.length) {
+    els.trainingRecipeList.classList.add("empty");
+    els.trainingRecipeList.innerHTML = "尚未创建训练配方。";
+    return;
+  }
+  els.trainingRecipeList.classList.remove("empty");
+  els.trainingRecipeList.innerHTML = state.trainingRecipes.map((recipe) => {
+    const hp = recipe.hyperparams || {};
+    const inspection = recipe.inspection || {};
+    const errors = inspection.errors || [];
+    return `
+      <div class="model-card" data-training-recipe-id="${escapeAttr(recipe.id)}">
+        <div class="model-card-head">
+          <div>
+            <strong>${escapeHtml(recipe.name || recipe.id)}</strong>
+            <span>${escapeHtml(recipe.framework)} · ${escapeHtml(recipe.device)} · ${escapeHtml(recipe.status)}</span>
+          </div>
+          <span class="result-status ${errors.length ? "fail" : "neutral"}">${errors.length ? "无效" : "已保存"}</span>
+        </div>
+        <div class="model-card-path">dataset: ${escapeHtml(recipe.dataset_path || "-")}</div>
+        <div class="model-card-path">output: ${escapeHtml(recipe.output_dir || "-")}</div>
+        <div class="model-card-meta">
+          <span>policy: ${escapeHtml(hp.policy_type || "-")}</span>
+          <span>batch: ${escapeHtml(hp.batch_size ?? "-")}</span>
+          <span>epochs: ${escapeHtml(hp.epochs ?? "-")}</span>
+          <span>lr: ${escapeHtml(hp.learning_rate ?? "-")}</span>
+        </div>
+        ${errors.length ? `<div class="model-card-issues error">${errors.map(escapeHtml).join("<br>")}</div>` : ""}
+        <div class="model-card-actions">
+          <button type="button" data-training-recipe-action="select">编辑</button>
+          <button type="button" data-training-recipe-action="inspect">检查</button>
+          <button type="button" data-training-recipe-action="submit">提交训练</button>
+          <button type="button" data-training-recipe-action="delete">删除</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function readEpisodeFilter() {
+  const text = (els.trainingEpisodeFilter?.value || "").trim();
+  if (!text) return null;
+  return text.split(/[,\s]+/).filter(Boolean).map((item) => {
+    const value = Number(item);
+    if (!Number.isInteger(value) || value < 0) throw new Error(`episode 过滤值无效：${item}`);
+    return value;
+  });
+}
+
+function trainingRecipePayload() {
+  return {
+    name: els.trainingRecipeName?.value.trim() || null,
+    description: els.trainingRecipeDescription?.value.trim() || null,
+    framework: els.trainingFramework?.value || "lerobot_train",
+    dataset_path: els.trainingDatasetPath?.value.trim() || "",
+    episode_filter: readEpisodeFilter(),
+    output_dir: els.trainingOutputDir?.value.trim() || "",
+    hyperparams: readParamTable(els.trainingHyperparams, "训练超参数"),
+    device: els.trainingDevice?.value || "cuda",
+    extra_params: readParamTable(els.trainingExtraParams, "训练自定义参数"),
+    auto_profile_on_complete: Boolean(els.trainingAutoProfile?.checked),
+    profile_name: els.trainingProfileName?.value.trim() || null,
+    profile_adapter: els.trainingProfileAdapter?.value || "lerobot_official",
+  };
+}
+
+async function createTrainingRecipe() {
+  const recipeId = els.trainingRecipeId?.value.trim();
+  if (!recipeId) {
+    showTrainingMessage("请填写 recipe id。");
+    return;
+  }
+  try {
+    await api("/api/train/recipes", {
+      method: "POST",
+      body: JSON.stringify({
+        id: recipeId,
+        template_id: els.trainingTemplate?.value || "blank_train",
+        ...trainingRecipePayload(),
+      }),
+    });
+    state.selectedTrainingRecipeId = recipeId;
+    if (els.trainingRecipeId) els.trainingRecipeId.disabled = true;
+    await loadTrainingRecipes();
+  } catch (error) {
+    showTrainingMessage(error.message);
+  }
+}
+
+async function saveTrainingRecipe() {
+  if (!state.selectedTrainingRecipeId) {
+    await createTrainingRecipe();
+    return;
+  }
+  try {
+    await api(`/api/train/recipes/${encodeURIComponent(state.selectedTrainingRecipeId)}`, {
+      method: "PUT",
+      body: JSON.stringify(trainingRecipePayload()),
+    });
+    await loadTrainingRecipes();
+  } catch (error) {
+    showTrainingMessage(error.message);
+  }
+}
+
+async function runTrainingRecipeAction(action, recipeId = null) {
+  const id = recipeId || state.selectedTrainingRecipeId || els.trainingRecipeId?.value.trim();
+  if (!id) {
+    showTrainingMessage("请先选择或创建训练配方。");
+    return;
+  }
+  try {
+    if (action === "delete") {
+      await api(`/api/train/recipes/${encodeURIComponent(id)}`, { method: "DELETE" });
+      clearTrainingRecipeEditor();
+    } else if (action === "submit") {
+      const job = await api("/api/train/jobs", {
+        method: "POST",
+        body: JSON.stringify({ recipe_id: id }),
+      });
+      showTrainingMessage(`已提交训练作业：${job.job_id}`);
+      await loadTrainingJobs();
+    } else {
+      const result = await api(`/api/train/recipes/${encodeURIComponent(id)}/${action}`, { method: "POST" });
+      fillTrainingRecipeEditor(result);
+    }
+    await loadTrainingRecipes();
+  } catch (error) {
+    showTrainingMessage(error.message);
+  }
+}
+
+function fillTrainingRecipeEditor(recipe) {
+  state.selectedTrainingRecipeId = recipe.id;
+  if (els.trainingRecipeId) {
+    els.trainingRecipeId.value = recipe.id || "";
+    els.trainingRecipeId.disabled = true;
+  }
+  if (els.trainingRecipeName) els.trainingRecipeName.value = recipe.name || "";
+  if (els.trainingRecipeDescription) els.trainingRecipeDescription.value = recipe.description || "";
+  if (els.trainingFramework) els.trainingFramework.value = recipe.framework || "lerobot_train";
+  if (els.trainingDevice) els.trainingDevice.value = recipe.device || "cuda";
+  if (els.trainingDatasetPath) els.trainingDatasetPath.value = recipe.dataset_path || "";
+  if (els.trainingEpisodeFilter) els.trainingEpisodeFilter.value = Array.isArray(recipe.episode_filter) ? recipe.episode_filter.join(",") : "";
+  if (els.trainingOutputDir) els.trainingOutputDir.value = recipe.output_dir || "";
+  if (els.trainingAutoProfile) els.trainingAutoProfile.checked = recipe.auto_profile_on_complete !== false;
+  if (els.trainingProfileName) els.trainingProfileName.value = recipe.profile_name || "";
+  if (els.trainingProfileAdapter) els.trainingProfileAdapter.value = recipe.profile_adapter || "lerobot_official";
+  renderParamTable(els.trainingHyperparams, recipe.hyperparams || {});
+  renderParamTable(els.trainingExtraParams, recipe.extra_params || {});
+}
+
+function clearTrainingRecipeEditor() {
+  state.selectedTrainingRecipeId = null;
+  if (els.trainingRecipeId) {
+    els.trainingRecipeId.value = "";
+    els.trainingRecipeId.disabled = false;
+  }
+  if (els.trainingRecipeName) els.trainingRecipeName.value = "";
+  if (els.trainingRecipeDescription) els.trainingRecipeDescription.value = "";
+  if (els.trainingDatasetPath) els.trainingDatasetPath.value = "";
+  if (els.trainingEpisodeFilter) els.trainingEpisodeFilter.value = "";
+  if (els.trainingOutputDir) els.trainingOutputDir.value = "";
+  if (els.trainingProfileName) els.trainingProfileName.value = "";
+  if (els.trainingAutoProfile) els.trainingAutoProfile.checked = true;
+  applyTrainingTemplate(true);
+  renderParamTable(els.trainingExtraParams, {});
+}
+
+async function handleTrainingRecipeAction(event) {
+  const action = event.target?.dataset?.trainingRecipeAction;
+  if (!action) return;
+  const card = event.target.closest(".model-card");
+  const recipeId = card?.dataset?.trainingRecipeId;
+  if (!recipeId) return;
+  if (action === "select") {
+    const recipe = await api(`/api/train/recipes/${encodeURIComponent(recipeId)}`);
+    fillTrainingRecipeEditor(recipe);
+    return;
+  }
+  await runTrainingRecipeAction(action, recipeId);
+}
+
+async function loadTrainingJobs() {
+  if (!els.trainingJobList) return;
+  try {
+    state.trainingJobs = await api("/api/train/jobs");
+    renderTrainingJobs();
+  } catch (error) {
+    els.trainingJobList.textContent = error.message;
+  }
+}
+
+function renderTrainingJobs() {
+  if (!els.trainingJobList) return;
+  if (!state.trainingJobs.length) {
+    els.trainingJobList.classList.add("empty");
+    els.trainingJobList.innerHTML = "暂无训练作业。";
+    return;
+  }
+  els.trainingJobList.classList.remove("empty");
+  els.trainingJobList.innerHTML = `
+    <table>
+      <thead><tr><th>Job</th><th>Recipe</th><th>Status</th><th>Progress</th><th>Profile</th><th>操作</th></tr></thead>
+      <tbody>
+        ${state.trainingJobs.map((job) => {
+          const progress = job.progress || {};
+          const progressText = progress.epoch ? `epoch ${progress.epoch}/${progress.total_epochs || "?"} · loss ${fmt(progress.loss)}` : "-";
+          return `
+            <tr data-training-job-id="${escapeAttr(job.job_id)}">
+              <td>${escapeHtml(job.job_id)}<br><small>${escapeHtml(job.created_at || "")}</small></td>
+              <td>${escapeHtml(job.recipe_name || job.recipe_id)}</td>
+              <td>${escapeHtml(job.status)}</td>
+              <td>${escapeHtml(progressText)}</td>
+              <td>${escapeHtml(job.auto_generated_profile_id || "-")}</td>
+              <td>
+                <button type="button" data-training-job-action="log">日志</button>
+                <button type="button" data-training-job-action="cancel">取消</button>
+                <button type="button" data-training-job-action="requeue">重排</button>
+                <button type="button" data-training-job-action="delete">删除</button>
+              </td>
+            </tr>
+          `;
+        }).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+async function handleTrainingJobAction(event) {
+  const action = event.target?.dataset?.trainingJobAction;
+  if (!action) return;
+  const row = event.target.closest("[data-training-job-id]");
+  const jobId = row?.dataset?.trainingJobId;
+  if (!jobId) return;
+  try {
+    if (action === "log") {
+      const log = await api(`/api/train/jobs/${encodeURIComponent(jobId)}/log?tail=300`);
+      if (els.trainingJobLog) els.trainingJobLog.textContent = log.text || "暂无日志。";
+      return;
+    }
+    if (action === "delete") {
+      await api(`/api/train/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
+    } else {
+      await api(`/api/train/jobs/${encodeURIComponent(jobId)}/${action}`, { method: "POST" });
+    }
+    await loadTrainingJobs();
+  } catch (error) {
+    if (els.trainingJobLog) els.trainingJobLog.textContent = error.message;
+  }
+}
+
+function showTrainingMessage(message) {
+  if (!els.trainingEnvReport) return;
+  els.trainingEnvReport.classList.remove("empty");
+  els.trainingEnvReport.textContent = message;
+}
+
+function renderPipelineSetup() {
+  if (els.pipelineRecipe) {
+    els.pipelineRecipe.innerHTML = state.trainingRecipes.map((recipe) => `
+      <option value="${escapeAttr(recipe.id)}">${escapeHtml(recipe.name || recipe.id)}</option>
+    `).join("");
+  }
+  if (els.pipelineProfileChoices) {
+    if (!state.models.length) {
+      els.pipelineProfileChoices.classList.add("empty");
+      els.pipelineProfileChoices.innerHTML = "暂无可对比 profile。";
+    } else {
+      els.pipelineProfileChoices.classList.remove("empty");
+      els.pipelineProfileChoices.innerHTML = state.models.map((model) => `
+        <label><input type="checkbox" value="${escapeAttr(model.id)}"> ${escapeHtml(model.name || model.id)}</label>
+      `).join("");
+    }
+  }
+  if (els.pipelineEpisodeList) {
+    if (!state.backtestEpisodes.length) {
+      els.pipelineEpisodeList.classList.add("empty");
+      els.pipelineEpisodeList.innerHTML = "从 Episode 播放页加入回测样本后会显示在这里。";
+    } else {
+      els.pipelineEpisodeList.classList.remove("empty");
+      els.pipelineEpisodeList.innerHTML = `<table><tbody>${state.backtestEpisodes.map((item) => `
+        <tr><td>${escapeHtml(item.dataset_name || item.dataset_path)}</td><td>ep ${escapeHtml(item.episode_index)}</td><td>${escapeHtml(item.length ?? "-")} frames</td></tr>
+      `).join("")}</tbody></table>`;
+    }
+  }
+}
+
+async function createTrainingPipeline() {
+  const recipeId = els.pipelineRecipe?.value;
+  if (!recipeId) {
+    showTrainingMessage("请先创建训练配方。");
+    return;
+  }
+  const comparisonProfileIds = Array.from(els.pipelineProfileChoices?.querySelectorAll("input:checked") || []).map((input) => input.value);
+  try {
+    await api("/api/train/pipelines", {
+      method: "POST",
+      body: JSON.stringify({
+        recipe_id: recipeId,
+        comparison_profile_ids: comparisonProfileIds,
+        episodes: state.backtestEpisodes,
+      }),
+    });
+    await loadTrainingPipelines();
+    await loadTrainingJobs();
+  } catch (error) {
+    if (els.trainingPipelineList) els.trainingPipelineList.textContent = error.message;
+  }
+}
+
+async function loadTrainingPipelines() {
+  if (!els.trainingPipelineList) return;
+  try {
+    state.trainingPipelines = await api("/api/train/pipelines");
+    renderTrainingPipelines();
+  } catch (error) {
+    els.trainingPipelineList.textContent = error.message;
+  }
+}
+
+function renderTrainingPipelines() {
+  if (!els.trainingPipelineList) return;
+  if (!state.trainingPipelines.length) {
+    els.trainingPipelineList.classList.add("empty");
+    els.trainingPipelineList.innerHTML = "暂无流水线。";
+    return;
+  }
+  els.trainingPipelineList.classList.remove("empty");
+  els.trainingPipelineList.innerHTML = `
+    <table>
+      <thead><tr><th>Pipeline</th><th>Recipe</th><th>Training Job</th><th>Status</th><th>Episodes</th></tr></thead>
+      <tbody>
+        ${state.trainingPipelines.map((pipe) => `
+          <tr>
+            <td>${escapeHtml(pipe.pipeline_id)}</td>
+            <td>${escapeHtml(pipe.recipe_id)}</td>
+            <td>${escapeHtml(pipe.training_job_id)}</td>
+            <td>${escapeHtml(pipe.status)}</td>
+            <td>${escapeHtml((pipe.episodes || []).length)}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function parseJsonObject(raw, label) {
+  const text = (raw || "").trim();
+  if (!text) return {};
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${label} JSON 格式错误：${error.message}`);
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} 必须是 JSON object`);
+  }
+  return value;
+}
+
 function renderBacktestModelChoices() {
   if (!els.backtestModelChoices) return;
   if (!state.models.length) {
     els.backtestModelChoices.classList.add("empty");
-    els.backtestModelChoices.innerHTML = "请先在模型管理中注册模型。";
+    els.backtestModelChoices.innerHTML = "请先在模型档案中创建 profile。";
     return;
   }
   els.backtestModelChoices.classList.remove("empty");
@@ -1684,13 +2433,13 @@ function renderBacktestModelChoices() {
       <input type="checkbox" value="${escapeAttr(model.id)}">
       <span>
         <strong>${escapeHtml(model.name)}</strong>
-        <small>${escapeHtml(model.inspection?.policy_type || model.adapter_type)} · ${escapeHtml(model.status)}</small>
+        <small>${escapeHtml(model.inspection?.policy_type || model.adapter)} · ${escapeHtml(model.status)}</small>
       </span>
     </label>
   `).join("");
 }
 
-function selectedBacktestModelIds() {
+function selectedBacktestProfileIds() {
   return Array.from(els.backtestModelChoices.querySelectorAll("input:checked")).map((input) => input.value);
 }
 
@@ -1739,17 +2488,19 @@ function renderBacktestSelectionTable() {
 function removeBacktestEpisode(key) {
   state.backtestEpisodes = state.backtestEpisodes.filter((item) => backtestEpisodeKey(item) !== key);
   renderBacktestSelectionTable();
+  renderPipelineSetup();
 }
 
 function clearBacktestSelection() {
   state.backtestEpisodes = [];
   renderBacktestSelectionTable();
+  renderPipelineSetup();
 }
 
 async function runSelectedBacktest() {
-  const modelIds = selectedBacktestModelIds();
-  if (!modelIds.length) {
-    els.backtestResult.textContent = "请至少选择一个模型。";
+  const profileIds = selectedBacktestProfileIds();
+  if (!profileIds.length) {
+    els.backtestResult.textContent = "请至少选择一个模型档案。";
     return;
   }
   if (!state.backtestEpisodes.length) {
@@ -1763,7 +2514,7 @@ async function runSelectedBacktest() {
     const job = await api("/api/backtests/jobs", {
       method: "POST",
       body: JSON.stringify({
-        model_ids: modelIds,
+        profile_ids: profileIds,
         episodes: state.backtestEpisodes.map((item) => ({
           dataset_path: item.dataset_path,
           episode_index: Number(item.episode_index),
@@ -1771,8 +2522,9 @@ async function runSelectedBacktest() {
         max_frames: els.limitBacktestFrames.checked ? 20 : null,
       }),
     });
-    state.visibleBacktestModels = new Set(modelIds);
+    state.visibleBacktestModels = new Set(profileIds);
     renderBacktestJobStatus(job);
+    await loadBacktestJobs();
     pollBacktestJob(job.job_id);
   } catch (error) {
     els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测失败</h4><p>${escapeHtml(error.message)}</p></div>`;
@@ -1785,15 +2537,18 @@ async function pollBacktestJob(jobId) {
       await delay(900);
       const job = await api(`/api/backtests/jobs/${encodeURIComponent(jobId)}`);
       renderBacktestJobStatus(job);
+      await loadBacktestJobs();
       if (job.status === "done") {
         state.backtestResult = job.result || await api(`/api/backtests/runs/${encodeURIComponent(job.run_id)}`);
-        state.visibleBacktestModels = new Set(state.backtestResult.model_ids || []);
+        state.visibleBacktestModels = new Set(state.backtestResult.profile_ids || state.backtestResult.model_ids || []);
         renderBacktestResult();
+        await loadBacktestJobs();
         await loadBacktestHistory();
         return;
       }
       if (job.status === "failed") {
         els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测失败</h4><p>${escapeHtml(job.error || "后台任务失败")}</p></div>`;
+        await loadBacktestJobs();
         await loadBacktestHistory();
         return;
       }
@@ -1865,7 +2620,7 @@ function renderBacktestResult() {
     <div class="backtest-matrix">
       ${(run.results || []).map((item) => `
         <div class="backtest-cell ${item.status === "done" ? "ok" : "fail"}">
-          <strong>${escapeHtml(modelName(item.model_id))}</strong>
+          <strong>${escapeHtml(item.profile_name || modelName(item.profile_id || item.model_id))}</strong>
           <span>${escapeHtml(item.dataset_name || datasetName(item.dataset_path))} / Episode ${escapeHtml(item.episode_index)} · ${escapeHtml(item.status)}</span>
           ${item.metrics ? `<small>MAE ${escapeHtml(item.metrics.mae)} · RMSE ${escapeHtml(item.metrics.rmse)}</small>` : `<small>${escapeHtml(item.error || "")}</small>`}
         </div>
@@ -1936,7 +2691,7 @@ function renderBacktestHistory(runs) {
               <td>${escapeHtml(run.created_at || "-")}</td>
               <td><code>${escapeHtml(run.run_id)}</code></td>
               <td>${escapeHtml((run.dataset_paths || []).map(datasetName).join(", ") || "-")}</td>
-              <td>${escapeHtml((run.model_ids || []).length)}</td>
+              <td>${escapeHtml((run.profile_ids || run.model_ids || []).length)}</td>
               <td>${escapeHtml((run.episodes || []).length)}</td>
               <td>${escapeHtml(summary.done ?? "-")}</td>
               <td>${escapeHtml(summary.failed ?? "-")}</td>
@@ -1955,7 +2710,7 @@ function renderBacktestHistory(runs) {
 async function loadBacktestRun(runId) {
   const run = await api(`/api/backtests/runs/${encodeURIComponent(runId)}`);
   state.backtestResult = run;
-  state.visibleBacktestModels = new Set(run.model_ids || []);
+  state.visibleBacktestModels = new Set(run.profile_ids || run.model_ids || []);
   renderBacktestResult();
 }
 
@@ -1985,7 +2740,8 @@ function populateBacktestChartControls() {
   els.backtestDimSelect.innerHTML = Array.from({ length: dims }, (_, index) => `<option value="${index}">action[${index}]</option>`).join("");
   const modelMap = new Map(state.models.map((model) => [model.id, model.name]));
   for (const item of done) {
-    if (!modelMap.has(item.model_id)) modelMap.set(item.model_id, item.model_id);
+    const id = item.profile_id || item.model_id;
+    if (!modelMap.has(id)) modelMap.set(id, item.profile_name || id);
   }
   els.backtestSeriesToggles.innerHTML = Array.from(modelMap.entries()).map(([id, name]) => `
     <label class="series-option">
@@ -2005,8 +2761,70 @@ function selectedChartResults() {
   state.visibleBacktestModels = visible;
   return doneBacktestResults().filter((item) => {
     const key = item.episode_key || `${item.dataset_path}::${item.episode_index}`;
-    return key === episodeKey && visible.has(item.model_id);
+    return key === episodeKey && visible.has(item.profile_id || item.model_id);
   });
+}
+
+async function loadBacktestJobs() {
+  if (!els.backtestJobQueue) return;
+  try {
+    const jobs = await api("/api/backtests/jobs");
+    renderBacktestJobs(jobs);
+  } catch (error) {
+    els.backtestJobQueue.classList.add("empty");
+    els.backtestJobQueue.textContent = `读取回测队列失败：${error.message}`;
+  }
+}
+
+function renderBacktestJobs(jobs) {
+  if (!els.backtestJobQueue) return;
+  if (!jobs.length) {
+    els.backtestJobQueue.classList.add("empty");
+    els.backtestJobQueue.innerHTML = "暂无排队任务。";
+    return;
+  }
+  const ordered = jobs.slice().sort((a, b) => {
+    const rank = { running: 0, queued: 1, failed: 2, done: 3 };
+    const diff = (rank[a.status] ?? 9) - (rank[b.status] ?? 9);
+    if (diff) return diff;
+    return String(b.created_at || "").localeCompare(String(a.created_at || ""));
+  });
+  els.backtestJobQueue.classList.remove("empty");
+  els.backtestJobQueue.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>状态</th>
+          <th>Job</th>
+          <th>Profiles</th>
+          <th>Episodes</th>
+          <th>创建</th>
+          <th>开始</th>
+          <th>结束</th>
+          <th>结果</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${ordered.map((job) => {
+          const request = job.request || {};
+          const profileIds = request.profile_ids || request.model_ids || [];
+          const episodes = request.episodes || [];
+          return `
+            <tr>
+              <td><span class="result-status ${job.status === "done" ? "ok" : job.status === "failed" ? "fail" : "neutral"}">${escapeHtml(job.status)}</span></td>
+              <td><code>${escapeHtml(job.job_id)}</code></td>
+              <td>${escapeHtml(profileIds.join(", ") || "-")}</td>
+              <td>${escapeHtml(episodes.length)}</td>
+              <td>${escapeHtml(job.created_at || "-")}</td>
+              <td>${escapeHtml(job.started_at || "-")}</td>
+              <td>${escapeHtml(job.finished_at || "-")}</td>
+              <td>${job.run_id ? `<button type="button" data-backtest-run-id="${escapeAttr(job.run_id)}">查看</button>` : escapeHtml(job.error || "-")}</td>
+            </tr>
+          `;
+        }).join("")}
+      </tbody>
+    </table>
+  `;
 }
 
 function drawBacktestChart() {
@@ -2034,9 +2852,9 @@ function drawBacktestChart() {
   results.forEach((item, index) => {
     const series = item.series?.[dim];
     if (!series) return;
-    lines.push({ name: `${modelName(item.model_id)} predicted`, values: series.predicted, color: colors[index % colors.length] });
+    lines.push({ name: `${item.profile_name || modelName(item.profile_id || item.model_id)} predicted`, values: series.predicted, color: colors[index % colors.length] });
     if (els.showBacktestError.checked) {
-      lines.push({ name: `${modelName(item.model_id)} error`, values: series.error, color: colors[(index + 2) % colors.length], dashed: true });
+      lines.push({ name: `${item.profile_name || modelName(item.profile_id || item.model_id)} error`, values: series.error, color: colors[(index + 2) % colors.length], dashed: true });
     }
   });
   drawLineChart(ctx, width, height, lines);
@@ -2603,7 +3421,14 @@ if (els.mergePaths) els.mergePaths.addEventListener("keydown", (event) => {
 });
 els.checkModelEnv.addEventListener("click", loadModelEnv);
 els.refreshModels.addEventListener("click", loadModels);
+if (els.profileTemplate) els.profileTemplate.addEventListener("change", () => applySelectedTemplate(true));
 els.registerModel.addEventListener("click", registerCurrentModel);
+if (els.profileSave) els.profileSave.addEventListener("click", saveCurrentProfile);
+if (els.profileInspect) els.profileInspect.addEventListener("click", () => runProfileEditorAction("inspect"));
+if (els.profileLoad) els.profileLoad.addEventListener("click", () => runProfileEditorAction("load"));
+if (els.profileUnload) els.profileUnload.addEventListener("click", () => runProfileEditorAction("unload"));
+if (els.profileTest) els.profileTest.addEventListener("click", () => runProfileEditorAction("test"));
+if (els.profileDelete) els.profileDelete.addEventListener("click", () => runProfileEditorAction("delete"));
 
 // browseCheckpoint uses onclick in HTML for robustness
 
@@ -2632,8 +3457,31 @@ if (els.backtestSelectionTable) {
 if (els.clearBacktestSelection) els.clearBacktestSelection.addEventListener("click", clearBacktestSelection);
 els.runBacktest.addEventListener("click", runSelectedBacktest);
 els.clearBacktest.addEventListener("click", clearBacktestResult);
+if (els.refreshBacktestJobs) els.refreshBacktestJobs.addEventListener("click", loadBacktestJobs);
 if (els.refreshBacktestHistory) els.refreshBacktestHistory.addEventListener("click", loadBacktestHistory);
 if (els.backtestHistory) els.backtestHistory.addEventListener("click", handleBacktestHistoryClick);
+if (els.backtestJobQueue) els.backtestJobQueue.addEventListener("click", handleBacktestHistoryClick);
+if (els.addRuntimeParam) els.addRuntimeParam.addEventListener("click", () => addParamRow(els.profileRuntimeParams));
+if (els.addExtraParam) els.addExtraParam.addEventListener("click", () => addParamRow(els.profileExtraParams));
+if (els.profileRuntimeParams) els.profileRuntimeParams.addEventListener("click", handleParamTableClick);
+if (els.profileExtraParams) els.profileExtraParams.addEventListener("click", handleParamTableClick);
+if (els.refreshTrainingRecipes) els.refreshTrainingRecipes.addEventListener("click", loadTrainingRecipes);
+if (els.checkTrainingEnv) els.checkTrainingEnv.addEventListener("click", loadTrainingEnv);
+if (els.trainingTemplate) els.trainingTemplate.addEventListener("change", () => applyTrainingTemplate(true));
+if (els.createTrainingRecipe) els.createTrainingRecipe.addEventListener("click", createTrainingRecipe);
+if (els.saveTrainingRecipe) els.saveTrainingRecipe.addEventListener("click", saveTrainingRecipe);
+if (els.inspectTrainingRecipe) els.inspectTrainingRecipe.addEventListener("click", () => runTrainingRecipeAction("inspect"));
+if (els.submitTrainingJob) els.submitTrainingJob.addEventListener("click", () => runTrainingRecipeAction("submit"));
+if (els.deleteTrainingRecipe) els.deleteTrainingRecipe.addEventListener("click", () => runTrainingRecipeAction("delete"));
+if (els.trainingRecipeList) els.trainingRecipeList.addEventListener("click", handleTrainingRecipeAction);
+if (els.addTrainingHyperparam) els.addTrainingHyperparam.addEventListener("click", () => addParamRow(els.trainingHyperparams));
+if (els.addTrainingExtraParam) els.addTrainingExtraParam.addEventListener("click", () => addParamRow(els.trainingExtraParams));
+if (els.trainingHyperparams) els.trainingHyperparams.addEventListener("click", handleParamTableClick);
+if (els.trainingExtraParams) els.trainingExtraParams.addEventListener("click", handleParamTableClick);
+if (els.refreshTrainingJobs) els.refreshTrainingJobs.addEventListener("click", loadTrainingJobs);
+if (els.trainingJobList) els.trainingJobList.addEventListener("click", handleTrainingJobAction);
+if (els.createTrainingPipeline) els.createTrainingPipeline.addEventListener("click", createTrainingPipeline);
+if (els.refreshTrainingPipelines) els.refreshTrainingPipelines.addEventListener("click", loadTrainingPipelines);
 els.backtestEpisodeSelect.addEventListener("change", drawBacktestChart);
 els.backtestDimSelect.addEventListener("change", drawBacktestChart);
 els.showGroundTruth.addEventListener("change", drawBacktestChart);

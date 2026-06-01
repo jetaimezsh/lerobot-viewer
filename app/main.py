@@ -20,20 +20,18 @@ from pydantic import BaseModel
 
 from app.backtesting import (
     BacktestRunRequest,
-    ModelDeleteRequest,
-    ModelLoadRequest,
-    ModelRegisterRequest,
-    delete_model,
+    ProfileTestRequest,
+    close_profile_adapter,
     get_backtest_job,
-    inspect_model,
+    inspect_profile_record,
     list_backtest_jobs,
-    list_models,
-    load_model,
+    list_profile_records,
+    load_profile_adapter,
     model_runtime_status,
-    register_model,
     run_backtest,
     submit_backtest_job,
-    unload_model,
+    test_profile_on_frame,
+    unload_profile_adapter,
 )
 from app.backtest_store import export_backtest_run, list_backtest_runs, load_backtest_run
 from app.editing import (
@@ -51,6 +49,30 @@ from app.editing import (
     validate_merge_compatibility,
 )
 from app.operation_log import log_operation, read_operation_logs
+from app.model_templates import builtin_templates
+from app.profile_store import create_profile, delete_profile, load_profile, update_profile
+from app.trainers import list_trainers
+from app.training_executor import (
+    cancel_training_job,
+    delete_training_job,
+    get_training_job,
+    inspect_training_recipe,
+    list_training_jobs,
+    reorder_training_queue,
+    requeue_training_job,
+    submit_training_job,
+    training_runtime_status,
+)
+from app.training_pipeline import create_pipeline, get_training_pipeline, list_training_pipelines
+from app.training_store import (
+    create_recipe,
+    delete_recipe,
+    list_recipes,
+    load_recipe,
+    read_job_log,
+    update_recipe,
+)
+from app.training_templates import builtin_training_templates
 from app.validation import validate_lerobot_v3_dataset
 
 
@@ -66,6 +88,74 @@ app.mount("/static", StaticFiles(directory=WEB_ROOT), name="static")
 class OpenDatasetRequest(BaseModel):
     path: str
     full_sweep: bool = False
+
+
+class ProfileCreateRequest(BaseModel):
+    id: str
+    name: str | None = None
+    description: str | None = None
+    checkpoint_path: str | None = None
+    adapter: str | None = None
+    device: str | None = None
+    template_id: str | None = None
+    runtime_params: dict[str, Any] | None = None
+    extra_params: dict[str, Any] | None = None
+
+
+class ProfileUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    checkpoint_path: str | None = None
+    adapter: str | None = None
+    device: str | None = None
+    runtime_params: dict[str, Any] | None = None
+    extra_params: dict[str, Any] | None = None
+
+
+class TrainingRecipeCreateRequest(BaseModel):
+    id: str
+    name: str | None = None
+    description: str | None = None
+    framework: str | None = None
+    template_id: str | None = None
+    dataset_path: str | None = None
+    episode_filter: list[int] | None = None
+    output_dir: str | None = None
+    hyperparams: dict[str, Any] | None = None
+    device: str | None = None
+    extra_params: dict[str, Any] | None = None
+    auto_profile_on_complete: bool | None = None
+    profile_name: str | None = None
+    profile_adapter: str | None = None
+
+
+class TrainingRecipeUpdateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    framework: str | None = None
+    dataset_path: str | None = None
+    episode_filter: list[int] | None = None
+    output_dir: str | None = None
+    hyperparams: dict[str, Any] | None = None
+    device: str | None = None
+    extra_params: dict[str, Any] | None = None
+    auto_profile_on_complete: bool | None = None
+    profile_name: str | None = None
+    profile_adapter: str | None = None
+
+
+class TrainingJobCreateRequest(BaseModel):
+    recipe_id: str
+
+
+class TrainingQueueUpdateRequest(BaseModel):
+    job_ids: list[str]
+
+
+class TrainingPipelineCreateRequest(BaseModel):
+    recipe_id: str
+    comparison_profile_ids: list[str] | None = None
+    episodes: list[dict[str, Any]] | None = None
 
 
 class DatasetCache:
@@ -292,75 +382,308 @@ def env_info() -> dict[str, Any]:
     }
 
 
-@app.get("/api/models/env")
+@app.get("/api/profiles/env")
 def model_env_info() -> dict[str, Any]:
     result = model_runtime_status()
-    log_operation("model_env_check", "success", details={"ready": result.get("ready_for_lerobot_backtest")})
+    log_operation("profile_env_check", "success", details={"ready": result.get("ready_for_lerobot_backtest")})
     return result
 
 
-@app.get("/api/models")
-def models_list() -> list[dict[str, Any]]:
-    return list_models()
+@app.get("/api/profiles/templates")
+def profile_templates() -> list[dict[str, Any]]:
+    return builtin_templates()
 
 
-@app.post("/api/models/register")
-def model_register(request: ModelRegisterRequest) -> dict[str, Any]:
+@app.get("/api/train/env")
+def training_env_info() -> dict[str, Any]:
+    result = training_runtime_status()
+    log_operation("training_env_check", "success", details={"worker": result.get("worker")})
+    return result
+
+
+@app.get("/api/train/frameworks")
+def training_frameworks() -> list[dict[str, Any]]:
+    return list_trainers()
+
+
+@app.get("/api/train/templates")
+def training_templates() -> list[dict[str, Any]]:
+    return builtin_training_templates()
+
+
+@app.get("/api/train/recipes")
+def training_recipes_list() -> list[dict[str, Any]]:
+    return list_recipes()
+
+
+@app.post("/api/train/recipes")
+def training_recipe_create(request: TrainingRecipeCreateRequest) -> dict[str, Any]:
     try:
-        result = register_model(request)
+        result = create_recipe(request.model_dump(exclude_none=True))
         log_operation(
-            "model_register",
+            "training_recipe_create",
             "success",
-            target=request.checkpoint_path,
-            details={"model_id": result.get("id"), "name": result.get("name"), "adapter_type": request.adapter_type},
+            target=result.get("id"),
+            details={"framework": result.get("framework"), "dataset_path": result.get("dataset_path")},
         )
         return result
     except Exception as exc:
-        log_failure("model_register", request.checkpoint_path, exc, {"adapter_type": request.adapter_type})
+        log_failure("training_recipe_create", request.id, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/api/models/inspect")
-def model_inspect(request: ModelLoadRequest) -> dict[str, Any]:
+@app.get("/api/train/recipes/{recipe_id}")
+def training_recipe_get(recipe_id: str) -> dict[str, Any]:
     try:
-        result = inspect_model(request.model_id)
-        log_operation("model_inspect", "success", target=request.model_id)
+        return load_recipe(recipe_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.put("/api/train/recipes/{recipe_id}")
+def training_recipe_update(recipe_id: str, request: TrainingRecipeUpdateRequest) -> dict[str, Any]:
+    try:
+        result = update_recipe(recipe_id, request.model_dump(exclude_none=True))
+        log_operation("training_recipe_update", "success", target=recipe_id)
         return result
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
-        log_failure("model_inspect", request.model_id, exc)
+        log_failure("training_recipe_update", recipe_id, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/api/models/load")
-def model_load(request: ModelLoadRequest) -> dict[str, Any]:
+@app.delete("/api/train/recipes/{recipe_id}")
+def training_recipe_delete(recipe_id: str) -> dict[str, Any]:
     try:
-        result = load_model(request.model_id)
-        log_operation("model_load", "success", target=request.model_id)
+        result = delete_recipe(recipe_id)
+        log_operation("training_recipe_delete", "success", target=recipe_id)
         return result
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
-        log_failure("model_load", request.model_id, exc)
+        log_failure("training_recipe_delete", recipe_id, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/api/models/unload")
-def model_unload(request: ModelLoadRequest) -> dict[str, Any]:
+@app.post("/api/train/recipes/{recipe_id}/inspect")
+def training_recipe_inspect(recipe_id: str) -> dict[str, Any]:
     try:
-        result = unload_model(request.model_id)
-        log_operation("model_unload", "success", target=request.model_id)
+        result = inspect_training_recipe(recipe_id)
+        log_operation("training_recipe_inspect", "success", target=recipe_id)
         return result
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
-        log_failure("model_unload", request.model_id, exc)
+        log_failure("training_recipe_inspect", recipe_id, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/api/models/delete")
-def model_delete(request: ModelDeleteRequest) -> dict[str, Any]:
+@app.get("/api/train/jobs")
+def training_jobs_list() -> list[dict[str, Any]]:
+    return list_training_jobs()
+
+
+@app.post("/api/train/jobs")
+def training_job_create(request: TrainingJobCreateRequest) -> dict[str, Any]:
     try:
-        result = delete_model(request.model_id)
-        log_operation("model_delete", "success", target=request.model_id)
+        result = submit_training_job(request.recipe_id)
+        log_operation("training_job_create", "success", target=result.get("job_id"), details={"recipe_id": request.recipe_id})
         return result
     except Exception as exc:
-        log_failure("model_delete", request.model_id, exc)
+        log_failure("training_job_create", request.recipe_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/train/jobs/{job_id}")
+def training_job_get(job_id: str) -> dict[str, Any]:
+    try:
+        return get_training_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete("/api/train/jobs/{job_id}")
+def training_job_delete(job_id: str) -> dict[str, Any]:
+    try:
+        return delete_training_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log_failure("training_job_delete", job_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/train/jobs/{job_id}/cancel")
+def training_job_cancel(job_id: str) -> dict[str, Any]:
+    try:
+        return cancel_training_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log_failure("training_job_cancel", job_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/train/jobs/{job_id}/requeue")
+def training_job_requeue(job_id: str) -> dict[str, Any]:
+    try:
+        return requeue_training_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log_failure("training_job_requeue", job_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/train/jobs/{job_id}/log")
+def training_job_log(job_id: str, tail: int = Query(200, ge=1, le=5000)) -> dict[str, Any]:
+    try:
+        get_training_job(job_id)
+        return read_job_log(job_id, tail=tail)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.put("/api/train/queue")
+def training_queue_update(request: TrainingQueueUpdateRequest) -> list[dict[str, Any]]:
+    try:
+        return reorder_training_queue(request.job_ids)
+    except Exception as exc:
+        log_failure("training_queue_update", None, exc, {"job_ids": request.job_ids})
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/train/pipelines")
+def training_pipelines_list() -> list[dict[str, Any]]:
+    return list_training_pipelines()
+
+
+@app.post("/api/train/pipelines")
+def training_pipeline_create(request: TrainingPipelineCreateRequest) -> dict[str, Any]:
+    try:
+        return create_pipeline(request.model_dump(exclude_none=True))
+    except Exception as exc:
+        log_failure("training_pipeline_create", request.recipe_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/train/pipelines/{pipeline_id}")
+def training_pipeline_get(pipeline_id: str) -> dict[str, Any]:
+    try:
+        return get_training_pipeline(pipeline_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/profiles")
+def profiles_list() -> list[dict[str, Any]]:
+    return list_profile_records()
+
+
+@app.post("/api/profiles")
+def profile_create(request: ProfileCreateRequest) -> dict[str, Any]:
+    try:
+        result = create_profile(request.model_dump(exclude_none=True))
+        log_operation(
+            "profile_create",
+            "success",
+            target=result.get("id"),
+            details={"name": result.get("name"), "adapter": result.get("adapter")},
+        )
+        return result
+    except Exception as exc:
+        log_failure("profile_create", request.id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/profiles/{profile_id}")
+def profile_get(profile_id: str) -> dict[str, Any]:
+    try:
+        profile = load_profile(profile_id)
+        loaded = profile_id in model_runtime_status().get("profiles_loaded", [])
+        return {**profile, "loaded": loaded}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.put("/api/profiles/{profile_id}")
+def profile_update(profile_id: str, request: ProfileUpdateRequest) -> dict[str, Any]:
+    try:
+        close_profile_adapter(profile_id)
+        result = update_profile(profile_id, request.model_dump(exclude_none=True))
+        log_operation("profile_update", "success", target=profile_id)
+        return result
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log_failure("profile_update", profile_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/profiles/{profile_id}")
+def profile_delete(profile_id: str) -> dict[str, Any]:
+    try:
+        close_profile_adapter(profile_id)
+        result = delete_profile(profile_id)
+        log_operation("profile_delete", "success", target=profile_id)
+        return result
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log_failure("profile_delete", profile_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/profiles/{profile_id}/inspect")
+def profile_inspect(profile_id: str) -> dict[str, Any]:
+    try:
+        result = inspect_profile_record(profile_id)
+        log_operation("profile_inspect", "success", target=profile_id)
+        return result
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log_failure("profile_inspect", profile_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/profiles/{profile_id}/load")
+def profile_load(profile_id: str) -> dict[str, Any]:
+    try:
+        result = load_profile_adapter(profile_id)
+        log_operation("profile_load", "success", target=profile_id)
+        return result
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log_failure("profile_load", profile_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/profiles/{profile_id}/unload")
+def profile_unload(profile_id: str) -> dict[str, Any]:
+    try:
+        result = unload_profile_adapter(profile_id)
+        log_operation("profile_unload", "success", target=profile_id)
+        return result
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log_failure("profile_unload", profile_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/profiles/{profile_id}/test")
+def profile_test(profile_id: str, request: ProfileTestRequest) -> dict[str, Any]:
+    try:
+        result = test_profile_on_frame(profile_id, request, load_backtest_cache)
+        log_operation("profile_test", "success", target=profile_id, details={"episode": request.episode_index})
+        return result
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log_failure("profile_test", profile_id, exc, {"episode": request.episode_index})
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -372,14 +695,14 @@ def backtest_run(request: BacktestRunRequest) -> dict[str, Any]:
             "backtest_run",
             "success",
             details={
-                "models": request.model_ids,
+                "profiles": request.profile_ids,
                 "episodes": result.get("episodes", []),
                 "summary": result.get("summary", {}),
             },
         )
         return result
     except Exception as exc:
-        log_failure("backtest_run", None, exc, {"models": request.model_ids})
+        log_failure("backtest_run", None, exc, {"profiles": request.profile_ids})
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
@@ -391,11 +714,11 @@ def backtest_job_create(request: BacktestRunRequest) -> dict[str, Any]:
             "backtest_job_create",
             "success",
             target=result.get("job_id"),
-            details={"models": request.model_ids, "episodes": [item.model_dump() for item in request.episodes]},
+            details={"profiles": request.profile_ids, "episodes": [item.model_dump() for item in request.episodes]},
         )
         return result
     except Exception as exc:
-        log_failure("backtest_job_create", None, exc, {"models": request.model_ids})
+        log_failure("backtest_job_create", None, exc, {"profiles": request.profile_ids})
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

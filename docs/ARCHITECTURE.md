@@ -9,6 +9,7 @@
 | 数据 | Pandas, PyArrow (Parquet), NumPy |
 | 视频 | ffmpeg / ffprobe（可选） |
 | 模型推理 | PyTorch, LeRobot official SDK（仅 Linux） |
+| 模型训练 | LeRobot CLI（真实训练）/ mock trainer（本地测试） |
 
 ## 后端架构
 
@@ -17,7 +18,12 @@ app/
 ├── main.py          FastAPI 路由、请求模型、DatasetCache
 ├── editing.py       编辑引擎、合并引擎、视频处理
 ├── validation.py    v3.0 严格校验、官方 LeRobotDataset 加载
-├── backtesting.py   模型注册、加载、回测
+├── adapters/        模型回测适配器
+├── backtesting.py   profile-based 模型加载、回测、回测队列
+├── trainers/        训练框架适配器
+├── training_store.py     training recipe/job/pipeline JSON 存储
+├── training_executor.py  单 worker 训练队列、子进程、日志、profile 桥接
+├── training_pipeline.py  轻量训练流水线记录
 └── operation_log.py JSONL 操作日志
 ```
 
@@ -113,13 +119,42 @@ info.json 字段分级（基于 LeRobot v3.0 官方规范）：
 | POST | `/api/merge/apply` | 合并执行 |
 | GET | `/api/path/suggest` | 路径补全 |
 | POST | `/api/env/install-requirements` | 安装依赖 |
-| GET | `/api/models` | 模型列表 |
-| POST | `/api/models/register` | 注册模型 |
-| POST | `/api/models/inspect` | 检查模型 |
-| POST | `/api/models/load` | 加载模型 |
-| POST | `/api/models/unload` | 卸载模型 |
-| POST | `/api/models/delete` | 删除模型 |
-| POST | `/api/backtests/run` | 运行回测 |
+| GET | `/api/profiles/env` | 模型回测环境与 worker 状态 |
+| GET | `/api/profiles/templates` | 内置 profile 模板 |
+| GET | `/api/profiles` | profile 列表 |
+| POST | `/api/profiles` | 创建 profile |
+| GET | `/api/profiles/{id}` | profile 详情 |
+| PUT | `/api/profiles/{id}` | 更新 profile |
+| DELETE | `/api/profiles/{id}` | 删除 profile |
+| POST | `/api/profiles/{id}/inspect` | 检查 checkpoint 和参数 |
+| POST | `/api/profiles/{id}/load` | 加载 profile |
+| POST | `/api/profiles/{id}/unload` | 卸载 profile |
+| POST | `/api/profiles/{id}/test` | 使用真实 episode 帧做快速推理测试 |
+| POST | `/api/backtests/jobs` | 创建 profile-based 后台回测，任务进入单 worker 队列依次执行 |
+| GET | `/api/backtests/jobs` | 回测任务队列 |
+| GET | `/api/backtests/jobs/{job_id}` | 查询回测任务 |
+| GET | `/api/backtests/runs` | 回测历史 |
+| GET | `/api/backtests/runs/{run_id}/export` | 导出回测报告 |
+| GET | `/api/train/env` | 训练环境和 worker 状态 |
+| GET | `/api/train/frameworks` | 可用训练框架 |
+| GET | `/api/train/templates` | 内置训练模板 |
+| GET | `/api/train/recipes` | 训练配方列表 |
+| POST | `/api/train/recipes` | 创建训练配方 |
+| GET | `/api/train/recipes/{id}` | 训练配方详情 |
+| PUT | `/api/train/recipes/{id}` | 更新训练配方 |
+| DELETE | `/api/train/recipes/{id}` | 删除训练配方 |
+| POST | `/api/train/recipes/{id}/inspect` | 检查训练配方 |
+| GET | `/api/train/jobs` | 训练作业队列 |
+| POST | `/api/train/jobs` | 提交训练作业 |
+| GET | `/api/train/jobs/{id}` | 训练作业详情 |
+| POST | `/api/train/jobs/{id}/cancel` | 取消训练作业 |
+| POST | `/api/train/jobs/{id}/requeue` | 重新排队训练作业 |
+| DELETE | `/api/train/jobs/{id}` | 删除训练作业和日志 |
+| GET | `/api/train/jobs/{id}/log` | 读取训练日志 |
+| PUT | `/api/train/queue` | 调整 queued 作业顺序 |
+| GET | `/api/train/pipelines` | 流水线列表 |
+| POST | `/api/train/pipelines` | 创建轻量训练流水线 |
+| GET | `/api/train/pipelines/{id}` | 流水线详情 |
 | GET | `/api/operations/logs` | 读取操作日志 |
 
 ### 操作日志
@@ -181,7 +216,7 @@ info.json 中 v3.0 spec 明确要求 int 的字段（`fps`, `chunks_size`）由 
 
 ```
 web/
-├── index.html    # 2 个根工作台 + 子 view + 侧边栏 + episode/edit/backtest 面板
+├── index.html    # 2 个根工作台 + 子 view + 侧边栏 + episode/edit/model/train 面板
 ├── app.js        # 全局 state + DOM refs + 所有交互逻辑
 └── styles.css    # CSS 变量 + 响应式布局
 ```
@@ -196,6 +231,9 @@ web/
 | `data` | `envView` | 系统环境检测 |
 | `model` | `modelManagerView` | 模型注册与管理 |
 | `model` | `modelBacktestView` | 回测样本池、模型选择、运行回测与 action 对比 |
+| `model` | `trainingRecipeView` | 训练配方 CRUD、检查、提交训练 |
+| `model` | `trainingQueueView` | 训练作业状态、日志、取消、重排、删除 |
+| `model` | `trainingPipelineView` | 轻量训练→回测流水线记录 |
 
 模型回测不再依赖文本框输入 episode，而是由数据查看页向 `state.backtestEpisodes` 写入结构化样本。每个样本包含 `dataset_path`、`dataset_name`、`episode_index`、`length`、`duration`、`fps`、`tasks` 和 `video_keys`，因此可以同时回测来自不同数据集的 episode。
 
@@ -215,8 +253,41 @@ state = {
     models, modelEnv,
     backtestEpisodes,   // [{dataset_path, episode_index, ...}]
     backtestResult, visibleBacktestModels,
+    trainingFrameworks, trainingTemplates, trainingRecipes,
+    trainingJobs, trainingPipelines,
 }
 ```
+
+## v4.1 训练队列
+
+训练队列与回测队列不同，所有作业都落盘到 `state/training_jobs/`：
+
+```text
+state/training_recipes/{recipe_id}.json
+state/training_jobs/{job_id}.json
+state/training_jobs/{job_id}.log
+state/training_pipelines/{pipeline_id}.json
+```
+
+执行流程：
+
+```text
+Training Recipe
+   │ POST /api/train/jobs
+   ▼
+Training Job JSON (queued)
+   │ scheduler single worker
+   ▼
+subprocess.Popen(trainer.build_command(recipe))
+   │ stdout/stderr
+   ▼
+job log + progress parse
+   │ returncode == 0
+   ▼
+auto_create_profile() -> state/model_profiles/{profile_id}.json
+```
+
+真实训练使用 `lerobot_train` trainer 封装 `lerobot-train` CLI；本地自动化测试使用隐藏的 `mock` trainer，覆盖成功、失败、日志、队列和自动 profile 生成。
 
 ### 数据流
 

@@ -59,7 +59,9 @@ def public_run_summary(run: dict[str, Any]) -> dict[str, Any]:
         "run_id": run.get("run_id"),
         "created_at": run.get("created_at"),
         "dataset_paths": run.get("dataset_paths", []),
-        "model_ids": run.get("model_ids", []),
+        "profile_ids": run.get("profile_ids", run.get("model_ids", [])),
+        "model_ids": run.get("model_ids", run.get("profile_ids", [])),
+        "profiles": run.get("profiles", []),
         "episodes": run.get("episodes", []),
         "summary": run.get("summary", {}),
     }
@@ -71,7 +73,8 @@ def export_csv(run: dict[str, Any]) -> str:
         output,
         fieldnames=[
             "run_id",
-            "model_id",
+            "profile_id",
+            "profile_name",
             "dataset_name",
             "dataset_path",
             "episode_index",
@@ -89,7 +92,8 @@ def export_csv(run: dict[str, Any]) -> str:
         writer.writerow(
             {
                 "run_id": run.get("run_id"),
-                "model_id": item.get("model_id"),
+                "profile_id": item.get("profile_id", item.get("model_id")),
+                "profile_name": item.get("profile_name"),
                 "dataset_name": item.get("dataset_name"),
                 "dataset_path": item.get("dataset_path"),
                 "episode_index": item.get("episode_index"),
@@ -111,7 +115,7 @@ def export_html(run: dict[str, Any]) -> str:
         metrics = item.get("metrics") or {}
         rows.append(
             "<tr>"
-            f"<td>{html.escape(str(item.get('model_id', '')))}</td>"
+            f"<td>{html.escape(str(item.get('profile_name') or item.get('profile_id') or item.get('model_id') or ''))}</td>"
             f"<td>{html.escape(str(item.get('dataset_name', '')))}</td>"
             f"<td>{html.escape(str(item.get('episode_index', '')))}</td>"
             f"<td>{html.escape(str(item.get('status', '')))}</td>"

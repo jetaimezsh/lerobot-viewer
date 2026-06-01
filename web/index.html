@@ -40,7 +40,7 @@
 
       <nav class="root-nav">
         <button class="root-nav-button active" data-root="data">LeRobot 数据</button>
-        <button class="root-nav-button" data-root="model">模型回测</button>
+        <button class="root-nav-button" data-root="model">模型工作台</button>
       </nav>
 
       <nav class="nav sub-nav active" data-root-nav="data">
@@ -53,6 +53,9 @@
       <nav class="nav sub-nav" data-root-nav="model">
         <button class="nav-button" data-root="model" data-view="modelManagerView">模型管理</button>
         <button class="nav-button" data-root="model" data-view="modelBacktestView">回测任务</button>
+        <button class="nav-button" data-root="model" data-view="trainingRecipeView">训练配方</button>
+        <button class="nav-button" data-root="model" data-view="trainingQueueView">训练队列</button>
+        <button class="nav-button" data-root="model" data-view="trainingPipelineView">训练流水线</button>
       </nav>
 
       <section id="episodeSideSection" class="side-section">
@@ -291,40 +294,59 @@
         <section class="surface model-surface">
           <div>
             <div class="section-kicker">Model Manager</div>
-            <h3>模型管理</h3>
-            <p>第三版先支持 LeRobot 官方 checkpoint。模型推理仅支持 Linux，Windows 可注册和检查 checkpoint 信息。</p>
+            <h3>模型档案</h3>
+            <p>v4 使用持久化 profile 管理 checkpoint、设备和运行参数。推理仍仅支持 Linux，Windows 可编辑、检查和查看历史。</p>
           </div>
           <div class="model-actions">
             <button id="checkModelEnv" type="button">检测模型环境</button>
-            <button id="refreshModels" type="button">刷新模型列表</button>
+            <button id="refreshModels" type="button">刷新档案</button>
           </div>
         </section>
         <div class="model-grid">
           <section class="surface">
-            <div class="section-kicker">Add Model</div>
+            <div class="section-kicker">Profile Editor</div>
             <div class="model-form">
-              <input id="modelName" type="text" placeholder="模型名称，例如 ACT pusht">
+              <input id="profileId" type="text" placeholder="profile id，例如 act_pusht_v1">
+              <select id="profileTemplate"></select>
+              <input id="modelName" type="text" placeholder="显示名称，例如 ACT pusht">
+              <input id="profileDescription" type="text" placeholder="描述，可选">
               <div style="display:flex; gap:8px;">
                 <input id="checkpointPath" type="text" placeholder="checkpoint 路径，例如 /data/checkpoints/pretrained_model" style="flex:1;">
                 <button id="browseCheckpoint" type="button" style="flex-shrink:0;" onclick="window._openCheckpointBrowser && window._openCheckpointBrowser()">选择目录</button>
               </div>
               <select id="modelAdapterType">
                 <option value="lerobot_official">LeRobot 官方 checkpoint</option>
-                <option value="custom_script">自定义脚本（预留接口）</option>
               </select>
-              <input id="modelScriptPath" type="text" placeholder="自定义脚本路径（后续版本启用）">
               <select id="modelDevice">
                 <option value="cuda">cuda</option>
                 <option value="cuda:0">cuda:0</option>
                 <option value="cpu">cpu</option>
               </select>
-              <button id="registerModel" type="button">注册模型</button>
+              <div class="param-section-head">
+                <label class="field-label">运行期参数</label>
+                <button id="addRuntimeParam" type="button">+ 添加行</button>
+              </div>
+              <div id="profileRuntimeParams" class="param-table empty"></div>
+              <div class="param-section-head">
+                <label class="field-label">自定义参数</label>
+                <button id="addExtraParam" type="button">+ 添加行</button>
+              </div>
+              <div id="profileExtraParams" class="param-table empty"></div>
+              <div class="model-card-actions">
+                <button id="registerModel" type="button">新建档案</button>
+                <button id="profileSave" type="button">保存</button>
+                <button id="profileInspect" type="button">检查</button>
+                <button id="profileLoad" type="button">加载</button>
+                <button id="profileUnload" type="button">卸载</button>
+                <button id="profileTest" type="button">真实帧测试</button>
+                <button id="profileDelete" type="button">删除</button>
+              </div>
             </div>
             <div id="modelEnvReport" class="model-env-report empty">尚未检测模型环境。</div>
           </section>
           <section class="surface">
-            <div class="section-kicker">Registered Models</div>
-            <div id="modelList" class="model-list empty">尚未注册模型。</div>
+            <div class="section-kicker">Profiles</div>
+            <div id="modelList" class="model-list empty">尚未创建模型档案。</div>
           </section>
         </div>
       </section>
@@ -338,6 +360,7 @@
           </div>
           <div class="model-actions">
             <button id="runBacktest" type="button">运行回测</button>
+            <button id="refreshBacktestJobs" type="button">刷新队列</button>
             <button id="clearBacktest" type="button">清空结果</button>
             <button id="refreshBacktestHistory" type="button">刷新历史</button>
           </div>
@@ -367,6 +390,10 @@
           </section>
         </div>
         <section class="surface backtest-history-surface">
+          <div class="section-kicker">Backtest Queue</div>
+          <div id="backtestJobQueue" class="backtest-history empty">暂无排队任务。</div>
+        </section>
+        <section class="surface backtest-history-surface">
           <div class="section-kicker">Backtest History</div>
           <div id="backtestHistory" class="backtest-history empty">暂无回测历史。</div>
         </section>
@@ -386,6 +413,126 @@
           <div id="backtestSeriesToggles" class="series-options"></div>
           <canvas id="backtestChart" width="1100" height="420"></canvas>
         </section>
+      </section>
+
+      <section id="trainingRecipeView" class="view">
+        <section class="surface model-surface">
+          <div>
+            <div class="section-kicker">Training Recipes</div>
+            <h3>训练配方</h3>
+            <p>管理训练数据集、输出目录、超参数和训练完成后的回测档案桥接。</p>
+          </div>
+          <div class="model-actions">
+            <button id="refreshTrainingRecipes" type="button">刷新配方</button>
+            <button id="checkTrainingEnv" type="button">检测训练环境</button>
+          </div>
+        </section>
+        <div class="model-grid">
+          <section class="surface">
+            <div class="section-kicker">Recipe Editor</div>
+            <div class="model-form">
+              <input id="trainingRecipeId" type="text" placeholder="recipe id，例如 act_bs64_lr1e4">
+              <select id="trainingTemplate"></select>
+              <input id="trainingRecipeName" type="text" placeholder="显示名称，例如 ACT bs64 lr1e-4">
+              <input id="trainingRecipeDescription" type="text" placeholder="描述，可选">
+              <select id="trainingFramework"></select>
+              <select id="trainingDevice">
+                <option value="cuda">cuda</option>
+                <option value="cuda:0">cuda:0</option>
+                <option value="cpu">cpu</option>
+              </select>
+              <div style="display:flex; gap:8px;">
+                <input id="trainingDatasetPath" type="text" placeholder="训练数据集路径，例如 D:\datasets\pusht" style="flex:1;">
+                <button id="browseTrainingDataset" type="button" style="flex-shrink:0;" onclick="window._openTrainingDatasetBrowser && window._openTrainingDatasetBrowser()">选择目录</button>
+              </div>
+              <input id="trainingEpisodeFilter" type="text" placeholder="Episode 过滤，可选，例如 0,5,10；留空表示全部">
+              <div style="display:flex; gap:8px;">
+                <input id="trainingOutputDir" type="text" placeholder="输出 checkpoint 目录，例如 D:\checkpoints\act_bs64" style="flex:1;">
+                <button id="browseTrainingOutput" type="button" style="flex-shrink:0;" onclick="window._openTrainingOutputBrowser && window._openTrainingOutputBrowser()">选择目录</button>
+              </div>
+              <label class="checkbox-row">
+                <input id="trainingAutoProfile" type="checkbox" checked>
+                训练完成后自动创建回测档案
+              </label>
+              <input id="trainingProfileName" type="text" placeholder="自动生成的 profile 显示名称">
+              <select id="trainingProfileAdapter">
+                <option value="lerobot_official">LeRobot 官方 checkpoint</option>
+                <option value="mock">Mock adapter（测试）</option>
+              </select>
+              <div class="param-section-head">
+                <label class="field-label">训练超参数</label>
+                <button id="addTrainingHyperparam" type="button">+ 添加行</button>
+              </div>
+              <div id="trainingHyperparams" class="param-table empty"></div>
+              <div class="param-section-head">
+                <label class="field-label">自定义参数</label>
+                <button id="addTrainingExtraParam" type="button">+ 添加行</button>
+              </div>
+              <div id="trainingExtraParams" class="param-table empty"></div>
+              <div class="model-card-actions">
+                <button id="createTrainingRecipe" type="button">新建配方</button>
+                <button id="saveTrainingRecipe" type="button">保存</button>
+                <button id="inspectTrainingRecipe" type="button">检查</button>
+                <button id="submitTrainingJob" type="button">提交训练</button>
+                <button id="deleteTrainingRecipe" type="button">删除</button>
+              </div>
+            </div>
+            <div id="trainingEnvReport" class="model-env-report empty">尚未检测训练环境。</div>
+          </section>
+          <section class="surface">
+            <div class="section-kicker">Recipes</div>
+            <div id="trainingRecipeList" class="model-list empty">尚未创建训练配方。</div>
+          </section>
+        </div>
+      </section>
+
+      <section id="trainingQueueView" class="view">
+        <section class="surface model-surface">
+          <div>
+            <div class="section-kicker">Training Queue</div>
+            <h3>训练队列</h3>
+            <p>训练作业和日志落盘保存，单 worker 顺序执行，避免同机 GPU 资源冲突。</p>
+          </div>
+          <div class="model-actions">
+            <button id="refreshTrainingJobs" type="button">刷新队列</button>
+          </div>
+        </section>
+        <section class="surface backtest-history-surface">
+          <div class="section-kicker">Jobs</div>
+          <div id="trainingJobList" class="backtest-history empty">暂无训练作业。</div>
+        </section>
+        <section class="surface">
+          <div class="section-kicker">Job Log</div>
+          <pre id="trainingJobLog" class="log">选择作业后显示日志。</pre>
+        </section>
+      </section>
+
+      <section id="trainingPipelineView" class="view">
+        <section class="surface model-surface">
+          <div>
+            <div class="section-kicker">Training Pipeline</div>
+            <h3>训练→回测流水线</h3>
+            <p>当前版本先提供轻量流水线记录：提交训练作业并保存回测样本和对比 profile，训练完成后的自动回测将作为后续增强。</p>
+          </div>
+          <div class="model-actions">
+            <button id="createTrainingPipeline" type="button">创建流水线</button>
+            <button id="refreshTrainingPipelines" type="button">刷新流水线</button>
+          </div>
+        </section>
+        <div class="model-grid">
+          <section class="surface">
+            <div class="section-kicker">Pipeline Setup</div>
+            <div class="model-form">
+              <select id="pipelineRecipe"></select>
+              <div id="pipelineProfileChoices" class="model-choice-list empty">暂无可对比 profile。</div>
+              <div id="pipelineEpisodeList" class="backtest-selection-table empty">从 Episode 播放页加入回测样本后会显示在这里。</div>
+            </div>
+          </section>
+          <section class="surface">
+            <div class="section-kicker">Pipelines</div>
+            <div id="trainingPipelineList" class="backtest-history empty">暂无流水线。</div>
+          </section>
+        </div>
       </section>
 
       <section id="envView" class="view">
