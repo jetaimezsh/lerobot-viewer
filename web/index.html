@@ -405,9 +405,12 @@
             </div>
             <div class="backtest-chart-controls">
               <select id="backtestEpisodeSelect"></select>
-              <select id="backtestDimSelect"></select>
+              <div id="backtestDimSelect" class="action-dim-picker empty">暂无 action</div>
               <label class="checkbox-row"><input id="showGroundTruth" type="checkbox" checked> 真实 action</label>
               <label class="checkbox-row"><input id="showBacktestError" type="checkbox"> error</label>
+              <button id="zoomBacktestIn" type="button">放大</button>
+              <button id="zoomBacktestOut" type="button">缩小</button>
+              <button id="resetBacktestZoom" type="button">重置缩放</button>
             </div>
           </div>
           <div id="backtestSeriesToggles" class="series-options"></div>

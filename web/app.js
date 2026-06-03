@@ -32,6 +32,9 @@ const state = {
   backtestEpisodes: [],
   backtestResult: null,
   visibleBacktestModels: new Set(),
+  visibleBacktestDims: new Set(),
+  backtestChartStart: 0,
+  backtestChartEnd: null,
   trainingFrameworks: [],
   trainingTemplates: [],
   trainingRecipes: [],
@@ -164,6 +167,9 @@ const els = {
   showBacktestError: document.getElementById("showBacktestError"),
   backtestSeriesToggles: document.getElementById("backtestSeriesToggles"),
   backtestChart: document.getElementById("backtestChart"),
+  zoomBacktestIn: document.getElementById("zoomBacktestIn"),
+  zoomBacktestOut: document.getElementById("zoomBacktestOut"),
+  resetBacktestZoom: document.getElementById("resetBacktestZoom"),
   refreshTrainingRecipes: document.getElementById("refreshTrainingRecipes"),
   checkTrainingEnv: document.getElementById("checkTrainingEnv"),
   trainingRecipeId: document.getElementById("trainingRecipeId"),
@@ -2591,6 +2597,8 @@ function clearBacktestResult() {
   renderBacktestExportActions(null);
   els.backtestEpisodeSelect.innerHTML = "";
   els.backtestDimSelect.innerHTML = "";
+  state.visibleBacktestDims = new Set();
+  resetBacktestChartZoom();
   els.backtestSeriesToggles.innerHTML = "";
   drawBacktestChart();
 }
@@ -2737,7 +2745,7 @@ function populateBacktestChartControls() {
     .join("");
   const first = done[0];
   const dims = first?.series?.length || 0;
-  els.backtestDimSelect.innerHTML = Array.from({ length: dims }, (_, index) => `<option value="${index}">action[${index}]</option>`).join("");
+  renderBacktestDimChoices(dims);
   const modelMap = new Map(state.models.map((model) => [model.id, model.name]));
   for (const item of done) {
     const id = item.profile_id || item.model_id;
@@ -2749,6 +2757,34 @@ function populateBacktestChartControls() {
       <span>${escapeHtml(name)}</span>
     </label>
   `).join("");
+}
+
+function renderBacktestDimChoices(dims) {
+  if (!els.backtestDimSelect) return;
+  if (!dims) {
+    els.backtestDimSelect.classList.add("empty");
+    els.backtestDimSelect.innerHTML = "暂无 action";
+    state.visibleBacktestDims = new Set();
+    return;
+  }
+  const previous = new Set(Array.from(state.visibleBacktestDims).filter((dim) => dim < dims));
+  if (!previous.size) previous.add(0);
+  state.visibleBacktestDims = previous;
+  els.backtestDimSelect.classList.remove("empty");
+  els.backtestDimSelect.innerHTML = Array.from({ length: dims }, (_, index) => `
+    <label class="action-dim-option">
+      <input type="checkbox" value="${index}" ${previous.has(index) ? "checked" : ""}>
+      <span>action[${index}]</span>
+    </label>
+  `).join("");
+}
+
+function selectedBacktestDims() {
+  const checked = Array.from(els.backtestDimSelect?.querySelectorAll("input:checked") || [])
+    .map((input) => Number(input.value))
+    .filter((value) => Number.isInteger(value));
+  state.visibleBacktestDims = new Set(checked);
+  return checked;
 }
 
 function doneBacktestResults() {
@@ -2763,6 +2799,30 @@ function selectedChartResults() {
     const key = item.episode_key || `${item.dataset_path}::${item.episode_index}`;
     return key === episodeKey && visible.has(item.profile_id || item.model_id);
   });
+}
+
+function resetBacktestChartZoom() {
+  state.backtestChartStart = 0;
+  state.backtestChartEnd = null;
+}
+
+function zoomBacktestChart(factor, anchorRatio = 0.5) {
+  const results = selectedChartResults();
+  const dims = selectedBacktestDims();
+  const maxLength = Math.max(
+    0,
+    ...results.flatMap((item) => dims.map((dim) => item.series?.[dim]?.ground_truth?.length || 0)),
+  );
+  if (maxLength <= 1) return;
+  const current = backtestChartWindow([{ values: Array.from({ length: maxLength }, (_, index) => index) }]);
+  const span = Math.max(current.end - current.start, 1);
+  const nextSpan = Math.max(2, Math.min(maxLength, Math.round(span * factor)));
+  const anchor = current.start + span * Math.min(Math.max(anchorRatio, 0), 1);
+  let start = Math.round(anchor - nextSpan * anchorRatio);
+  start = Math.max(0, Math.min(start, maxLength - nextSpan));
+  state.backtestChartStart = start;
+  state.backtestChartEnd = start + nextSpan;
+  drawBacktestChart();
 }
 
 async function loadBacktestJobs() {
@@ -2837,59 +2897,177 @@ function drawBacktestChart() {
   canvas.height = height;
   ctx.clearRect(0, 0, width, height);
   const results = selectedChartResults();
-  const dim = Number(els.backtestDimSelect.value || 0);
-  if (!results.length || Number.isNaN(dim)) {
+  const dims = selectedBacktestDims();
+  if (!results.length || !dims.length) {
     ctx.fillStyle = "#5f6c72";
     ctx.font = "14px sans-serif";
     ctx.fillText("运行回测后选择 episode、action 维度和模型。", 24, 34);
     return;
   }
   const lines = [];
-  if (els.showGroundTruth.checked && results[0].series?.[dim]) {
-    lines.push({ name: "ground truth", values: results[0].series[dim].ground_truth, color: "#111827" });
-  }
   const colors = ["#087f8c", "#b76e00", "#2f6fbb", "#7a5195", "#c92a2a", "#2f9e44"];
-  results.forEach((item, index) => {
-    const series = item.series?.[dim];
-    if (!series) return;
-    lines.push({ name: `${item.profile_name || modelName(item.profile_id || item.model_id)} predicted`, values: series.predicted, color: colors[index % colors.length] });
-    if (els.showBacktestError.checked) {
-      lines.push({ name: `${item.profile_name || modelName(item.profile_id || item.model_id)} error`, values: series.error, color: colors[(index + 2) % colors.length], dashed: true });
+  dims.forEach((dim, dimIndex) => {
+    if (els.showGroundTruth.checked && results[0].series?.[dim]) {
+      lines.push({
+        name: `action[${dim}] truth`,
+        values: results[0].series[dim].ground_truth,
+        color: dimColor(dimIndex, 0),
+        dim,
+      });
     }
+    results.forEach((item, resultIndex) => {
+      const series = item.series?.[dim];
+      if (!series) return;
+      const modelLabel = item.profile_name || modelName(item.profile_id || item.model_id);
+      lines.push({
+        name: `${modelLabel} action[${dim}] pred`,
+        values: series.predicted,
+        color: colors[(resultIndex + dimIndex) % colors.length],
+        dim,
+      });
+      if (els.showBacktestError.checked) {
+        lines.push({
+          name: `${modelLabel} action[${dim}] err`,
+          values: series.error,
+          color: colors[(resultIndex + dimIndex + 2) % colors.length],
+          dashed: true,
+          dim,
+        });
+      }
+    });
   });
-  drawLineChart(ctx, width, height, lines);
+  drawLineChart(ctx, width, height, lines, backtestChartWindow(lines));
 }
 
-function drawLineChart(ctx, width, height, lines) {
-  const pad = { left: 48, right: 18, top: 24, bottom: 38 };
-  const values = lines.flatMap((line) => line.values.filter((value) => value !== null && value !== undefined));
+function dimColor(index, offset = 0) {
+  const colors = ["#111827", "#087f8c", "#b76e00", "#2f6fbb", "#7a5195", "#c92a2a", "#2f9e44"];
+  return colors[(index + offset) % colors.length];
+}
+
+function backtestChartWindow(lines) {
+  const maxLength = Math.max(0, ...lines.map((line) => line.values.length));
+  if (!maxLength) return { start: 0, end: 0, maxLength: 0 };
+  if (state.backtestChartEnd === null || state.backtestChartEnd > maxLength) {
+    state.backtestChartStart = 0;
+    state.backtestChartEnd = maxLength;
+  }
+  const minSpan = Math.min(maxLength, Math.max(2, Math.ceil(maxLength / 100)));
+  let start = Math.max(0, Math.min(Math.floor(state.backtestChartStart || 0), maxLength - minSpan));
+  let end = Math.max(start + minSpan, Math.min(Math.ceil(state.backtestChartEnd || maxLength), maxLength));
+  if (end > maxLength) {
+    end = maxLength;
+    start = Math.max(0, end - minSpan);
+  }
+  state.backtestChartStart = start;
+  state.backtestChartEnd = end;
+  return { start, end, maxLength };
+}
+
+function drawLineChart(ctx, width, height, lines, windowSpec = null) {
+  const pad = { left: 64, right: 22, top: 24, bottom: 76 };
+  const start = windowSpec?.start ?? 0;
+  const end = windowSpec?.end ?? Math.max(0, ...lines.map((line) => line.values.length));
+  const values = lines.flatMap((line) => line.values.slice(start, end).filter((value) => value !== null && value !== undefined));
   if (!values.length) return;
   const min = Math.min(...values);
   const max = Math.max(...values);
   const span = Math.max(max - min, 1e-6);
-  ctx.strokeStyle = "#e2e8f0";
+  const chartWidth = width - pad.left - pad.right;
+  const chartHeight = height - pad.top - pad.bottom;
+  ctx.strokeStyle = "#cbd5e1";
   ctx.lineWidth = 1;
-  ctx.strokeRect(pad.left, pad.top, width - pad.left - pad.right, height - pad.top - pad.bottom);
+  ctx.strokeRect(pad.left, pad.top, chartWidth, chartHeight);
+  drawChartAxes(ctx, width, height, pad, min, max, start, end, windowSpec?.maxLength || end);
   for (const line of lines) {
     ctx.beginPath();
     ctx.strokeStyle = line.color;
     ctx.lineWidth = 2;
     ctx.setLineDash(line.dashed ? [6, 4] : []);
-    line.values.forEach((value, index) => {
-      const x = pad.left + (index / Math.max(line.values.length - 1, 1)) * (width - pad.left - pad.right);
-      const y = pad.top + (1 - ((value - min) / span)) * (height - pad.top - pad.bottom);
-      if (index === 0) ctx.moveTo(x, y);
+    line.values.slice(start, end).forEach((value, offset) => {
+      const index = start + offset;
+      const x = pad.left + (offset / Math.max(end - start - 1, 1)) * chartWidth;
+      const y = pad.top + (1 - ((value - min) / span)) * chartHeight;
+      if (offset === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
     ctx.stroke();
   }
   ctx.setLineDash([]);
-  ctx.fillStyle = "#334155";
+  drawChartLegend(ctx, width, height, pad, lines);
+}
+
+function drawChartAxes(ctx, width, height, pad, min, max, start, end, maxLength) {
+  const chartWidth = width - pad.left - pad.right;
+  const chartHeight = height - pad.top - pad.bottom;
+  ctx.save();
   ctx.font = "12px sans-serif";
-  lines.slice(0, 8).forEach((line, index) => {
+  ctx.fillStyle = "#475569";
+  ctx.strokeStyle = "#e2e8f0";
+  ctx.lineWidth = 1;
+  const yTicks = 5;
+  for (let i = 0; i <= yTicks; i += 1) {
+    const ratio = i / yTicks;
+    const y = pad.top + ratio * chartHeight;
+    const value = max - ratio * (max - min);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(width - pad.right, y);
+    ctx.stroke();
+    ctx.fillText(formatAxisValue(value), 8, y + 4);
+  }
+  const xTicks = 6;
+  for (let i = 0; i <= xTicks; i += 1) {
+    const ratio = i / xTicks;
+    const x = pad.left + ratio * chartWidth;
+    const frame = Math.round(start + ratio * Math.max(end - start - 1, 0));
+    ctx.beginPath();
+    ctx.moveTo(x, height - pad.bottom);
+    ctx.lineTo(x, height - pad.bottom + 5);
+    ctx.stroke();
+    ctx.fillText(String(frame), x - 10, height - pad.bottom + 20);
+  }
+  ctx.fillStyle = "#334155";
+  ctx.fillText("frame", width - pad.right - 34, height - pad.bottom + 38);
+  ctx.save();
+  ctx.translate(18, pad.top + 12);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText("action value", 0, 0);
+  ctx.restore();
+  if (maxLength && end - start < maxLength) {
+    ctx.fillText(`显示 ${start}-${Math.max(start, end - 1)} / ${maxLength - 1}`, pad.left, pad.top - 8);
+  }
+  ctx.restore();
+}
+
+function formatAxisValue(value) {
+  const abs = Math.abs(value);
+  if (abs >= 1000 || (abs > 0 && abs < 0.001)) return value.toExponential(1);
+  if (abs >= 10) return value.toFixed(1);
+  return value.toFixed(3);
+}
+
+function drawChartLegend(ctx, width, height, pad, lines) {
+  ctx.font = "12px sans-serif";
+  const maxItems = Math.min(lines.length, 12);
+  let x = pad.left;
+  let y = height - 42;
+  for (let index = 0; index < maxItems; index += 1) {
+    const line = lines[index];
+    const label = line.name.length > 34 ? `${line.name.slice(0, 31)}...` : line.name;
+    const itemWidth = Math.min(220, Math.max(120, ctx.measureText(label).width + 26));
+    if (x + itemWidth > width - pad.right) {
+      x = pad.left;
+      y += 18;
+    }
     ctx.fillStyle = line.color;
-    ctx.fillText(line.name, pad.left + index * 130, height - 12);
-  });
+    ctx.fillRect(x, y - 9, 14, 3);
+    ctx.fillText(label, x + 20, y - 4);
+    x += itemWidth;
+  }
+  if (lines.length > maxItems) {
+    ctx.fillStyle = "#64748b";
+    ctx.fillText(`+${lines.length - maxItems} 条曲线`, x, y - 4);
+  }
 }
 
 function modelName(modelId) {
@@ -3482,11 +3660,20 @@ if (els.refreshTrainingJobs) els.refreshTrainingJobs.addEventListener("click", l
 if (els.trainingJobList) els.trainingJobList.addEventListener("click", handleTrainingJobAction);
 if (els.createTrainingPipeline) els.createTrainingPipeline.addEventListener("click", createTrainingPipeline);
 if (els.refreshTrainingPipelines) els.refreshTrainingPipelines.addEventListener("click", loadTrainingPipelines);
-els.backtestEpisodeSelect.addEventListener("change", drawBacktestChart);
+els.backtestEpisodeSelect.addEventListener("change", () => {
+  resetBacktestChartZoom();
+  drawBacktestChart();
+});
 els.backtestDimSelect.addEventListener("change", drawBacktestChart);
 els.showGroundTruth.addEventListener("change", drawBacktestChart);
 els.showBacktestError.addEventListener("change", drawBacktestChart);
 els.backtestSeriesToggles.addEventListener("change", drawBacktestChart);
+if (els.zoomBacktestIn) els.zoomBacktestIn.addEventListener("click", () => zoomBacktestChart(0.5));
+if (els.zoomBacktestOut) els.zoomBacktestOut.addEventListener("click", () => zoomBacktestChart(2));
+if (els.resetBacktestZoom) els.resetBacktestZoom.addEventListener("click", () => {
+  resetBacktestChartZoom();
+  drawBacktestChart();
+});
 els.zoomIn.addEventListener("click", () => zoomChart(0.5));
 els.zoomOut.addEventListener("click", () => zoomChart(2));
 els.resetZoom.addEventListener("click", () => {
@@ -3549,6 +3736,12 @@ els.chart.addEventListener("wheel", (event) => {
   event.preventDefault();
   const factor = event.deltaY < 0 ? 0.8 : 1.25;
   zoomChart(factor, chartElapsedFromEvent(event));
+}, { passive: false });
+if (els.backtestChart) els.backtestChart.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  const rect = els.backtestChart.getBoundingClientRect();
+  const ratio = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0.5;
+  zoomBacktestChart(event.deltaY < 0 ? 0.8 : 1.25, ratio);
 }, { passive: false });
 window.addEventListener("resize", drawChart);
 window.addEventListener("resize", drawBacktestChart);
