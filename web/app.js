@@ -33,6 +33,7 @@ const state = {
   backtestResult: null,
   visibleBacktestModels: new Set(),
   visibleBacktestDims: new Set(),
+  backtestDimsInitialized: false,
   backtestChartStart: 0,
   backtestChartEnd: null,
   trainingFrameworks: [],
@@ -163,6 +164,8 @@ const els = {
   backtestHistory: document.getElementById("backtestHistory"),
   backtestEpisodeSelect: document.getElementById("backtestEpisodeSelect"),
   backtestDimSelect: document.getElementById("backtestDimSelect"),
+  selectAllBacktestDims: document.getElementById("selectAllBacktestDims"),
+  clearBacktestDims: document.getElementById("clearBacktestDims"),
   showGroundTruth: document.getElementById("showGroundTruth"),
   showBacktestError: document.getElementById("showBacktestError"),
   backtestSeriesToggles: document.getElementById("backtestSeriesToggles"),
@@ -1831,7 +1834,8 @@ async function registerCurrentModel() {
         extra_params: readParamTable(els.profileExtraParams, "自定义参数"),
       }),
     });
-    state.selectedProfileId = profileId;
+    state.selectedProfileId = null;
+    if (els.profileId) els.profileId.disabled = false;
     await loadModels();
   } catch (error) {
     els.modelList.textContent = error.message;
@@ -2598,6 +2602,7 @@ function clearBacktestResult() {
   els.backtestEpisodeSelect.innerHTML = "";
   els.backtestDimSelect.innerHTML = "";
   state.visibleBacktestDims = new Set();
+  state.backtestDimsInitialized = false;
   resetBacktestChartZoom();
   els.backtestSeriesToggles.innerHTML = "";
   drawBacktestChart();
@@ -2735,17 +2740,19 @@ function populateBacktestChartControls() {
   const done = doneBacktestResults();
   const episodeMap = new Map();
   for (const item of done) {
-    const key = item.episode_key || `${item.dataset_path}::${item.episode_index}`;
+    const key = backtestResultEpisodeKey(item);
     if (!episodeMap.has(key)) {
       episodeMap.set(key, `${item.dataset_name || datasetName(item.dataset_path)} / Episode ${item.episode_index}`);
     }
   }
+  const previousEpisode = els.backtestEpisodeSelect.value;
   els.backtestEpisodeSelect.innerHTML = Array.from(episodeMap.entries())
     .map(([key, label]) => `<option value="${escapeAttr(key)}">${escapeHtml(label)}</option>`)
     .join("");
-  const first = done[0];
-  const dims = first?.series?.length || 0;
-  renderBacktestDimChoices(dims);
+  if (previousEpisode && episodeMap.has(previousEpisode)) {
+    els.backtestEpisodeSelect.value = previousEpisode;
+  }
+  renderBacktestDimChoices(chartActionDimCountForEpisode(selectedBacktestEpisodeKey()));
   const modelMap = new Map(state.models.map((model) => [model.id, model.name]));
   for (const item of done) {
     const id = item.profile_id || item.model_id;
@@ -2765,10 +2772,14 @@ function renderBacktestDimChoices(dims) {
     els.backtestDimSelect.classList.add("empty");
     els.backtestDimSelect.innerHTML = "暂无 action";
     state.visibleBacktestDims = new Set();
+    state.backtestDimsInitialized = false;
     return;
   }
   const previous = new Set(Array.from(state.visibleBacktestDims).filter((dim) => dim < dims));
-  if (!previous.size) previous.add(0);
+  if (!state.backtestDimsInitialized && !previous.size) {
+    for (let index = 0; index < dims; index += 1) previous.add(index);
+    state.backtestDimsInitialized = true;
+  }
   state.visibleBacktestDims = previous;
   els.backtestDimSelect.classList.remove("empty");
   els.backtestDimSelect.innerHTML = Array.from({ length: dims }, (_, index) => `
@@ -2784,21 +2795,46 @@ function selectedBacktestDims() {
     .map((input) => Number(input.value))
     .filter((value) => Number.isInteger(value));
   state.visibleBacktestDims = new Set(checked);
+  state.backtestDimsInitialized = true;
   return checked;
+}
+
+function setBacktestDimSelection(selectAll) {
+  const boxes = Array.from(els.backtestDimSelect?.querySelectorAll("input[type='checkbox']") || []);
+  boxes.forEach((box) => {
+    box.checked = selectAll;
+  });
+  state.visibleBacktestDims = new Set(selectAll ? boxes.map((box) => Number(box.value)) : []);
+  state.backtestDimsInitialized = true;
+  drawBacktestChart();
 }
 
 function doneBacktestResults() {
   return (state.backtestResult?.results || []).filter((item) => item.status === "done");
 }
 
+function backtestResultEpisodeKey(item) {
+  return item.episode_key || `${item.dataset_path}::${item.episode_index}`;
+}
+
+function selectedBacktestEpisodeKey() {
+  return els.backtestEpisodeSelect?.value || "";
+}
+
+function doneResultsForEpisode(episodeKey) {
+  if (!episodeKey) return [];
+  return doneBacktestResults().filter((item) => backtestResultEpisodeKey(item) === episodeKey);
+}
+
+function chartActionDimCountForEpisode(episodeKey) {
+  return Math.max(0, ...doneResultsForEpisode(episodeKey).map((item) => item.series?.length || 0));
+}
+
 function selectedChartResults() {
-  const episodeKey = els.backtestEpisodeSelect.value;
+  const episodeKey = selectedBacktestEpisodeKey();
   const visible = new Set(Array.from(els.backtestSeriesToggles.querySelectorAll("input:checked")).map((input) => input.value));
   state.visibleBacktestModels = visible;
-  return doneBacktestResults().filter((item) => {
-    const key = item.episode_key || `${item.dataset_path}::${item.episode_index}`;
-    return key === episodeKey && visible.has(item.profile_id || item.model_id);
-  });
+  return doneResultsForEpisode(episodeKey).filter((item) => visible.has(item.profile_id || item.model_id));
 }
 
 function resetBacktestChartZoom() {
@@ -2807,7 +2843,7 @@ function resetBacktestChartZoom() {
 }
 
 function zoomBacktestChart(factor, anchorRatio = 0.5) {
-  const results = selectedChartResults();
+  const results = doneResultsForEpisode(selectedBacktestEpisodeKey());
   const dims = selectedBacktestDims();
   const maxLength = Math.max(
     0,
@@ -2896,21 +2932,23 @@ function drawBacktestChart() {
   canvas.width = width;
   canvas.height = height;
   ctx.clearRect(0, 0, width, height);
+  const episodeResults = doneResultsForEpisode(selectedBacktestEpisodeKey());
   const results = selectedChartResults();
   const dims = selectedBacktestDims();
-  if (!results.length || !dims.length) {
+  if (!episodeResults.length || !dims.length) {
     ctx.fillStyle = "#5f6c72";
     ctx.font = "14px sans-serif";
-    ctx.fillText("运行回测后选择 episode、action 维度和模型。", 24, 34);
+    ctx.fillText("运行回测后选择 episode 和 action 维度。", 24, 34);
     return;
   }
   const lines = [];
   const colors = ["#087f8c", "#b76e00", "#2f6fbb", "#7a5195", "#c92a2a", "#2f9e44"];
+  const truthSource = episodeResults.find((item) => item.series?.length);
   dims.forEach((dim, dimIndex) => {
-    if (els.showGroundTruth.checked && results[0].series?.[dim]) {
+    if (els.showGroundTruth.checked && truthSource?.series?.[dim]) {
       lines.push({
         name: `action[${dim}] truth`,
-        values: results[0].series[dim].ground_truth,
+        values: truthSource.series[dim].ground_truth,
         color: dimColor(dimIndex, 0),
         dim,
       });
@@ -2936,6 +2974,12 @@ function drawBacktestChart() {
       }
     });
   });
+  if (!lines.length) {
+    ctx.fillStyle = "#5f6c72";
+    ctx.font = "14px sans-serif";
+    ctx.fillText("当前筛选没有可绘制的 action 曲线。", 24, 34);
+    return;
+  }
   drawLineChart(ctx, width, height, lines, backtestChartWindow(lines));
 }
 
@@ -3661,10 +3705,15 @@ if (els.trainingJobList) els.trainingJobList.addEventListener("click", handleTra
 if (els.createTrainingPipeline) els.createTrainingPipeline.addEventListener("click", createTrainingPipeline);
 if (els.refreshTrainingPipelines) els.refreshTrainingPipelines.addEventListener("click", loadTrainingPipelines);
 els.backtestEpisodeSelect.addEventListener("change", () => {
+  state.visibleBacktestDims = new Set();
+  state.backtestDimsInitialized = false;
+  renderBacktestDimChoices(chartActionDimCountForEpisode(selectedBacktestEpisodeKey()));
   resetBacktestChartZoom();
   drawBacktestChart();
 });
 els.backtestDimSelect.addEventListener("change", drawBacktestChart);
+if (els.selectAllBacktestDims) els.selectAllBacktestDims.addEventListener("click", () => setBacktestDimSelection(true));
+if (els.clearBacktestDims) els.clearBacktestDims.addEventListener("click", () => setBacktestDimSelection(false));
 els.showGroundTruth.addEventListener("change", drawBacktestChart);
 els.showBacktestError.addEventListener("change", drawBacktestChart);
 els.backtestSeriesToggles.addEventListener("change", drawBacktestChart);

@@ -30,7 +30,7 @@ from app.backtesting import (
     submit_backtest_job,
     test_profile_on_frame,
 )
-from app.profile_store import create_profile, delete_profile, load_profile
+from app.profile_store import create_profile, delete_profile, load_profile, update_profile
 from app.main import DatasetCache
 from scripts.smoke_test import assert_equal, create_no_video_dataset
 
@@ -85,6 +85,42 @@ def check_profile_crud_and_inspection() -> None:
             assert_equal(inspected["checkpoint_config"]["n_obs_steps"], 2, "checkpoint config captured")
         finally:
             cleanup_profile(profile_id)
+
+
+def check_multiple_profile_persistence() -> None:
+    first_id = new_profile_id("mock_first")
+    second_id = new_profile_id("mock_second")
+    try:
+        create_profile(
+            {
+                "id": first_id,
+                "name": "first profile",
+                "adapter": "mock",
+                "device": "cpu",
+                "checkpoint_path": "/tmp/first-checkpoint",
+                "runtime_params": {"action": [1.0, 2.0]},
+            }
+        )
+        create_profile(
+            {
+                "id": second_id,
+                "name": "second profile",
+                "adapter": "mock",
+                "device": "cpu",
+                "checkpoint_path": "/tmp/second-checkpoint",
+                "runtime_params": {"action": [3.0, 4.0]},
+            }
+        )
+        update_profile(first_id, {"name": "first profile updated", "checkpoint_path": "/tmp/first-updated"})
+        first = load_profile(first_id)
+        second = load_profile(second_id)
+        assert_equal(first["name"], "first profile updated", "first profile updated independently")
+        assert_equal(first["checkpoint_path"], "/tmp/first-updated", "first checkpoint updated independently")
+        assert_equal(second["name"], "second profile", "second profile name preserved")
+        assert_equal(second["checkpoint_path"], "/tmp/second-checkpoint", "second checkpoint preserved")
+    finally:
+        cleanup_profile(first_id)
+        cleanup_profile(second_id)
 
 
 def check_mock_backtest_metrics() -> None:
@@ -258,6 +294,8 @@ def main() -> None:
     assert_equal("adapters" in status, True, "adapter list present")
     check_profile_crud_and_inspection()
     print("ok: profile crud and inspection passed")
+    check_multiple_profile_persistence()
+    print("ok: multiple profile persistence passed")
     check_mock_backtest_metrics()
     print("ok: mock backtest metrics passed")
     check_multi_dataset_backtest_request()
