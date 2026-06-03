@@ -380,6 +380,12 @@
               <input id="limitBacktestFrames" type="checkbox">
               仅测试前 20 帧
             </label>
+            <div class="param-section-head">
+              <label class="field-label">回测环境变量</label>
+              <button id="addBacktestEnvVar" type="button">+ 添加变量</button>
+            </div>
+            <p class="inline-help">提交回测任务时临时设置，例如 CUDA_VISIBLE_DEVICES=0 或 CUDA_VISIBLE_DEVICES=0,1。建议在加载模型前设置；如 torch/CUDA 已初始化，需重启后端后再运行。</p>
+            <div id="backtestEnvVars" class="param-table empty"></div>
             <div class="section-kicker">Models</div>
             <div id="backtestModelChoices" class="model-choice-list empty">请先在模型管理中注册模型。</div>
           </section>

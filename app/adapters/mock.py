@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
@@ -51,6 +52,11 @@ class MockAdapter(BacktestAdapter):
         sleep_ms = float(params.get("sleep_ms", 0) or 0)
         if sleep_ms > 0:
             time.sleep(sleep_ms / 1000)
+        env_key = params.get("action_from_env")
+        if env_key:
+            raw = os.environ.get(str(env_key), "")
+            if raw:
+                return np.asarray([float(item.strip()) for item in raw.split(",") if item.strip()], dtype=np.float64)
         return np.asarray(params.get("action", [0.0, 0.0]), dtype=np.float64)
 
     def reset_episode(self) -> None:

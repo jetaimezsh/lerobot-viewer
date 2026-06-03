@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import time
@@ -222,6 +223,36 @@ def check_multi_dataset_backtest_request() -> None:
             cleanup_profile(second_profile_id)
 
 
+def check_backtest_environment_variables() -> None:
+    profile_id = new_profile_id("mock_env")
+    env_key = "LEROBOT_VIEWER_BACKTEST_ACTION"
+    original = os.environ.get(env_key)
+    with tempfile.TemporaryDirectory(dir=PROJECT_ROOT) as directory:
+        work = Path(directory)
+        dataset = work / "dataset"
+        create_no_video_dataset(dataset, [2], task="env task")
+        cache = DatasetCache(dataset)
+        try:
+            create_mock_profile(profile_id, [0.0, 0.0], {"action_from_env": env_key})
+            result = run_backtest(
+                BacktestRunRequest(
+                    profile_ids=[profile_id],
+                    episodes=[BacktestEpisodeRef(dataset_path=str(dataset), episode_index=0)],
+                    env_vars={env_key: "5.5,6.5", "CUDA_VISIBLE_DEVICES": "0,1", "SECRET_TOKEN": "hidden"},
+                ),
+                lambda path: cache,
+            )
+            assert_equal(result["summary"]["done"], 1, "env backtest done count")
+            assert_equal(result["env_vars"][env_key], "5.5,6.5", "env var recorded")
+            assert_equal(result["env_vars"]["CUDA_VISIBLE_DEVICES"], "0,1", "cuda env var recorded")
+            assert_equal(result["env_vars"]["SECRET_TOKEN"], "***", "sensitive env var masked")
+            assert_equal(result["results"][0]["series"][0]["predicted"][0], 5.5, "env action dim 0 applied")
+            assert_equal(result["results"][0]["series"][1]["predicted"][0], 6.5, "env action dim 1 applied")
+            assert_equal(os.environ.get(env_key), original, "env var restored after backtest")
+        finally:
+            cleanup_profile(profile_id)
+
+
 def check_backtest_worker_job() -> None:
     profile_id = new_profile_id("mock_worker")
     with tempfile.TemporaryDirectory(dir=PROJECT_ROOT) as directory:
@@ -407,6 +438,8 @@ def main() -> None:
     print("ok: mock backtest metrics passed")
     check_multi_dataset_backtest_request()
     print("ok: multi-dataset profile backtest request passed")
+    check_backtest_environment_variables()
+    print("ok: backtest environment variables passed")
     check_backtest_worker_job()
     print("ok: backtest worker job passed")
     check_video_observation_builder()

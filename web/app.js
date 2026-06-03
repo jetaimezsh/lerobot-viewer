@@ -47,6 +47,7 @@ const state = {
 };
 
 const ACTIVE_BACKTEST_JOB_KEY = "lerobotViewer.activeBacktestJobId";
+const BACKTEST_ENV_VARS_KEY = "lerobotViewer.backtestEnvVars";
 
 const els = {
   datasetPath: document.getElementById("datasetPath"),
@@ -157,6 +158,8 @@ const els = {
   backtestSelectionTable: document.getElementById("backtestSelectionTable"),
   clearBacktestSelection: document.getElementById("clearBacktestSelection"),
   limitBacktestFrames: document.getElementById("limitBacktestFrames"),
+  backtestEnvVars: document.getElementById("backtestEnvVars"),
+  addBacktestEnvVar: document.getElementById("addBacktestEnvVar"),
   backtestModelChoices: document.getElementById("backtestModelChoices"),
   runBacktest: document.getElementById("runBacktest"),
   refreshBacktestJobs: document.getElementById("refreshBacktestJobs"),
@@ -1819,6 +1822,50 @@ function readParamTable(container, label) {
   return result;
 }
 
+function readBacktestEnvVars() {
+  const params = readParamTable(els.backtestEnvVars, "回测环境变量");
+  const envVars = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      throw new Error(`环境变量名不合法：${key}`);
+    }
+    if (value === null || value === undefined) {
+      envVars[key] = "";
+    } else if (["string", "number", "boolean"].includes(typeof value)) {
+      envVars[key] = String(value);
+    } else {
+      throw new Error(`环境变量 ${key} 的值必须是字符串、数字或布尔值`);
+    }
+  }
+  return envVars;
+}
+
+function saveBacktestEnvVars() {
+  if (!els.backtestEnvVars) return;
+  try {
+    localStorage.setItem(BACKTEST_ENV_VARS_KEY, JSON.stringify(readBacktestEnvVars()));
+  } catch (_) {
+    // Ignore incomplete rows while the user is editing.
+  }
+}
+
+function initBacktestEnvVars() {
+  if (!els.backtestEnvVars) return;
+  let envVars = {};
+  try {
+    envVars = JSON.parse(localStorage.getItem(BACKTEST_ENV_VARS_KEY) || "{}") || {};
+  } catch (_) {
+    envVars = {};
+  }
+  renderParamTable(els.backtestEnvVars, envVars);
+}
+
+function formatEnvVars(envVars) {
+  const entries = Object.entries(envVars || {});
+  if (!entries.length) return "-";
+  return entries.map(([key, value]) => `${key}=${value}`).join(", ");
+}
+
 function parseParamValue(raw, type, label) {
   if (type === "string") return raw;
   if (type === "number") {
@@ -2569,6 +2616,8 @@ async function runSelectedBacktest() {
   els.backtestResult.textContent = "正在提交后台回测任务...";
   renderBacktestExportActions(null);
   try {
+    const envVars = readBacktestEnvVars();
+    saveBacktestEnvVars();
     const job = await api("/api/backtests/jobs", {
       method: "POST",
       body: JSON.stringify({
@@ -2578,6 +2627,7 @@ async function runSelectedBacktest() {
           episode_index: Number(item.episode_index),
         })),
         max_frames: els.limitBacktestFrames.checked ? 20 : null,
+        env_vars: envVars,
       }),
     });
     state.visibleBacktestModels = new Set(profileIds);
@@ -2725,6 +2775,7 @@ function renderBacktestJobStatus(job) {
       ["创建时间", job.created_at || "-"],
       ["开始时间", job.started_at || "-"],
       ["结束时间", job.finished_at || "-"],
+      ["环境变量", formatEnvVars(job.request?.env_vars)],
       ["完成组合", summary.done ?? "-"],
       ["失败组合", summary.failed ?? "-"],
     ])}
@@ -3051,6 +3102,7 @@ function renderBacktestJobs(jobs) {
           <th>Job</th>
           <th>Profiles</th>
           <th>Episodes</th>
+          <th>Env</th>
           <th>创建</th>
           <th>开始</th>
           <th>结束</th>
@@ -3068,6 +3120,7 @@ function renderBacktestJobs(jobs) {
               <td><code>${escapeHtml(job.job_id)}</code></td>
               <td>${escapeHtml(profileIds.join(", ") || "-")}</td>
               <td>${escapeHtml(episodes.length)}</td>
+              <td>${escapeHtml(formatEnvVars(request.env_vars))}</td>
               <td>${escapeHtml(job.created_at || "-")}</td>
               <td>${escapeHtml(job.started_at || "-")}</td>
               <td>${escapeHtml(job.finished_at || "-")}</td>
@@ -3842,8 +3895,21 @@ if (els.backtestHistory) els.backtestHistory.addEventListener("click", handleBac
 if (els.backtestJobQueue) els.backtestJobQueue.addEventListener("click", handleBacktestHistoryClick);
 if (els.addRuntimeParam) els.addRuntimeParam.addEventListener("click", () => addParamRow(els.profileRuntimeParams));
 if (els.addExtraParam) els.addExtraParam.addEventListener("click", () => addParamRow(els.profileExtraParams));
+if (els.addBacktestEnvVar) els.addBacktestEnvVar.addEventListener("click", () => {
+  const hasCudaRow = paramRows(els.backtestEnvVars).some((row) => row.querySelector(".param-key")?.value.trim() === "CUDA_VISIBLE_DEVICES");
+  addParamRow(els.backtestEnvVars, hasCudaRow ? "" : "CUDA_VISIBLE_DEVICES", "");
+  saveBacktestEnvVars();
+});
 if (els.profileRuntimeParams) els.profileRuntimeParams.addEventListener("click", handleParamTableClick);
 if (els.profileExtraParams) els.profileExtraParams.addEventListener("click", handleParamTableClick);
+if (els.backtestEnvVars) {
+  els.backtestEnvVars.addEventListener("click", (event) => {
+    handleParamTableClick(event);
+    saveBacktestEnvVars();
+  });
+  els.backtestEnvVars.addEventListener("input", saveBacktestEnvVars);
+  els.backtestEnvVars.addEventListener("change", saveBacktestEnvVars);
+}
 if (els.refreshTrainingRecipes) els.refreshTrainingRecipes.addEventListener("click", loadTrainingRecipes);
 if (els.checkTrainingEnv) els.checkTrainingEnv.addEventListener("click", loadTrainingEnv);
 if (els.trainingTemplate) els.trainingTemplate.addEventListener("change", () => applyTrainingTemplate(true));
@@ -3952,6 +4018,7 @@ if (els.backtestChart) els.backtestChart.addEventListener("wheel", (event) => {
 window.addEventListener("resize", drawChart);
 window.addEventListener("resize", drawBacktestChart);
 
+initBacktestEnvVars();
 loadEnv().catch((error) => {
   els.envInfo.textContent = error.message;
 });

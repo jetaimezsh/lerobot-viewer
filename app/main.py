@@ -697,6 +697,7 @@ def backtest_run(request: BacktestRunRequest) -> dict[str, Any]:
             details={
                 "profiles": request.profile_ids,
                 "episodes": result.get("episodes", []),
+                "env_var_names": result.get("env_var_names", []),
                 "summary": result.get("summary", {}),
             },
         )
@@ -714,7 +715,11 @@ def backtest_job_create(request: BacktestRunRequest) -> dict[str, Any]:
             "backtest_job_create",
             "success",
             target=result.get("job_id"),
-            details={"profiles": request.profile_ids, "episodes": [item.model_dump() for item in request.episodes]},
+            details={
+                "profiles": request.profile_ids,
+                "episodes": [item.model_dump() for item in request.episodes],
+                "env_var_names": sorted((request.env_vars or {}).keys()),
+            },
         )
         return result
     except Exception as exc:

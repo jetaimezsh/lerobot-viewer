@@ -177,11 +177,14 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 4. 在 **LeRobot 数据 / Episode 播放** 页面点击"加入回测样本池"
 5. 可以切换并加载其他数据集，继续加入不同数据集的 episode
 6. 在 **模型回测 / 回测任务** 页面用表格确认样本所属数据集、路径、episode 编号、帧数、时长、任务和视频路数
-7. 选择一个或多个 profile → 运行回测；任务会提交到后台队列，多个任务按提交顺序缓存并依次执行
-8. 查看 MAE/RMSE / 维度级 action 对比曲线
-9. 历史结果会写入 `state/backtests/`，可在页面重新打开，也可导出 HTML/CSV/JSON 报告
+7. 按需填写回测环境变量，例如 `CUDA_VISIBLE_DEVICES=0` 或 `CUDA_VISIBLE_DEVICES=0,1`
+8. 选择一个或多个 profile → 运行回测；任务会提交到后台队列，多个任务按提交顺序缓存并依次执行
+9. 查看 MAE/RMSE / 维度级 action 对比曲线
+10. 历史结果会写入 `state/backtests/`，可在页面重新打开，也可导出 HTML/CSV/JSON 报告
 
 说明：官方 LeRobot checkpoint 推理在 v4 阶段仍仅支持 Linux；Windows 可做 profile 编辑、checkpoint 结构检查、数据选择、历史查看和报告导出。测试环境没有真实模型时，可用 mock adapter 做功能链路验证。
+
+环境变量会在回测 worker 执行任务时临时应用，并记录到任务/历史结果中；包含 `TOKEN`、`SECRET`、`PASSWORD`、`KEY` 等字样的变量值会脱敏。`CUDA_VISIBLE_DEVICES` 这类变量应在模型加载前设置；如果后端进程已经初始化 torch/CUDA，建议重启后端后再运行回测。
 
 回测 API 支持多数据集 episode 引用：
 
@@ -192,7 +195,10 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
     {"dataset_path": "D:/datasets/pusht", "episode_index": 0},
     {"dataset_path": "D:/datasets/pick", "episode_index": 4}
   ],
-  "max_frames": 20
+  "max_frames": 20,
+  "env_vars": {
+    "CUDA_VISIBLE_DEVICES": "0,1"
+  }
 }
 ```
 

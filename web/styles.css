@@ -1401,6 +1401,12 @@ h3 {
   font-weight: 800;
 }
 
+.inline-help {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .backtest-chart-surface {
   margin-top: 16px;
 }

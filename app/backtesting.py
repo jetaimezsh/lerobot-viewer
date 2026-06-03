@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import importlib
+import os
 import platform
+import re
 import time
 import uuid
+from contextlib import contextmanager
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from threading import Lock
+from threading import Lock, RLock
 from typing import Any
 
 import numpy as np
@@ -40,6 +43,7 @@ class BacktestRunRequest(BaseModel):
     profile_ids: list[str] = Field(default_factory=list)
     episodes: list[BacktestEpisodeRef] = Field(default_factory=list)
     max_frames: int | None = None
+    env_vars: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProfileTestRequest(BaseModel):
@@ -49,10 +53,14 @@ class ProfileTestRequest(BaseModel):
 
 
 LOADED_ADAPTERS: dict[str, BacktestAdapter] = {}
+LOADED_ADAPTER_ENVS: dict[str, dict[str, str]] = {}
 BACKTEST_RUNS: dict[str, dict[str, Any]] = {}
 BACKTEST_JOBS: dict[str, dict[str, Any]] = {}
 BACKTEST_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="backtest-worker")
 BACKTEST_LOCK = Lock()
+BACKTEST_ENV_LOCK = RLock()
+ENV_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+SENSITIVE_ENV_TOKENS = ("TOKEN", "SECRET", "PASSWORD", "PASS", "KEY", "CREDENTIAL", "AUTH")
 
 
 def model_runtime_status() -> dict[str, Any]:
@@ -120,6 +128,52 @@ def python_package_status(name: str, version: str | None = None) -> dict[str, An
     }
 
 
+def normalize_env_vars(raw: dict[str, Any] | None) -> dict[str, str]:
+    env_vars: dict[str, str] = {}
+    for key, value in (raw or {}).items():
+        name = str(key).strip()
+        if not name:
+            continue
+        if not ENV_VAR_RE.fullmatch(name):
+            raise ValueError(f"invalid environment variable name: {name}")
+        if value is None:
+            text = ""
+        elif isinstance(value, (str, int, float, bool)):
+            text = str(value)
+        else:
+            raise ValueError(f"environment variable value must be scalar: {name}")
+        env_vars[name] = text
+    return env_vars
+
+
+def public_env_vars(env_vars: dict[str, str] | None) -> dict[str, str]:
+    return {key: mask_env_value(key, value) for key, value in sorted((env_vars or {}).items())}
+
+
+def mask_env_value(key: str, value: str) -> str:
+    upper = key.upper()
+    if any(token in upper for token in SENSITIVE_ENV_TOKENS):
+        return "***" if value else ""
+    return value
+
+
+@contextmanager
+def applied_backtest_env(raw_env_vars: dict[str, Any] | None):
+    env_vars = normalize_env_vars(raw_env_vars)
+    with BACKTEST_ENV_LOCK:
+        previous = {key: os.environ.get(key) for key in env_vars}
+        try:
+            for key, value in env_vars.items():
+                os.environ[key] = value
+            yield env_vars
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+
 def list_profile_records() -> list[dict[str, Any]]:
     return [public_profile_runtime(profile) for profile in store_list_profiles()]
 
@@ -129,6 +183,7 @@ def public_profile_runtime(profile: dict[str, Any]) -> dict[str, Any]:
     result["loaded"] = profile["id"] in LOADED_ADAPTERS
     if result["loaded"]:
         result["status"] = "loaded"
+        result["loaded_env_vars"] = public_env_vars(LOADED_ADAPTER_ENVS.get(str(profile["id"]), {}))
     return result
 
 
@@ -144,8 +199,14 @@ def inspect_profile_record(profile_id: str) -> dict[str, Any]:
     return public_profile_runtime(profile)
 
 
-def load_profile_adapter(profile_id: str) -> dict[str, Any]:
+def load_profile_adapter(profile_id: str, env_vars: dict[str, Any] | None = None) -> dict[str, Any]:
+    normalized_env = normalize_env_vars(env_vars)
     profile = load_profile(profile_id)
+    if profile_id in LOADED_ADAPTERS:
+        if LOADED_ADAPTER_ENVS.get(profile_id, {}) != normalized_env:
+            close_profile_adapter(profile_id)
+        else:
+            return public_profile_runtime(profile)
     if profile_id in LOADED_ADAPTERS:
         return public_profile_runtime(profile)
     adapter_cls = get_adapter(profile["adapter"])
@@ -156,17 +217,21 @@ def load_profile_adapter(profile_id: str) -> dict[str, Any]:
         save_profile(profile)
         raise RuntimeError("; ".join(inspection["errors"]))
     adapter = adapter_cls()
-    adapter.load(profile)
-    profile["inspection"] = {**inspection, **adapter.runtime_info()}
+    with applied_backtest_env(normalized_env):
+        adapter.load(profile)
+        runtime_info = adapter.runtime_info()
+    profile["inspection"] = {**inspection, **runtime_info}
     profile["checkpoint_config"] = inspection.get("checkpoint_config", profile.get("checkpoint_config", {}))
     profile["status"] = "loaded"
     save_profile(profile)
     LOADED_ADAPTERS[profile_id] = adapter
+    LOADED_ADAPTER_ENVS[profile_id] = normalized_env
     return public_profile_runtime(profile)
 
 
 def unload_profile_adapter(profile_id: str) -> dict[str, Any]:
     adapter = LOADED_ADAPTERS.pop(profile_id, None)
+    LOADED_ADAPTER_ENVS.pop(profile_id, None)
     if adapter:
         adapter.unload()
     profile = load_profile(profile_id)
@@ -177,6 +242,7 @@ def unload_profile_adapter(profile_id: str) -> dict[str, Any]:
 
 def close_profile_adapter(profile_id: str) -> None:
     adapter = LOADED_ADAPTERS.pop(profile_id, None)
+    LOADED_ADAPTER_ENVS.pop(profile_id, None)
     if adapter:
         adapter.unload()
 
@@ -184,7 +250,7 @@ def close_profile_adapter(profile_id: str) -> None:
 def test_profile_on_frame(profile_id: str, request: ProfileTestRequest, cache_loader: Any) -> dict[str, Any]:
     profile = load_profile(profile_id)
     adapter = LOADED_ADAPTERS.get(profile_id)
-    if adapter is None:
+    if adapter is None or LOADED_ADAPTER_ENVS.get(profile_id, {}) != {}:
         load_profile_adapter(profile_id)
         adapter = LOADED_ADAPTERS[profile_id]
     cache = cache_loader(request.dataset_path)
@@ -221,64 +287,70 @@ def run_backtest(request: BacktestRunRequest, cache_loader: Any) -> dict[str, An
         raise ValueError("at least one profile is required")
     if not request.episodes:
         raise ValueError("at least one episode is required")
+    env_vars = normalize_env_vars(request.env_vars)
 
-    caches: dict[str, Any] = {}
-    for ref in request.episodes:
-        dataset_path = str(resolve_dataset_path(ref.dataset_path))
-        if dataset_path not in caches:
-            caches[dataset_path] = cache_loader(dataset_path)
+    with applied_backtest_env(env_vars):
+        caches: dict[str, Any] = {}
+        for ref in request.episodes:
+            dataset_path = str(resolve_dataset_path(ref.dataset_path))
+            if dataset_path not in caches:
+                caches[dataset_path] = cache_loader(dataset_path)
 
-    run_id = uuid.uuid4().hex[:12]
-    results: list[dict[str, Any]] = []
-    snapshots: list[dict[str, Any]] = []
-    for profile_id in request.profile_ids:
-        try:
-            profile = load_profile(profile_id)
-            snapshots.append(profile_snapshot(profile))
-            adapter = LOADED_ADAPTERS.get(profile_id)
-            if adapter is None:
-                try:
-                    load_profile_adapter(profile_id)
-                    adapter = LOADED_ADAPTERS[profile_id]
-                except Exception as exc:
-                    results.extend(failed_results(profile, request.episodes, str(exc)))
-                    continue
-            for ref in request.episodes:
-                dataset_path = str(resolve_dataset_path(ref.dataset_path))
-                results.append(
-                    run_episode_backtest(
-                        caches[dataset_path],
-                        adapter,
-                        profile,
-                        int(ref.episode_index),
-                        request.max_frames,
-                        dataset_path=dataset_path,
+        run_id = uuid.uuid4().hex[:12]
+        results: list[dict[str, Any]] = []
+        snapshots: list[dict[str, Any]] = []
+        for profile_id in request.profile_ids:
+            try:
+                profile = load_profile(profile_id)
+                snapshots.append(profile_snapshot(profile))
+                adapter = LOADED_ADAPTERS.get(profile_id)
+                if adapter is None or LOADED_ADAPTER_ENVS.get(profile_id, {}) != env_vars:
+                    try:
+                        load_profile_adapter(profile_id, env_vars)
+                        adapter = LOADED_ADAPTERS[profile_id]
+                    except Exception as exc:
+                        results.extend(failed_results(profile, request.episodes, str(exc)))
+                        continue
+                for ref in request.episodes:
+                    dataset_path = str(resolve_dataset_path(ref.dataset_path))
+                    results.append(
+                        run_episode_backtest(
+                            caches[dataset_path],
+                            adapter,
+                            profile,
+                            int(ref.episode_index),
+                            request.max_frames,
+                            dataset_path=dataset_path,
+                        )
                     )
-                )
-        except Exception as exc:
-            fallback = {"id": profile_id, "name": profile_id, "adapter": "unknown", "device": "", "runtime_params": {}, "extra_params": {}}
-            snapshots.append(fallback)
-            results.extend(failed_results(fallback, request.episodes, str(exc)))
+            except Exception as exc:
+                fallback = {"id": profile_id, "name": profile_id, "adapter": "unknown", "device": "", "runtime_params": {}, "extra_params": {}}
+                snapshots.append(fallback)
+                results.extend(failed_results(fallback, request.episodes, str(exc)))
 
-    run = {
-        "run_id": run_id,
-        "dataset_paths": sorted(caches.keys()),
-        "dataset_path": sorted(caches.keys())[0] if len(caches) == 1 else None,
-        "profile_ids": request.profile_ids,
-        "model_ids": request.profile_ids,
-        "profiles": snapshots,
-        "episodes": [public_episode_ref(caches[str(resolve_dataset_path(ref.dataset_path))], ref) for ref in request.episodes],
-        "episode_indexes": [int(ref.episode_index) for ref in request.episodes],
-        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "summary": summarize_results(results),
-        "results": results,
-    }
+        run = {
+            "run_id": run_id,
+            "dataset_paths": sorted(caches.keys()),
+            "dataset_path": sorted(caches.keys())[0] if len(caches) == 1 else None,
+            "profile_ids": request.profile_ids,
+            "model_ids": request.profile_ids,
+            "profiles": snapshots,
+            "episodes": [public_episode_ref(caches[str(resolve_dataset_path(ref.dataset_path))], ref) for ref in request.episodes],
+            "episode_indexes": [int(ref.episode_index) for ref in request.episodes],
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "env_vars": public_env_vars(env_vars),
+            "env_var_names": sorted(env_vars.keys()),
+            "summary": summarize_results(results),
+            "results": results,
+        }
     BACKTEST_RUNS[run_id] = run
     save_backtest_run(run)
     return run
 
 
 def submit_backtest_job(request: BacktestRunRequest, cache_loader: Any) -> dict[str, Any]:
+    env_vars = normalize_env_vars(request.env_vars)
+    request.env_vars = env_vars
     job_id = uuid.uuid4().hex[:12]
     job = {
         "job_id": job_id,
@@ -366,11 +438,22 @@ def _run_backtest_job(job_id: str, request: BacktestRunRequest, cache_loader: An
 
 
 def public_backtest_job(job: dict[str, Any], include_result: bool = True) -> dict[str, Any]:
-    return {
+    public = {
         key: value
         for key, value in job.items()
         if key != "future" and not isinstance(value, Future) and (include_result or key != "result")
     }
+    if isinstance(public.get("request"), dict):
+        public["request"] = public_backtest_request(public["request"])
+    return public
+
+
+def public_backtest_request(request: dict[str, Any]) -> dict[str, Any]:
+    public = dict(request)
+    env_vars = normalize_env_vars(public.get("env_vars") or {})
+    public["env_vars"] = public_env_vars(env_vars)
+    public["env_var_names"] = sorted(env_vars.keys())
+    return public
 
 
 def persist_backtest_job(job: dict[str, Any]) -> None:
