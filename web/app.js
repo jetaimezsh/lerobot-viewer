@@ -34,6 +34,8 @@ const state = {
   visibleBacktestModels: new Set(),
   visibleBacktestDims: new Set(),
   backtestDimsInitialized: false,
+  pollingBacktestJobs: new Set(),
+  displayedBacktestJobId: null,
   backtestChartStart: 0,
   backtestChartEnd: null,
   trainingFrameworks: [],
@@ -43,6 +45,8 @@ const state = {
   trainingJobs: [],
   trainingPipelines: [],
 };
+
+const ACTIVE_BACKTEST_JOB_KEY = "lerobotViewer.activeBacktestJobId";
 
 const els = {
   datasetPath: document.getElementById("datasetPath"),
@@ -1210,6 +1214,7 @@ function refreshMarkButtons() {
   if (episodeIndex === null) {
     els.markEpisode.classList.remove("active", "mark-delete", "mark-export");
     els.markRange.classList.remove("active", "mark-delete", "mark-export");
+    refreshBacktestSampleButton();
     return;
   }
   const existing = findEpisodeMark(episodeIndex);
@@ -1226,23 +1231,23 @@ function refreshMarkButtons() {
   els.markRange.classList.toggle("active", rangeActive);
   els.markRange.classList.toggle("mark-delete", rangeActive && colorClass === "mark-delete");
   els.markRange.classList.toggle("mark-export", rangeActive && colorClass === "mark-export");
+  refreshBacktestSampleButton();
 }
 
 function sendCurrentEpisodeToBacktest() {
-  addCurrentEpisodeToBacktest();
-  goToModelBacktest();
+  toggleCurrentEpisodeBacktest();
 }
 
 function backtestEpisodeKey(item) {
   return `${item.dataset_path}::${item.episode_index}`;
 }
 
-function addCurrentEpisodeToBacktest() {
+function currentBacktestEpisodeItem() {
   const episodeIndex = currentEpisodeIndex();
-  if (episodeIndex === null || !state.summary || !state.episode) return;
+  if (episodeIndex === null || !state.summary || !state.episode) return null;
   const length = Number(state.episode.length || state.elapsed.length || 0);
   const fps = Number(state.summary.fps || 0);
-  const item = {
+  return {
     dataset_id: state.summary.id,
     dataset_path: state.summary.root,
     dataset_name: datasetName(state.summary.root),
@@ -1253,14 +1258,55 @@ function addCurrentEpisodeToBacktest() {
     tasks: Array.isArray(state.episode.tasks) ? state.episode.tasks : [],
     video_keys: state.summary.video_keys || [],
   };
+}
+
+function currentBacktestEpisodePoolIndex() {
+  const item = currentBacktestEpisodeItem();
+  if (!item) return -1;
+  const key = backtestEpisodeKey(item);
+  return state.backtestEpisodes.findIndex((existing) => backtestEpisodeKey(existing) === key);
+}
+
+function refreshBacktestSampleButton() {
+  if (!els.sendEpisodeToBacktest) return;
+  const active = currentBacktestEpisodePoolIndex() >= 0;
+  els.sendEpisodeToBacktest.classList.toggle("active", active);
+  els.sendEpisodeToBacktest.classList.toggle("mark-backtest", active);
+  els.sendEpisodeToBacktest.textContent = active ? "已加入回测样本池" : "加入回测样本池";
+}
+
+function toggleCurrentEpisodeBacktest() {
+  const item = currentBacktestEpisodeItem();
+  if (!item) return;
+  const existingIndex = currentBacktestEpisodePoolIndex();
+  if (existingIndex >= 0) {
+    state.backtestEpisodes.splice(existingIndex, 1);
+    if (els.editEpisodeMeta) {
+      els.editEpisodeMeta.textContent = `已从回测样本池移除：${item.dataset_name} / Episode ${item.episode_index}。`;
+    }
+  } else {
+    state.backtestEpisodes.push(item);
+    if (els.editEpisodeMeta) {
+      els.editEpisodeMeta.textContent = `已加入回测样本池：${item.dataset_name} / Episode ${item.episode_index}。`;
+    }
+  }
+  renderBacktestSelectionTable();
+  renderPipelineSetup();
+  refreshBacktestSampleButton();
+}
+
+function addCurrentEpisodeToBacktest() {
+  const item = currentBacktestEpisodeItem();
+  if (!item) return;
   if (!state.backtestEpisodes.some((existing) => backtestEpisodeKey(existing) === backtestEpisodeKey(item))) {
     state.backtestEpisodes.push(item);
   }
   renderBacktestSelectionTable();
   renderPipelineSetup();
   if (els.editEpisodeMeta) {
-    els.editEpisodeMeta.textContent = `已加入回测样本池：${item.dataset_name} / Episode ${episodeIndex}。`;
+    els.editEpisodeMeta.textContent = `已加入回测样本池：${item.dataset_name} / Episode ${item.episode_index}。`;
   }
+  refreshBacktestSampleButton();
 }
 
 function datasetName(path) {
@@ -2499,12 +2545,14 @@ function removeBacktestEpisode(key) {
   state.backtestEpisodes = state.backtestEpisodes.filter((item) => backtestEpisodeKey(item) !== key);
   renderBacktestSelectionTable();
   renderPipelineSetup();
+  refreshBacktestSampleButton();
 }
 
 function clearBacktestSelection() {
   state.backtestEpisodes = [];
   renderBacktestSelectionTable();
   renderPipelineSetup();
+  refreshBacktestSampleButton();
 }
 
 async function runSelectedBacktest() {
@@ -2533,7 +2581,8 @@ async function runSelectedBacktest() {
       }),
     });
     state.visibleBacktestModels = new Set(profileIds);
-    renderBacktestJobStatus(job);
+    rememberActiveBacktestJob(job.job_id);
+    showBacktestJobStatus(job);
     await loadBacktestJobs();
     pollBacktestJob(job.job_id);
   } catch (error) {
@@ -2542,29 +2591,118 @@ async function runSelectedBacktest() {
 }
 
 async function pollBacktestJob(jobId) {
+  if (!jobId || state.pollingBacktestJobs.has(jobId)) return;
+  state.pollingBacktestJobs.add(jobId);
   try {
     while (true) {
-      await delay(900);
       const job = await api(`/api/backtests/jobs/${encodeURIComponent(jobId)}`);
-      renderBacktestJobStatus(job);
+      if (isDisplayingBacktestJob(jobId)) renderBacktestJobStatus(job);
       await loadBacktestJobs();
       if (job.status === "done") {
-        state.backtestResult = job.result || await api(`/api/backtests/runs/${encodeURIComponent(job.run_id)}`);
-        state.visibleBacktestModels = new Set(state.backtestResult.profile_ids || state.backtestResult.model_ids || []);
-        renderBacktestResult();
+        if (isDisplayingBacktestJob(jobId)) {
+          state.backtestResult = job.result || await api(`/api/backtests/runs/${encodeURIComponent(job.run_id)}`);
+          state.visibleBacktestModels = new Set(state.backtestResult.profile_ids || state.backtestResult.model_ids || []);
+          renderBacktestResult();
+        }
+        forgetActiveBacktestJob(jobId);
         await loadBacktestJobs();
         await loadBacktestHistory();
         return;
       }
       if (job.status === "failed") {
-        els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测失败</h4><p>${escapeHtml(job.error || "后台任务失败")}</p></div>`;
+        if (isDisplayingBacktestJob(jobId)) {
+          els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测失败</h4><p>${escapeHtml(job.error || "后台任务失败")}</p></div>`;
+          state.displayedBacktestJobId = null;
+        }
+        forgetActiveBacktestJob(jobId);
         await loadBacktestJobs();
         await loadBacktestHistory();
         return;
       }
+      if (job.status === "interrupted") {
+        if (isDisplayingBacktestJob(jobId)) {
+          els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测任务已中断</h4><p>${escapeHtml(job.error || "服务重启后无法继续这个后台任务")}</p></div>`;
+          state.displayedBacktestJobId = null;
+        }
+        forgetActiveBacktestJob(jobId);
+        await loadBacktestJobs();
+        return;
+      }
+      await delay(900);
     }
   } catch (error) {
-    els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测状态读取失败</h4><p>${escapeHtml(error.message)}</p></div>`;
+    forgetActiveBacktestJob(jobId);
+    if (isDisplayingBacktestJob(jobId)) {
+      els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测状态读取失败</h4><p>${escapeHtml(error.message)}</p></div>`;
+      state.displayedBacktestJobId = null;
+    }
+  } finally {
+    state.pollingBacktestJobs.delete(jobId);
+  }
+}
+
+function showBacktestJobStatus(job) {
+  state.displayedBacktestJobId = job.job_id;
+  renderBacktestJobStatus(job);
+}
+
+function isDisplayingBacktestJob(jobId) {
+  return state.displayedBacktestJobId === jobId;
+}
+
+function rememberActiveBacktestJob(jobId) {
+  try {
+    localStorage.setItem(ACTIVE_BACKTEST_JOB_KEY, jobId);
+  } catch (_) {}
+}
+
+function forgetActiveBacktestJob(jobId) {
+  try {
+    if (!jobId || localStorage.getItem(ACTIVE_BACKTEST_JOB_KEY) === jobId) {
+      localStorage.removeItem(ACTIVE_BACKTEST_JOB_KEY);
+    }
+  } catch (_) {}
+}
+
+async function restoreActiveBacktestJob() {
+  let jobId = "";
+  try {
+    jobId = localStorage.getItem(ACTIVE_BACKTEST_JOB_KEY) || "";
+  } catch (_) {
+    jobId = "";
+  }
+  if (!jobId) return;
+  setView("modelBacktestView");
+  try {
+    const job = await api(`/api/backtests/jobs/${encodeURIComponent(jobId)}`);
+    showBacktestJobStatus(job);
+    await loadBacktestJobs();
+    if (job.status === "done") {
+      state.backtestResult = job.result || await api(`/api/backtests/runs/${encodeURIComponent(job.run_id)}`);
+      state.visibleBacktestModels = new Set(state.backtestResult.profile_ids || state.backtestResult.model_ids || []);
+      renderBacktestResult();
+      forgetActiveBacktestJob(jobId);
+      await loadBacktestHistory();
+      return;
+    }
+    if (job.status === "failed") {
+      els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测失败</h4><p>${escapeHtml(job.error || "后台任务失败")}</p></div>`;
+      state.displayedBacktestJobId = null;
+      forgetActiveBacktestJob(jobId);
+      await loadBacktestHistory();
+      return;
+    }
+    if (job.status === "interrupted") {
+      els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测任务已中断</h4><p>${escapeHtml(job.error || "服务重启后无法继续这个后台任务")}</p></div>`;
+      state.displayedBacktestJobId = null;
+      forgetActiveBacktestJob(jobId);
+      return;
+    }
+    pollBacktestJob(jobId);
+  } catch (error) {
+    forgetActiveBacktestJob(jobId);
+    state.displayedBacktestJobId = null;
+    els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测任务未找到</h4><p>${escapeHtml(error.message)}</p></div>`;
   }
 }
 
@@ -2595,6 +2733,7 @@ function renderBacktestJobStatus(job) {
 
 function clearBacktestResult() {
   state.backtestResult = null;
+  state.displayedBacktestJobId = null;
   state.visibleBacktestModels = new Set();
   els.backtestResult.classList.add("empty");
   els.backtestResult.innerHTML = "尚未运行回测。";
@@ -2611,6 +2750,7 @@ function clearBacktestResult() {
 function renderBacktestResult() {
   const run = state.backtestResult;
   if (!run) return;
+  state.displayedBacktestJobId = null;
   const summary = run.summary || {};
   const rows = [
     ["组合数", summary.total],
@@ -2653,12 +2793,28 @@ function renderBacktestExportActions(run) {
     return;
   }
   const base = `/api/backtests/runs/${encodeURIComponent(run.run_id)}/export`;
+  const actionBase = `/api/backtests/runs/${encodeURIComponent(run.run_id)}/actions/export`;
+  const actionLinks = (run.results || [])
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => item.status === "done" && item.series?.length)
+    .map(({ item, index }) => {
+      const label = `${item.profile_name || modelName(item.profile_id || item.model_id)} / ${item.dataset_name || datasetName(item.dataset_path)} / Episode ${item.episode_index}`;
+      return `<a href="${actionBase}?result_index=${encodeURIComponent(index)}" download>${escapeHtml(label)}</a>`;
+    });
   els.backtestExportActions.classList.remove("empty");
   els.backtestExportActions.innerHTML = `
     <span>导出报告</span>
     <a href="${base}?format=html" target="_blank" rel="noopener">HTML</a>
     <a href="${base}?format=csv" target="_blank" rel="noopener">CSV</a>
     <a href="${base}?format=json" target="_blank" rel="noopener">JSON</a>
+    ${actionLinks.length ? `
+      <span>Action 明细</span>
+      <a href="${actionBase}" download>批量 ZIP</a>
+      <details class="export-details">
+        <summary>单组 CSV</summary>
+        <div class="export-link-list">${actionLinks.join("")}</div>
+      </details>
+    ` : ""}
   `;
 }
 
@@ -2722,6 +2878,7 @@ function renderBacktestHistory(runs) {
 
 async function loadBacktestRun(runId) {
   const run = await api(`/api/backtests/runs/${encodeURIComponent(runId)}`);
+  state.displayedBacktestJobId = null;
   state.backtestResult = run;
   state.visibleBacktestModels = new Set(run.profile_ids || run.model_ids || []);
   renderBacktestResult();
@@ -3800,3 +3957,4 @@ loadEnv().catch((error) => {
 });
 loadHistory().catch(() => {});
 loadModels().catch(() => {});
+restoreActiveBacktestJob().catch(() => {});

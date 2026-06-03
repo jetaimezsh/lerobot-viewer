@@ -14,7 +14,12 @@ import pandas as pd
 from pydantic import BaseModel, Field
 
 from app.adapters import BacktestAdapter, get_adapter, list_adapters
-from app.backtest_store import save_backtest_run
+from app.backtest_store import (
+    list_backtest_job_records,
+    load_backtest_job_record,
+    save_backtest_job_record,
+    save_backtest_run,
+)
 from app.editing import ffmpeg_executable, ffprobe_video_stream, read_episode_frames, resolve_dataset_path
 from app.operation_log import log_operation
 from app.profile_store import (
@@ -288,6 +293,7 @@ def submit_backtest_job(request: BacktestRunRequest, cache_loader: Any) -> dict[
     }
     with BACKTEST_LOCK:
         BACKTEST_JOBS[job_id] = job
+        persist_backtest_job(job)
     future = BACKTEST_EXECUTOR.submit(_run_backtest_job, job_id, request, cache_loader)
     with BACKTEST_LOCK:
         BACKTEST_JOBS[job_id]["future"] = future
@@ -296,16 +302,22 @@ def submit_backtest_job(request: BacktestRunRequest, cache_loader: Any) -> dict[
 
 def list_backtest_jobs() -> list[dict[str, Any]]:
     with BACKTEST_LOCK:
-        jobs = [public_backtest_job(job, include_result=False) for job in BACKTEST_JOBS.values()]
+        memory_jobs = {job_id: public_backtest_job(job, include_result=False) for job_id, job in BACKTEST_JOBS.items()}
+    jobs_by_id = {job_id: normalize_persisted_job(job) for job_id, job in memory_jobs.items()}
+    for job in list_backtest_job_records():
+        job_id = str(job.get("job_id") or "")
+        if job_id and job_id not in jobs_by_id:
+            jobs_by_id[job_id] = normalize_persisted_job(job)
+    jobs = list(jobs_by_id.values())
     return sorted(jobs, key=lambda item: item.get("created_at") or "", reverse=True)
 
 
 def get_backtest_job(job_id: str) -> dict[str, Any]:
     with BACKTEST_LOCK:
         job = BACKTEST_JOBS.get(job_id)
-        if not job:
-            raise KeyError(f"backtest job not found: {job_id}")
-        return public_backtest_job(job)
+        if job:
+            return public_backtest_job(job)
+    return normalize_persisted_job(load_backtest_job_record(job_id))
 
 
 def backtest_worker_status() -> dict[str, Any]:
@@ -326,6 +338,7 @@ def _run_backtest_job(job_id: str, request: BacktestRunRequest, cache_loader: An
         job = BACKTEST_JOBS[job_id]
         job["status"] = "running"
         job["started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        persist_backtest_job(job)
     try:
         run = run_backtest(request, cache_loader)
         with BACKTEST_LOCK:
@@ -335,6 +348,7 @@ def _run_backtest_job(job_id: str, request: BacktestRunRequest, cache_loader: An
             job["run_id"] = run.get("run_id")
             job["summary"] = run.get("summary")
             job["result"] = run
+            persist_backtest_job(job)
         log_operation(
             "backtest_job_done",
             "success",
@@ -347,6 +361,7 @@ def _run_backtest_job(job_id: str, request: BacktestRunRequest, cache_loader: An
             job["status"] = "failed"
             job["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             job["error"] = str(exc)
+            persist_backtest_job(job)
         log_operation("backtest_job_done", "failed", target=job_id, error=str(exc))
 
 
@@ -356,6 +371,19 @@ def public_backtest_job(job: dict[str, Any], include_result: bool = True) -> dic
         for key, value in job.items()
         if key != "future" and not isinstance(value, Future) and (include_result or key != "result")
     }
+
+
+def persist_backtest_job(job: dict[str, Any]) -> None:
+    save_backtest_job_record(public_backtest_job(job, include_result=False))
+
+
+def normalize_persisted_job(job: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(job)
+    if normalized.get("status") in {"queued", "running"} and normalized.get("job_id") not in BACKTEST_JOBS:
+        normalized["status"] = "interrupted"
+        normalized["finished_at"] = normalized.get("finished_at") or time.strftime("%Y-%m-%d %H:%M:%S")
+        normalized["error"] = normalized.get("error") or "server restarted before this backtest job finished"
+    return normalized
 
 
 def public_episode_ref(cache: Any, ref: BacktestEpisodeRef) -> dict[str, Any]:

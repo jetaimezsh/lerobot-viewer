@@ -1211,6 +1211,42 @@ h3 {
   color: #1d4ed8;
 }
 
+.export-details {
+  position: relative;
+}
+
+.export-details summary {
+  min-height: 30px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  background: #edf2f7;
+  color: #334155;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.export-link-list {
+  position: absolute;
+  z-index: 20;
+  display: grid;
+  gap: 6px;
+  min-width: 280px;
+  max-width: min(560px, 80vw);
+  max-height: 320px;
+  margin-top: 6px;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+
+.export-link-list a {
+  justify-content: flex-start;
+  overflow-wrap: anywhere;
+}
+
 .backtest-history-surface {
   margin-bottom: 16px;
 }
@@ -1611,6 +1647,13 @@ h3 {
   box-shadow: 0 0 0 2px rgba(47, 158, 68, 0.25);
   background: #1a3a1a;
   color: #bbf7d0;
+}
+
+.mark-button.active.mark-backtest {
+  border-color: #0f9f6e;
+  box-shadow: 0 0 0 2px rgba(15, 159, 110, 0.22);
+  background: #064e3b;
+  color: #d1fae5;
 }
 
 .edit-draft {

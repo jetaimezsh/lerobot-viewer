@@ -4,6 +4,8 @@ import sys
 import tempfile
 import time
 import uuid
+import zipfile
+from io import BytesIO
 from pathlib import Path
 
 import numpy as np
@@ -12,7 +14,13 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.backtest_store import export_backtest_run, load_backtest_run
+from app.backtest_store import (
+    export_action_csv,
+    export_action_zip,
+    export_backtest_run,
+    load_backtest_job_record,
+    load_backtest_run,
+)
 from app.backtesting import (
     BacktestEpisodeRef,
     BacktestRunRequest,
@@ -154,6 +162,7 @@ def check_mock_backtest_metrics() -> None:
 
 def check_multi_dataset_backtest_request() -> None:
     profile_id = new_profile_id("mock_multi")
+    second_profile_id = new_profile_id("mock_multi_b")
     with tempfile.TemporaryDirectory(dir=PROJECT_ROOT) as directory:
         work = Path(directory)
         dataset_a = work / "dataset_a"
@@ -166,9 +175,10 @@ def check_multi_dataset_backtest_request() -> None:
         }
         try:
             create_mock_profile(profile_id, [0.0, 0.0])
+            create_mock_profile(second_profile_id, [1.0, 1.0])
             result = run_backtest(
                 BacktestRunRequest(
-                    profile_ids=[profile_id],
+                    profile_ids=[profile_id, second_profile_id],
                     episodes=[
                         BacktestEpisodeRef(dataset_path=str(dataset_a), episode_index=0),
                         BacktestEpisodeRef(dataset_path=str(dataset_b), episode_index=0),
@@ -176,15 +186,15 @@ def check_multi_dataset_backtest_request() -> None:
                 ),
                 lambda path: caches[str(Path(path).resolve())],
             )
-            assert_equal(result["summary"]["done"], 2, "multi-dataset backtest done count")
-            assert_equal(result["profile_ids"], [profile_id], "multi-dataset profile ids")
+            assert_equal(result["summary"]["done"], 4, "multi-dataset multi-profile backtest done count")
+            assert_equal(result["profile_ids"], [profile_id, second_profile_id], "multi-dataset profile ids")
             assert_equal(len(result["dataset_paths"]), 2, "multi-dataset path count")
             assert_equal(len({item["episode_key"] for item in result["results"]}), 2, "multi-dataset episode keys")
             assert_equal(result["results"][0]["dataset_name"], "dataset_a", "first result dataset name")
             assert_equal(result["results"][1]["dataset_name"], "dataset_b", "second result dataset name")
             assert_equal(result["results"][0]["profile_snapshot"]["id"], profile_id, "profile snapshot captured")
             persisted = load_backtest_run(result["run_id"])
-            assert_equal(persisted["summary"]["done"], 2, "persisted backtest done count")
+            assert_equal(persisted["summary"]["done"], 4, "persisted backtest done count")
             csv_text, csv_media, csv_name = export_backtest_run(result, "csv")
             assert_equal("profile_id" in csv_text, True, "csv export includes profile_id")
             assert_equal(csv_media.startswith("text/csv"), True, "csv export media type")
@@ -193,8 +203,23 @@ def check_multi_dataset_backtest_request() -> None:
             assert_equal("<table>" in html_text, True, "html export includes table")
             assert_equal(html_media.startswith("text/html"), True, "html export media type")
             assert_equal(html_name.endswith(".html"), True, "html export filename")
+            action_csv, action_media, action_name = export_action_csv(result, 0)
+            assert_equal("ground_truth_action_0" in action_csv, True, "action csv includes ground truth")
+            assert_equal("predicted_action_0" in action_csv, True, "action csv includes prediction")
+            assert_equal("error_action_0" in action_csv, True, "action csv includes error")
+            assert_equal(action_media.startswith("text/csv"), True, "action csv media type")
+            assert_equal(action_name.endswith("_actions.csv"), True, "action csv filename")
+            zip_bytes, zip_media, zip_name = export_action_zip(result)
+            assert_equal(zip_media, "application/zip", "action zip media type")
+            assert_equal(zip_name.endswith("_actions.zip"), True, "action zip filename")
+            with zipfile.ZipFile(BytesIO(zip_bytes), "r") as archive:
+                names = archive.namelist()
+                assert_equal(len(names), 4, "action zip one csv per model-episode")
+                first_csv = archive.read(names[0]).decode("utf-8-sig")
+                assert_equal("predicted_action_1" in first_csv, True, "action zip csv includes action dimensions")
         finally:
             cleanup_profile(profile_id)
+            cleanup_profile(second_profile_id)
 
 
 def check_backtest_worker_job() -> None:
@@ -240,6 +265,9 @@ def check_backtest_worker_job() -> None:
             assert_equal(bool(latest["run_id"]), True, "worker job persisted run id")
             assert_equal(bool(second_latest["run_id"]), True, "second worker job persisted run id")
             assert_equal(latest["run_id"] != second_latest["run_id"], True, "queued jobs have separate runs")
+            persisted_job = load_backtest_job_record(first_job["job_id"])
+            assert_equal(persisted_job["status"], "done", "worker job status persisted")
+            assert_equal(persisted_job["run_id"], latest["run_id"], "worker job run id persisted")
             persisted = load_backtest_run(latest["run_id"])
             assert_equal(persisted["summary"]["done"], 1, "worker persisted done count")
         finally:

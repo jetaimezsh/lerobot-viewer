@@ -33,7 +33,7 @@ from app.backtesting import (
     test_profile_on_frame,
     unload_profile_adapter,
 )
-from app.backtest_store import export_backtest_run, list_backtest_runs, load_backtest_run
+from app.backtest_store import export_action_csv, export_action_zip, export_backtest_run, list_backtest_runs, load_backtest_run
 from app.editing import (
     EditApplyRequest,
     EditDryRunRequest,
@@ -758,6 +758,31 @@ def backtest_run_export(run_id: str, format: str = Query("json")) -> Response:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     log_operation("backtest_export", "success", target=run_id, details={"format": format})
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/backtests/runs/{run_id}/actions/export")
+def backtest_actions_export(run_id: str, result_index: int | None = Query(None)) -> Response:
+    try:
+        run = load_backtest_run(run_id)
+        if result_index is None:
+            content, media_type, filename = export_action_zip(run)
+        else:
+            content, media_type, filename = export_action_csv(run, result_index)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    log_operation(
+        "backtest_action_export",
+        "success",
+        target=run_id,
+        details={"result_index": result_index, "batch": result_index is None},
+    )
     return Response(
         content=content,
         media_type=media_type,
