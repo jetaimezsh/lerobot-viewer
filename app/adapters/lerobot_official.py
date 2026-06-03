@@ -19,6 +19,10 @@ class LeRobotOfficialAdapter(BacktestAdapter):
         super().__init__()
         self.policy = None
         self.torch = None
+        self.preprocessor = None
+        self.postprocessor = None
+        self.processor_context_key: str | None = None
+        self.processor_status = "not_initialized"
 
     @classmethod
     def default_runtime_params(cls) -> dict[str, Any]:
@@ -87,6 +91,37 @@ class LeRobotOfficialAdapter(BacktestAdapter):
             policy.eval()
         self.policy = policy
 
+    def prepare_backtest_context(self, dataset: Any) -> None:
+        if self.policy is None:
+            return
+        context_key = str(getattr(dataset, "root", "")) or "default"
+        if context_key == self.processor_context_key:
+            return
+        self.processor_context_key = context_key
+        self.preprocessor = None
+        self.postprocessor = None
+        self.processor_status = "unavailable"
+        factory = find_processor_factory()
+        if factory is None:
+            self.processor_status = "unavailable: make_pre_post_processors not found"
+            return
+        config = getattr(self.policy, "config", None)
+        if config is None:
+            self.processor_status = "unavailable: policy has no config"
+            return
+        dataset_stats = getattr(dataset, "stats", None) or None
+        checkpoint_path = (self.profile or {}).get("checkpoint_path")
+        try:
+            self.preprocessor, self.postprocessor = make_processors_compat(
+                factory=factory,
+                config=config,
+                checkpoint_path=checkpoint_path,
+                dataset_stats=dataset_stats,
+            )
+            self.processor_status = "active"
+        except Exception as exc:
+            self.processor_status = f"failed: {exc}"
+
     def _load_policy(self, path: str) -> Any:
         errors = []
         try:
@@ -118,32 +153,50 @@ class LeRobotOfficialAdapter(BacktestAdapter):
     def predict(self, observation: dict[str, Any]) -> np.ndarray:
         if self.policy is None or self.torch is None or self.profile is None:
             raise RuntimeError("model is not loaded")
-        batch = {key: self._to_tensor(value) for key, value in observation.items()}
+        batch = self._build_policy_batch(observation)
         with self.torch.inference_mode():
             action = self.policy.select_action(batch)
-        if hasattr(action, "detach"):
-            action = action.detach().to("cpu").numpy()
-        array = np.asarray(action, dtype=np.float64)
-        if array.ndim == 2:
-            array = array[0]
-        return array.reshape(-1)
+        if self.postprocessor is not None:
+            action = self.postprocessor(action)
+        return policy_action_to_array(action)
 
-    def _to_tensor(self, value: Any) -> Any:
+    def _build_policy_batch(self, observation: dict[str, Any]) -> dict[str, Any]:
+        if self.preprocessor is not None:
+            sample = {key: self._to_tensor(value, add_batch=False) for key, value in observation.items()}
+            try:
+                return self.preprocessor(sample)
+            except Exception as first_exc:
+                batched = {key: self._to_tensor(value, add_batch=True) for key, value in observation.items()}
+                try:
+                    return self.preprocessor(batched)
+                except Exception as second_exc:
+                    raise RuntimeError(
+                        "LeRobot preprocessor failed for both unbatched and batched observations: "
+                        f"{first_exc}; {second_exc}"
+                    ) from second_exc
+        return {key: self._to_tensor(value, add_batch=True) for key, value in observation.items()}
+
+    def _to_tensor(self, value: Any, add_batch: bool) -> Any:
         if isinstance(value, str):
-            return [value]
+            return [value] if add_batch else value
         array = np.asarray(value)
         if array.dtype.kind in {"U", "S", "O"}:
             return value
         tensor = self.torch.as_tensor(array)
         if tensor.ndim == 0:
             tensor = tensor.reshape(1)
-        tensor = tensor.unsqueeze(0).to((self.profile or {}).get("device") or "cuda")
-        return tensor
+        if add_batch:
+            tensor = tensor.unsqueeze(0)
+        return tensor.to((self.profile or {}).get("device") or "cuda")
 
     def unload(self) -> None:
         self.policy = None
         self.torch = None
         self.profile = None
+        self.preprocessor = None
+        self.postprocessor = None
+        self.processor_context_key = None
+        self.processor_status = "not_initialized"
 
     def runtime_info(self) -> dict[str, Any]:
         parameter_count = None
@@ -152,7 +205,62 @@ class LeRobotOfficialAdapter(BacktestAdapter):
                 parameter_count = int(sum(parameter.numel() for parameter in self.policy.parameters()))
             except Exception:
                 parameter_count = None
-        return {"parameter_count": parameter_count}
+        return {"parameter_count": parameter_count, "processor_status": self.processor_status}
+
+
+def policy_action_to_array(action: Any) -> np.ndarray:
+    if isinstance(action, dict):
+        for key in ["action", "actions", "predicted_action"]:
+            if key in action:
+                action = action[key]
+                break
+        if hasattr(action, "detach"):
+            action = action.detach().to("cpu").numpy()
+    elif hasattr(action, "detach"):
+        action = action.detach().to("cpu").numpy()
+    array = np.asarray(action, dtype=np.float64)
+    if array.ndim == 2:
+        array = array[0]
+    return array.reshape(-1)
+
+
+def find_processor_factory() -> Any | None:
+    for module_name in ["lerobot.policies", "lerobot.policies.factory"]:
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        factory = getattr(module, "make_pre_post_processors", None)
+        if factory is not None:
+            return factory
+    return None
+
+
+def make_processors_compat(
+    factory: Any,
+    config: Any,
+    checkpoint_path: str | None,
+    dataset_stats: dict[str, Any] | None,
+) -> tuple[Any, Any]:
+    attempts = [
+        ((config,), {"pretrained_path": checkpoint_path, "dataset_stats": dataset_stats}),
+        ((), {"policy_cfg": config, "pretrained_path": checkpoint_path, "dataset_stats": dataset_stats}),
+        ((config,), {"pretrained_path": checkpoint_path}),
+        ((), {"policy_cfg": config, "pretrained_path": checkpoint_path}),
+        ((config,), {"dataset_stats": dataset_stats}),
+        ((), {"policy_cfg": config, "dataset_stats": dataset_stats}),
+        ((config,), {}),
+        ((), {"policy_cfg": config}),
+    ]
+    errors: list[str] = []
+    for args, kwargs in attempts:
+        filtered_kwargs = {key: value for key, value in kwargs.items() if value is not None}
+        try:
+            return factory(*args, **filtered_kwargs)
+        except TypeError as exc:
+            errors.append(str(exc))
+            continue
+    raise RuntimeError("; ".join(errors[-3:]) or "no compatible processor factory signature")
 
 
 def infer_policy_type(config: dict[str, Any] | None, path: Path) -> str | None:

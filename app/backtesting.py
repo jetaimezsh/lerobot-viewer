@@ -194,6 +194,7 @@ def test_profile_on_frame(profile_id: str, request: ProfileTestRequest, cache_lo
         if adapter_needs_video_observations(adapter, cache.features)
         else {}
     )
+    adapter.prepare_backtest_context(cache)
     observation = build_observation(frame, cache.features, video_observations, 0)
     started = time.perf_counter()
     action = adapter.predict(observation)
@@ -431,6 +432,7 @@ def run_episode_backtest(
         else {}
     )
     predictions = []
+    adapter.prepare_backtest_context(cache)
     adapter.reset_episode()
     try:
         for frame_offset, (_, frame) in enumerate(frames.iterrows()):

@@ -31,6 +31,7 @@ from app.backtesting import (
     test_profile_on_frame,
 )
 from app.profile_store import create_profile, delete_profile, load_profile, update_profile
+from app.adapters.lerobot_official import LeRobotOfficialAdapter, make_processors_compat, policy_action_to_array
 from app.main import DatasetCache
 from scripts.smoke_test import assert_equal, create_no_video_dataset
 
@@ -271,6 +272,84 @@ def check_video_observation_builder() -> None:
     assert_equal(float(observation["observation.images.wrist"].max()), 1.0, "wrist image normalized value")
 
 
+class FakeTensor:
+    def __init__(self, value):
+        self.value = np.asarray(value)
+
+    @property
+    def ndim(self):
+        return self.value.ndim
+
+    def reshape(self, *shape):
+        return FakeTensor(self.value.reshape(*shape))
+
+    def unsqueeze(self, axis):
+        return FakeTensor(np.expand_dims(self.value, axis))
+
+    def to(self, _device):
+        return self
+
+    def __array__(self, dtype=None):
+        return np.asarray(self.value, dtype=dtype)
+
+
+class FakeInferenceMode:
+    def __enter__(self):
+        return None
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class FakeTorch:
+    @staticmethod
+    def as_tensor(value):
+        return FakeTensor(value)
+
+    @staticmethod
+    def inference_mode():
+        return FakeInferenceMode()
+
+
+class FakePolicy:
+    config = {"type": "fake"}
+
+    def __init__(self):
+        self.seen_batch = None
+
+    def select_action(self, batch):
+        self.seen_batch = batch
+        assert_equal(batch.get("normalized"), True, "official adapter preprocessor applied")
+        return np.asarray([[0.25, 0.5]], dtype=np.float32)
+
+
+def check_official_adapter_processor_flow() -> None:
+    adapter = LeRobotOfficialAdapter()
+    policy = FakePolicy()
+    adapter.profile = {"id": "fake", "device": "cpu", "checkpoint_path": "/tmp/fake"}
+    adapter.torch = FakeTorch()
+    adapter.policy = policy
+    adapter.preprocessor = lambda sample: {"normalized": True, "sample": sample}
+    adapter.postprocessor = lambda action: np.asarray(action) * 4.0
+    action = adapter.predict({"observation.state": np.asarray([1.0, 2.0]), "timestamp": 0.0})
+    assert_equal(action.tolist(), [1.0, 2.0], "official adapter postprocessor unnormalizes action")
+    assert_equal("sample" in policy.seen_batch, True, "official adapter forwards preprocessed sample")
+    assert_equal(policy_action_to_array({"action": [[3.0, 4.0]]}).tolist(), [3.0, 4.0], "policy action dict flattened")
+
+    def keyword_only_factory(*, policy_cfg, pretrained_path):
+        assert_equal(policy_cfg["type"], "fake", "processor compat forwards policy config")
+        assert_equal(pretrained_path, "/tmp/fake", "processor compat forwards checkpoint path")
+        return "pre", "post"
+
+    preprocessor, postprocessor = make_processors_compat(
+        keyword_only_factory,
+        {"type": "fake"},
+        "/tmp/fake",
+        {"action": {"mean": [0.0], "std": [1.0]}},
+    )
+    assert_equal([preprocessor, postprocessor], ["pre", "post"], "processor factory compatibility")
+
+
 def check_real_video_decode_if_available() -> None:
     from app.editing import ffmpeg_executable
 
@@ -304,6 +383,8 @@ def main() -> None:
     print("ok: backtest worker job passed")
     check_video_observation_builder()
     print("ok: video observation builder passed")
+    check_official_adapter_processor_flow()
+    print("ok: official adapter processor flow passed")
     check_real_video_decode_if_available()
 
 

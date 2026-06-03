@@ -35,6 +35,9 @@ class BacktestAdapter(ABC):
     def predict(self, observation: dict[str, Any]) -> np.ndarray:
         ...
 
+    def prepare_backtest_context(self, dataset: Any) -> None:
+        return None
+
     @abstractmethod
     def reset_episode(self) -> None:
         ...
