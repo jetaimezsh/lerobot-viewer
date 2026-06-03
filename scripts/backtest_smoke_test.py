@@ -6,6 +6,9 @@ import time
 import uuid
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -14,7 +17,9 @@ from app.backtesting import (
     BacktestEpisodeRef,
     BacktestRunRequest,
     ProfileTestRequest,
+    build_observation,
     close_profile_adapter,
+    decode_video_observations,
     get_backtest_job,
     inspect_profile_record,
     list_backtest_jobs,
@@ -204,6 +209,49 @@ def check_backtest_worker_job() -> None:
             cleanup_profile(profile_id)
 
 
+def check_video_observation_builder() -> None:
+    features = {
+        "observation.state": {"dtype": "float32", "shape": [2]},
+        "observation.images.front": {"dtype": "video", "shape": [3, 8, 8]},
+        "observation.images.wrist": {"dtype": "video", "shape": [3, 8, 8]},
+        "action": {"dtype": "float32", "shape": [2]},
+    }
+    frame = pd.Series(
+        {
+            "observation.state": np.array([1, 2], dtype=np.float32),
+            "action": np.array([0, 0], dtype=np.float32),
+            "task_index": 0,
+            "timestamp": 0.0,
+        }
+    )
+    video_observations = {
+        "observation.images.front": np.zeros((2, 3, 8, 8), dtype=np.float32),
+        "observation.images.wrist": np.ones((2, 3, 8, 8), dtype=np.float32),
+    }
+    observation = build_observation(frame, features, video_observations, 1)
+    assert_equal("observation.images.front" in observation, True, "front image observation present")
+    assert_equal("observation.images.wrist" in observation, True, "wrist image observation present")
+    assert_equal(list(observation["observation.images.wrist"].shape), [3, 8, 8], "wrist image chw shape")
+    assert_equal(float(observation["observation.images.wrist"].max()), 1.0, "wrist image normalized value")
+
+
+def check_real_video_decode_if_available() -> None:
+    from app.editing import ffmpeg_executable
+
+    dataset = PROJECT_ROOT / "sample_datasets" / "pusht"
+    if not dataset.exists() or not ffmpeg_executable():
+        print("skip: video observation decode check skipped")
+        return
+    cache = DatasetCache(dataset)
+    episode = cache.episode_record(0)
+    decoded = decode_video_observations(cache, episode, 0, 2)
+    key = cache.video_keys[0]
+    assert_equal(key in decoded, True, "decoded video key present")
+    assert_equal(list(decoded[key].shape[:2]), [2, 3], "decoded video nchw prefix")
+    assert_equal(float(decoded[key].min()) >= 0.0, True, "decoded video min range")
+    assert_equal(float(decoded[key].max()) <= 1.0, True, "decoded video max range")
+
+
 def main() -> None:
     status = model_runtime_status()
     assert_equal(status["linux_only"], True, "model runtime linux-only flag")
@@ -216,6 +264,9 @@ def main() -> None:
     print("ok: multi-dataset profile backtest request passed")
     check_backtest_worker_job()
     print("ok: backtest worker job passed")
+    check_video_observation_builder()
+    print("ok: video observation builder passed")
+    check_real_video_decode_if_available()
 
 
 if __name__ == "__main__":

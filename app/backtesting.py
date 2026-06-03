@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 from app.adapters import BacktestAdapter, get_adapter, list_adapters
 from app.backtest_store import save_backtest_run
-from app.editing import read_episode_frames, resolve_dataset_path
+from app.editing import ffmpeg_executable, ffprobe_video_stream, read_episode_frames, resolve_dataset_path
 from app.operation_log import log_operation
 from app.profile_store import (
     load_profile,
@@ -189,7 +189,12 @@ def test_profile_on_frame(profile_id: str, request: ProfileTestRequest, cache_lo
         raise ValueError("episode has no frames")
     frame_index = min(max(int(request.frame_index), 0), len(frames) - 1)
     frame = frames.iloc[frame_index]
-    observation = build_observation(frame, cache.features)
+    video_observations = (
+        decode_video_observations(cache, episode, frame_index, 1)
+        if adapter_needs_video_observations(adapter, cache.features)
+        else {}
+    )
+    observation = build_observation(frame, cache.features, video_observations, 0)
     started = time.perf_counter()
     action = adapter.predict(observation)
     elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
@@ -420,11 +425,16 @@ def run_episode_backtest(
         }
 
     ground_truth = np.array([flatten_action(value) for value in frames["action"]], dtype=np.float64)
+    video_observations = (
+        decode_video_observations(cache, episode, 0, len(frames))
+        if adapter_needs_video_observations(adapter, cache.features)
+        else {}
+    )
     predictions = []
     adapter.reset_episode()
     try:
-        for _, frame in frames.iterrows():
-            observation = build_observation(frame, cache.features)
+        for frame_offset, (_, frame) in enumerate(frames.iterrows()):
+            observation = build_observation(frame, cache.features, video_observations, frame_offset)
             predictions.append(flatten_action(adapter.predict(observation)))
     except Exception as exc:
         return {**source, **profile_info, "episode_index": episode_index, "status": "failed", "error": str(exc)}
@@ -489,17 +499,116 @@ def dataset_ref_id(path: Path) -> str:
     return hashlib.sha1(str(Path(path).resolve()).encode("utf-8")).hexdigest()[:12]
 
 
-def build_observation(frame: pd.Series, features: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def build_observation(
+    frame: pd.Series,
+    features: dict[str, dict[str, Any]],
+    video_observations: dict[str, np.ndarray] | None = None,
+    frame_offset: int = 0,
+) -> dict[str, Any]:
     observation = {}
     for key, feature in features.items():
-        if key == "action" or feature.get("dtype") == "video" or key not in frame:
+        if key == "action":
             continue
-        observation[key] = frame[key]
+        if feature.get("dtype") == "video":
+            if video_observations and key in video_observations:
+                frames = video_observations[key]
+                if frame_offset >= len(frames):
+                    raise ValueError(f"decoded video frames for {key} shorter than episode frames")
+                observation[key] = frames[frame_offset]
+            continue
+        if key in frame:
+            observation[key] = frame[key]
     if "task_index" in frame:
         observation["task_index"] = int(frame["task_index"])
     if "timestamp" in frame:
         observation["timestamp"] = float(frame["timestamp"])
     return observation
+
+
+def decode_video_observations(cache: Any, episode: pd.Series, start_frame: int, frame_count: int) -> dict[str, np.ndarray]:
+    if not getattr(cache, "video_keys", None) or frame_count <= 0:
+        return {}
+    executable = ffmpeg_executable()
+    if not executable:
+        raise RuntimeError("ffmpeg is required to build image observations for video datasets")
+    decoded: dict[str, np.ndarray] = {}
+    fps = float(cache.info.get("fps") or 0)
+    if fps <= 0:
+        raise RuntimeError("dataset fps must be positive to decode image observations")
+    for video_key in cache.video_keys:
+        video_path = cache.video_file_for_episode(episode, video_key)
+        prefix = f"videos/{video_key}"
+        from_timestamp = float(episode.get(f"{prefix}/from_timestamp", 0.0) or 0.0)
+        seek_time = from_timestamp + (int(start_frame) / fps)
+        stream = ffprobe_video_stream(video_path)
+        width = int(stream.get("width") or 0)
+        height = int(stream.get("height") or 0)
+        if width <= 0 or height <= 0:
+            raise RuntimeError(f"failed to probe video dimensions for {video_key}: {video_path}")
+        raw = run_ffmpeg_rawvideo(
+            executable=executable,
+            video_path=video_path,
+            seek_time=seek_time,
+            frame_count=frame_count,
+            width=width,
+            height=height,
+            video_key=video_key,
+        )
+        expected_bytes = frame_count * height * width * 3
+        if len(raw) < expected_bytes:
+            actual_frames = len(raw) // max(height * width * 3, 1)
+            raise RuntimeError(
+                f"decoded video frames for {video_key} shorter than requested: {actual_frames} < {frame_count}"
+            )
+        array = np.frombuffer(raw[:expected_bytes], dtype=np.uint8).reshape(frame_count, height, width, 3)
+        decoded[video_key] = np.transpose(array.astype(np.float32) / 255.0, (0, 3, 1, 2))
+    return decoded
+
+
+def adapter_needs_video_observations(adapter: BacktestAdapter, features: dict[str, dict[str, Any]]) -> bool:
+    has_video = any(feature.get("dtype") == "video" for feature in features.values())
+    if not has_video:
+        return False
+    if getattr(adapter, "test_only", False):
+        return False
+    return True
+
+
+def run_ffmpeg_rawvideo(
+    executable: str,
+    video_path: Path,
+    seek_time: float,
+    frame_count: int,
+    width: int,
+    height: int,
+    video_key: str,
+) -> bytes:
+    import subprocess
+
+    command = [
+        executable,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{max(0.0, seek_time):.6f}",
+        "-i",
+        str(video_path),
+        "-frames:v",
+        str(int(frame_count)),
+        "-vf",
+        f"scale={width}:{height}",
+        "-pix_fmt",
+        "rgb24",
+        "-f",
+        "rawvideo",
+        "pipe:1",
+    ]
+    result = subprocess.run(command, capture_output=True, timeout=max(30, int(frame_count) * 2), check=False)
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace")[-1000:]
+        raise RuntimeError(f"ffmpeg failed to decode image observations for {video_key}: {stderr}")
+    return result.stdout
 
 
 def flatten_action(value: Any) -> list[float]:
