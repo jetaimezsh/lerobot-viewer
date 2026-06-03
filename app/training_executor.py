@@ -4,6 +4,7 @@ import subprocess
 import threading
 import time
 import uuid
+import os
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from app.training_store import (
     list_jobs as store_list_jobs,
     load_job,
     load_recipe,
+    normalize_env_vars,
     now_text,
     public_job,
     save_job,
@@ -161,16 +163,22 @@ class TrainingScheduler:
         recipe = job["recipe_snapshot"]
         trainer = get_trainer(recipe["framework"])()
         command = trainer.build_command(recipe)
+        process_env = build_training_env(recipe)
         with self._lock:
             job["status"] = "running"
             job["started_at"] = now_text()
             job["pid"] = None
             job["command"] = command
+            job["env_vars"] = public_training_env(recipe)
             save_job(job)
         append_job_log(job_id, "$ " + " ".join(command))
+        env_summary = format_training_env_for_log(job.get("env_vars") or {})
+        if env_summary:
+            append_job_log(job_id, "# env " + env_summary)
         process = subprocess.Popen(
             command,
             cwd=str(Path(recipe.get("dataset_path") or ".").parent if recipe.get("dataset_path") else Path.cwd()),
+            env=process_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -236,6 +244,28 @@ class TrainingScheduler:
 
 
 SCHEDULER = TrainingScheduler()
+
+
+def build_training_env(recipe: dict[str, Any]) -> dict[str, str]:
+    env = os.environ.copy()
+    recipe_env = normalize_env_vars(recipe.get("env_vars") or {})
+    env.update(recipe_env)
+    gpu_devices = str(recipe.get("gpu_devices") or "").strip()
+    if gpu_devices:
+        env["CUDA_VISIBLE_DEVICES"] = gpu_devices
+    return env
+
+
+def public_training_env(recipe: dict[str, Any]) -> dict[str, str]:
+    env = normalize_env_vars(recipe.get("env_vars") or {})
+    gpu_devices = str(recipe.get("gpu_devices") or "").strip()
+    if gpu_devices:
+        env["CUDA_VISIBLE_DEVICES"] = gpu_devices
+    return {key: env[key] for key in sorted(env)}
+
+
+def format_training_env_for_log(env_vars: dict[str, Any]) -> str:
+    return " ".join(f"{key}={value}" for key, value in sorted((env_vars or {}).items()))
 
 
 def unique_job_id() -> str:

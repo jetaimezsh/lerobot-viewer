@@ -31,6 +31,7 @@ class LeRobotTrainFramework(TrainingFramework):
         dataset_path = Path(str(recipe.get("dataset_path") or ""))
         output_dir = Path(str(recipe.get("output_dir") or ""))
         command = shutil.which("lerobot-train")
+        launcher = str(recipe.get("launcher") or "direct")
         if dataset_path and not dataset_path.exists():
             errors.append(f"dataset_path does not exist: {dataset_path}")
         if output_dir:
@@ -39,14 +40,35 @@ class LeRobotTrainFramework(TrainingFramework):
                 warnings.append(f"output parent does not exist yet: {parent}")
         if command is None:
             errors.append("lerobot-train command not found in PATH")
+        accelerate_command = None
+        if launcher == "accelerate":
+            accelerate_command = shutil.which("accelerate")
+            if accelerate_command is None:
+                errors.append("accelerate command not found in PATH")
         return {
             "valid": not errors,
             "errors": errors,
             "warnings": warnings,
             "command": command,
+            "launcher": launcher,
+            "accelerate_command": accelerate_command,
         }
 
     def build_command(self, recipe: dict[str, Any]) -> list[str]:
+        train_command = self.build_train_command(recipe)
+        launcher = str(recipe.get("launcher") or "direct")
+        if launcher == "direct":
+            return train_command
+        if launcher == "accelerate":
+            num_processes = int(recipe.get("num_processes") or 1)
+            command = ["accelerate", "launch", "--num_processes", str(num_processes)]
+            if num_processes > 1:
+                command.append("--multi_gpu")
+            command.extend(train_command)
+            return command
+        raise ValueError(f"unsupported training launcher: {launcher}")
+
+    def build_train_command(self, recipe: dict[str, Any]) -> list[str]:
         hp = recipe.get("hyperparams") or {}
         command = ["lerobot-train"]
         command.append(f"policy.type={hp.get('policy_type', 'act')}")

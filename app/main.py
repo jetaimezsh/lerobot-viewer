@@ -123,6 +123,10 @@ class TrainingRecipeCreateRequest(BaseModel):
     output_dir: str | None = None
     hyperparams: dict[str, Any] | None = None
     device: str | None = None
+    launcher: str | None = None
+    num_processes: int | None = None
+    gpu_devices: str | None = None
+    env_vars: dict[str, Any] | None = None
     extra_params: dict[str, Any] | None = None
     auto_profile_on_complete: bool | None = None
     profile_name: str | None = None
@@ -138,6 +142,10 @@ class TrainingRecipeUpdateRequest(BaseModel):
     output_dir: str | None = None
     hyperparams: dict[str, Any] | None = None
     device: str | None = None
+    launcher: str | None = None
+    num_processes: int | None = None
+    gpu_devices: str | None = None
+    env_vars: dict[str, Any] | None = None
     extra_params: dict[str, Any] | None = None
     auto_profile_on_complete: bool | None = None
     profile_name: str | None = None

@@ -10,6 +10,7 @@ if str(APP_ROOT) not in sys.path:
     sys.path.insert(0, str(APP_ROOT))
 
 from app.profile_store import PROFILE_DIR, delete_profile, load_profile
+from app.trainers.lerobot_train import LeRobotTrainFramework
 from app.training_executor import (
     get_training_job,
     list_training_jobs,
@@ -73,7 +74,15 @@ def cleanup_all() -> None:
                 pass
 
 
-def create_mock_recipe(recipe_id: str, epochs: int = 3, fail: bool = False) -> dict:
+def create_mock_recipe(
+    recipe_id: str,
+    epochs: int = 3,
+    fail: bool = False,
+    launcher: str = "direct",
+    gpu_devices: str = "",
+    num_processes: int = 1,
+    env_vars: dict | None = None,
+) -> dict:
     cleanup_id(recipe_id)
     output_dir = TMP_ROOT / recipe_id / "checkpoint"
     output_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -91,6 +100,10 @@ def create_mock_recipe(recipe_id: str, epochs: int = 3, fail: bool = False) -> d
                 "fail": fail,
             },
             "device": "cpu",
+            "launcher": launcher,
+            "gpu_devices": gpu_devices,
+            "num_processes": num_processes,
+            "env_vars": env_vars or {},
             "profile_adapter": "mock",
             "auto_profile_on_complete": True,
         }
@@ -116,12 +129,31 @@ def check_recipe_crud() -> None:
     assert_equal(updated["name"], "Updated mock recipe", "updated recipe name")
     loaded = load_recipe(recipe_id)
     assert_equal(loaded["framework"], "mock", "loaded recipe framework")
+    updated = update_recipe(
+        recipe_id,
+        {
+            "launcher": "accelerate",
+            "gpu_devices": "0,1",
+            "num_processes": 2,
+            "env_vars": {"LEROBOT_VIEWER_TRAIN_TEST": "crud"},
+        },
+    )
+    assert_equal(updated["launcher"], "accelerate", "updated launcher")
+    assert_equal(updated["gpu_devices"], "0,1", "updated gpu devices")
+    assert_equal(updated["num_processes"], 2, "updated process count")
+    assert_equal(updated["env_vars"]["LEROBOT_VIEWER_TRAIN_TEST"], "crud", "updated env vars")
     delete_recipe(recipe_id)
 
 
 def check_training_job_success() -> None:
     recipe_id = "smoke_train_success"
-    recipe = create_mock_recipe(recipe_id, epochs=3)
+    recipe = create_mock_recipe(
+        recipe_id,
+        epochs=3,
+        gpu_devices="0,1",
+        num_processes=2,
+        env_vars={"LEROBOT_VIEWER_TRAIN_TEST": "visible"},
+    )
     job = submit_training_job(recipe["id"])
     latest = wait_job(job["job_id"])
     assert_equal(latest["status"], "done", "training job done")
@@ -132,6 +164,25 @@ def check_training_job_success() -> None:
     assert_equal(profile["checkpoint_path"], recipe["output_dir"], "profile checkpoint path")
     log = read_job_log(job["job_id"])
     assert "progress" in log["text"], "job log missing progress"
+    assert '"cuda_visible_devices": "0,1"' in log["text"], "job log missing CUDA_VISIBLE_DEVICES"
+    assert '"train_test_env": "visible"' in log["text"], "job log missing training env var"
+
+
+def check_lerobot_accelerate_command() -> None:
+    framework = LeRobotTrainFramework()
+    recipe = {
+        "dataset_path": "/data/dataset",
+        "output_dir": "/checkpoints/out",
+        "device": "cuda",
+        "launcher": "accelerate",
+        "num_processes": 2,
+        "hyperparams": {"policy_type": "act", "batch_size": 32},
+    }
+    command = framework.build_command(recipe)
+    assert_equal(command[:5], ["accelerate", "launch", "--num_processes", "2", "--multi_gpu"], "accelerate command prefix")
+    assert_equal(command[5], "lerobot-train", "accelerate wraps lerobot-train")
+    assert "device=cuda" in command, "accelerate command keeps cuda device"
+    assert "batch_size=32" in command, "accelerate command keeps hyperparams"
 
 
 def check_training_job_failure() -> None:
@@ -171,6 +222,8 @@ def main() -> None:
         print("ok: training recipe crud passed")
         check_training_job_success()
         print("ok: training job success passed")
+        check_lerobot_accelerate_command()
+        print("ok: lerobot accelerate command passed")
         check_training_job_failure()
         print("ok: training job failure passed")
         check_pipeline_create()

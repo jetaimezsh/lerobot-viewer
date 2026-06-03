@@ -188,6 +188,9 @@ const els = {
   trainingRecipeDescription: document.getElementById("trainingRecipeDescription"),
   trainingFramework: document.getElementById("trainingFramework"),
   trainingDevice: document.getElementById("trainingDevice"),
+  trainingLauncher: document.getElementById("trainingLauncher"),
+  trainingGpuDevices: document.getElementById("trainingGpuDevices"),
+  trainingNumProcesses: document.getElementById("trainingNumProcesses"),
   trainingDatasetPath: document.getElementById("trainingDatasetPath"),
   trainingEpisodeFilter: document.getElementById("trainingEpisodeFilter"),
   trainingOutputDir: document.getElementById("trainingOutputDir"),
@@ -196,6 +199,8 @@ const els = {
   trainingProfileAdapter: document.getElementById("trainingProfileAdapter"),
   trainingHyperparams: document.getElementById("trainingHyperparams"),
   addTrainingHyperparam: document.getElementById("addTrainingHyperparam"),
+  trainingEnvVars: document.getElementById("trainingEnvVars"),
+  addTrainingEnvVar: document.getElementById("addTrainingEnvVar"),
   trainingExtraParams: document.getElementById("trainingExtraParams"),
   addTrainingExtraParam: document.getElementById("addTrainingExtraParam"),
   createTrainingRecipe: document.getElementById("createTrainingRecipe"),
@@ -1823,7 +1828,15 @@ function readParamTable(container, label) {
 }
 
 function readBacktestEnvVars() {
-  const params = readParamTable(els.backtestEnvVars, "回测环境变量");
+  return readScalarEnvVars(els.backtestEnvVars, "回测环境变量");
+}
+
+function readTrainingEnvVars() {
+  return readScalarEnvVars(els.trainingEnvVars, "训练环境变量");
+}
+
+function readScalarEnvVars(container, label) {
+  const params = readParamTable(container, label);
   const envVars = {};
   for (const [key, value] of Object.entries(params)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
@@ -1858,6 +1871,28 @@ function initBacktestEnvVars() {
     envVars = {};
   }
   renderParamTable(els.backtestEnvVars, envVars);
+}
+
+function addBacktestEnvVar() {
+  if (!els.backtestEnvVars) return;
+  if (!els.backtestEnvVars.querySelector("table")) {
+    renderParamTable(els.backtestEnvVars, {});
+  }
+  const hasCudaRow = paramRows(els.backtestEnvVars).some((row) => {
+    return row.querySelector(".param-key")?.value.trim() === "CUDA_VISIBLE_DEVICES";
+  });
+  addParamRow(els.backtestEnvVars, hasCudaRow ? "" : "CUDA_VISIBLE_DEVICES", "");
+  saveBacktestEnvVars();
+}
+
+window._addBacktestEnvVar = addBacktestEnvVar;
+
+function addTrainingEnvVar() {
+  if (!els.trainingEnvVars) return;
+  if (!els.trainingEnvVars.querySelector("table")) {
+    renderParamTable(els.trainingEnvVars, {});
+  }
+  addParamRow(els.trainingEnvVars);
 }
 
 function formatEnvVars(envVars) {
@@ -2187,6 +2222,9 @@ function renderTrainingRecipes() {
           <span>batch: ${escapeHtml(hp.batch_size ?? "-")}</span>
           <span>epochs: ${escapeHtml(hp.epochs ?? "-")}</span>
           <span>lr: ${escapeHtml(hp.learning_rate ?? "-")}</span>
+          <span>launcher: ${escapeHtml(recipe.launcher || "direct")}</span>
+          <span>gpu: ${escapeHtml(recipe.gpu_devices || "-")}</span>
+          <span>proc: ${escapeHtml(recipe.num_processes || 1)}</span>
         </div>
         ${errors.length ? `<div class="model-card-issues error">${errors.map(escapeHtml).join("<br>")}</div>` : ""}
         <div class="model-card-actions">
@@ -2211,6 +2249,10 @@ function readEpisodeFilter() {
 }
 
 function trainingRecipePayload() {
+  const numProcesses = Number(els.trainingNumProcesses?.value || 1);
+  if (!Number.isInteger(numProcesses) || numProcesses < 1) {
+    throw new Error("训练进程数必须是大于等于 1 的整数。");
+  }
   return {
     name: els.trainingRecipeName?.value.trim() || null,
     description: els.trainingRecipeDescription?.value.trim() || null,
@@ -2220,6 +2262,10 @@ function trainingRecipePayload() {
     output_dir: els.trainingOutputDir?.value.trim() || "",
     hyperparams: readParamTable(els.trainingHyperparams, "训练超参数"),
     device: els.trainingDevice?.value || "cuda",
+    launcher: els.trainingLauncher?.value || "direct",
+    num_processes: numProcesses,
+    gpu_devices: els.trainingGpuDevices?.value.trim() || "",
+    env_vars: readTrainingEnvVars(),
     extra_params: readParamTable(els.trainingExtraParams, "训练自定义参数"),
     auto_profile_on_complete: Boolean(els.trainingAutoProfile?.checked),
     profile_name: els.trainingProfileName?.value.trim() || null,
@@ -2303,6 +2349,9 @@ function fillTrainingRecipeEditor(recipe) {
   if (els.trainingRecipeDescription) els.trainingRecipeDescription.value = recipe.description || "";
   if (els.trainingFramework) els.trainingFramework.value = recipe.framework || "lerobot_train";
   if (els.trainingDevice) els.trainingDevice.value = recipe.device || "cuda";
+  if (els.trainingLauncher) els.trainingLauncher.value = recipe.launcher || "direct";
+  if (els.trainingGpuDevices) els.trainingGpuDevices.value = recipe.gpu_devices || "";
+  if (els.trainingNumProcesses) els.trainingNumProcesses.value = recipe.num_processes || 1;
   if (els.trainingDatasetPath) els.trainingDatasetPath.value = recipe.dataset_path || "";
   if (els.trainingEpisodeFilter) els.trainingEpisodeFilter.value = Array.isArray(recipe.episode_filter) ? recipe.episode_filter.join(",") : "";
   if (els.trainingOutputDir) els.trainingOutputDir.value = recipe.output_dir || "";
@@ -2310,6 +2359,7 @@ function fillTrainingRecipeEditor(recipe) {
   if (els.trainingProfileName) els.trainingProfileName.value = recipe.profile_name || "";
   if (els.trainingProfileAdapter) els.trainingProfileAdapter.value = recipe.profile_adapter || "lerobot_official";
   renderParamTable(els.trainingHyperparams, recipe.hyperparams || {});
+  renderParamTable(els.trainingEnvVars, recipe.env_vars || {});
   renderParamTable(els.trainingExtraParams, recipe.extra_params || {});
 }
 
@@ -2321,12 +2371,16 @@ function clearTrainingRecipeEditor() {
   }
   if (els.trainingRecipeName) els.trainingRecipeName.value = "";
   if (els.trainingRecipeDescription) els.trainingRecipeDescription.value = "";
+  if (els.trainingLauncher) els.trainingLauncher.value = "direct";
+  if (els.trainingGpuDevices) els.trainingGpuDevices.value = "";
+  if (els.trainingNumProcesses) els.trainingNumProcesses.value = 1;
   if (els.trainingDatasetPath) els.trainingDatasetPath.value = "";
   if (els.trainingEpisodeFilter) els.trainingEpisodeFilter.value = "";
   if (els.trainingOutputDir) els.trainingOutputDir.value = "";
   if (els.trainingProfileName) els.trainingProfileName.value = "";
   if (els.trainingAutoProfile) els.trainingAutoProfile.checked = true;
   applyTrainingTemplate(true);
+  renderParamTable(els.trainingEnvVars, {});
   renderParamTable(els.trainingExtraParams, {});
 }
 
@@ -3895,11 +3949,6 @@ if (els.backtestHistory) els.backtestHistory.addEventListener("click", handleBac
 if (els.backtestJobQueue) els.backtestJobQueue.addEventListener("click", handleBacktestHistoryClick);
 if (els.addRuntimeParam) els.addRuntimeParam.addEventListener("click", () => addParamRow(els.profileRuntimeParams));
 if (els.addExtraParam) els.addExtraParam.addEventListener("click", () => addParamRow(els.profileExtraParams));
-if (els.addBacktestEnvVar) els.addBacktestEnvVar.addEventListener("click", () => {
-  const hasCudaRow = paramRows(els.backtestEnvVars).some((row) => row.querySelector(".param-key")?.value.trim() === "CUDA_VISIBLE_DEVICES");
-  addParamRow(els.backtestEnvVars, hasCudaRow ? "" : "CUDA_VISIBLE_DEVICES", "");
-  saveBacktestEnvVars();
-});
 if (els.profileRuntimeParams) els.profileRuntimeParams.addEventListener("click", handleParamTableClick);
 if (els.profileExtraParams) els.profileExtraParams.addEventListener("click", handleParamTableClick);
 if (els.backtestEnvVars) {
@@ -3913,6 +3962,7 @@ if (els.backtestEnvVars) {
 if (els.refreshTrainingRecipes) els.refreshTrainingRecipes.addEventListener("click", loadTrainingRecipes);
 if (els.checkTrainingEnv) els.checkTrainingEnv.addEventListener("click", loadTrainingEnv);
 if (els.trainingTemplate) els.trainingTemplate.addEventListener("change", () => applyTrainingTemplate(true));
+if (els.addTrainingEnvVar) els.addTrainingEnvVar.addEventListener("click", addTrainingEnvVar);
 if (els.createTrainingRecipe) els.createTrainingRecipe.addEventListener("click", createTrainingRecipe);
 if (els.saveTrainingRecipe) els.saveTrainingRecipe.addEventListener("click", saveTrainingRecipe);
 if (els.inspectTrainingRecipe) els.inspectTrainingRecipe.addEventListener("click", () => runTrainingRecipeAction("inspect"));
@@ -3922,6 +3972,7 @@ if (els.trainingRecipeList) els.trainingRecipeList.addEventListener("click", han
 if (els.addTrainingHyperparam) els.addTrainingHyperparam.addEventListener("click", () => addParamRow(els.trainingHyperparams));
 if (els.addTrainingExtraParam) els.addTrainingExtraParam.addEventListener("click", () => addParamRow(els.trainingExtraParams));
 if (els.trainingHyperparams) els.trainingHyperparams.addEventListener("click", handleParamTableClick);
+if (els.trainingEnvVars) els.trainingEnvVars.addEventListener("click", handleParamTableClick);
 if (els.trainingExtraParams) els.trainingExtraParams.addEventListener("click", handleParamTableClick);
 if (els.refreshTrainingJobs) els.refreshTrainingJobs.addEventListener("click", loadTrainingJobs);
 if (els.trainingJobList) els.trainingJobList.addEventListener("click", handleTrainingJobAction);

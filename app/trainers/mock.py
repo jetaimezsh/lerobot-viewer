@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,7 @@ class MockTrainingFramework(TrainingFramework):
 
 MOCK_TRAIN_CODE = r'''
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -69,6 +71,11 @@ sleep_ms = int(sys.argv[3])
 should_fail = sys.argv[4] == "1"
 policy_type = sys.argv[5]
 output_dir.mkdir(parents=True, exist_ok=True)
+print(json.dumps({
+    "type": "env",
+    "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
+    "train_test_env": os.environ.get("LEROBOT_VIEWER_TRAIN_TEST", ""),
+}), flush=True)
 for epoch in range(1, epochs + 1):
     time.sleep(max(sleep_ms, 0) / 1000)
     loss = round(1.0 / epoch, 6)

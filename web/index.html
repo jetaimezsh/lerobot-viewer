@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>LeRobot Dataset v3.0 Viewer</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260530-model-backtest-v3">
+  <link rel="stylesheet" href="/static/styles.css?v=20260603-select-align-fix">
 </head>
 <body>
   <div class="shell">
@@ -382,7 +382,7 @@
             </label>
             <div class="param-section-head">
               <label class="field-label">回测环境变量</label>
-              <button id="addBacktestEnvVar" type="button">+ 添加变量</button>
+              <button id="addBacktestEnvVar" type="button" onclick="window._addBacktestEnvVar && window._addBacktestEnvVar()">+ 添加变量</button>
             </div>
             <p class="inline-help">提交回测任务时临时设置，例如 CUDA_VISIBLE_DEVICES=0 或 CUDA_VISIBLE_DEVICES=0,1。建议在加载模型前设置；如 torch/CUDA 已初始化，需重启后端后再运行。</p>
             <div id="backtestEnvVars" class="param-table empty"></div>
@@ -452,6 +452,14 @@
                 <option value="cuda:0">cuda:0</option>
                 <option value="cpu">cpu</option>
               </select>
+              <select id="trainingLauncher">
+                <option value="direct">直接运行</option>
+                <option value="accelerate">accelerate launch</option>
+              </select>
+              <div class="inline-field-grid">
+                <input id="trainingGpuDevices" type="text" placeholder="GPU 列表，例如 0 或 0,1">
+                <input id="trainingNumProcesses" type="number" min="1" step="1" value="1" placeholder="进程数">
+              </div>
               <div style="display:flex; gap:8px;">
                 <input id="trainingDatasetPath" type="text" placeholder="训练数据集路径，例如 D:\datasets\pusht" style="flex:1;">
                 <button id="browseTrainingDataset" type="button" style="flex-shrink:0;" onclick="window._openTrainingDatasetBrowser && window._openTrainingDatasetBrowser()">选择目录</button>
@@ -475,6 +483,12 @@
                 <button id="addTrainingHyperparam" type="button">+ 添加行</button>
               </div>
               <div id="trainingHyperparams" class="param-table empty"></div>
+              <div class="param-section-head">
+                <label class="field-label">训练环境变量</label>
+                <button id="addTrainingEnvVar" type="button">+ 添加变量</button>
+              </div>
+              <p class="inline-help">GPU 列表会自动设置 CUDA_VISIBLE_DEVICES；这里可补充其他训练进程环境变量。</p>
+              <div id="trainingEnvVars" class="param-table empty"></div>
               <div class="param-section-head">
                 <label class="field-label">自定义参数</label>
                 <button id="addTrainingExtraParam" type="button">+ 添加行</button>
@@ -596,7 +610,7 @@
   </div>
 </div>
 
-  <script src="/static/app.js?v=20260601-v1"></script>
+  <script src="/static/app.js?v=20260603-accelerate-train"></script>
 
 </body>
 </html>

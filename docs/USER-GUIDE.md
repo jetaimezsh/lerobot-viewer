@@ -114,9 +114,11 @@ bash scripts/start_backend.sh
 1. 切换到 **模型工作台 / 训练配方**
 2. 选择训练模板，填写 recipe id、名称、训练数据集路径、输出 checkpoint 目录
 3. 在训练超参数表格中编辑 batch size、epochs、learning rate、policy_type 等参数
-4. 按需填写自定义参数；这些参数会随 recipe 一起保存，便于追溯实验
-5. 勾选"训练完成后自动创建回测档案"，训练成功后会生成标准 Model Profile
-6. 点击"新建配方"或"保存"
+4. 按需选择启动方式：单进程用"直接运行"，多 GPU 用 `accelerate launch`
+5. 填写 GPU 列表，例如 `0` 或 `0,1`；双卡训练时进程数通常填写 `2`
+6. 按需填写训练环境变量和自定义参数；这些参数会随 recipe 一起保存，便于追溯实验
+7. 勾选"训练完成后自动创建回测档案"，训练成功后会生成标准 Model Profile
+8. 点击"新建配方"或"保存"
 
 ### 训练队列
 
@@ -128,6 +130,7 @@ bash scripts/start_backend.sh
 
 说明：
 - `lerobot_train` 框架封装 `lerobot-train` CLI，真实训练建议在 Linux 环境执行
+- `accelerate launch` 会包装 `lerobot-train` 命令，并把 GPU 列表写入训练子进程的 `CUDA_VISIBLE_DEVICES`
 - 当前测试使用 `mock` 训练框架覆盖队列、日志、失败、自动 profile 生成等链路
 - 服务重启后，已落盘的 queued 作业会在下次访问训练 API 时恢复调度；原 running 作业会标记为 failed
 

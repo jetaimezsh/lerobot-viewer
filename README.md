@@ -205,11 +205,13 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 ### 模型训练
 
 1. 在 **模型工作台 / 训练配方** 创建 recipe，填写数据集路径、输出目录、训练框架、设备和超参数。
-2. 超参数和自定义参数使用表格编辑，支持 string / number / boolean / null / json。
-3. 点击"检查"验证 recipe；`lerobot_train` 会检查数据集路径、输出目录父目录和 `lerobot-train` 命令。
-4. 点击"提交训练"后作业写入 `state/training_jobs/`，单 worker 顺序执行，日志写入同目录 `.log` 文件。
-5. 训练完成后，如果开启"自动创建回测档案"，会在 `state/model_profiles/` 生成标准 profile，可直接进入回测任务使用。
-6. 当前真实 LeRobot CLI 训练主要面向 Linux；Windows 可编辑 recipe、查看队列和使用 mock trainer 做功能链路测试。
+2. 按需选择启动方式：`直接运行` 或 `accelerate launch`。
+3. 单卡训练可填写 GPU 列表 `0`；双卡训练可填写 `0,1`，并将进程数设为 `2`。
+4. 超参数、自定义参数和训练环境变量使用表格编辑，支持 string / number / boolean / null / json。
+5. 点击"检查"验证 recipe；`lerobot_train` 会检查数据集路径、输出目录父目录、`lerobot-train` 命令，使用 `accelerate launch` 时还会检查 `accelerate` 命令。
+6. 点击"提交训练"后作业写入 `state/training_jobs/`，单 worker 顺序执行，日志写入同目录 `.log` 文件。
+7. 训练完成后，如果开启"自动创建回测档案"，会在 `state/model_profiles/` 生成标准 profile，可直接进入回测任务使用。
+8. 当前真实 LeRobot CLI 训练主要面向 Linux；Windows 可编辑 recipe、查看队列和使用 mock trainer 做功能链路测试。
 
 训练 API 示例：
 

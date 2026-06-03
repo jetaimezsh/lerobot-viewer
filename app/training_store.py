@@ -15,6 +15,8 @@ RECIPE_DIR = STATE_DIR / "training_recipes"
 JOB_DIR = STATE_DIR / "training_jobs"
 PIPELINE_DIR = STATE_DIR / "training_pipelines"
 ID_RE = re.compile(r"^[a-z0-9_-]+$")
+ENV_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+TRAINING_LAUNCHERS = {"direct", "accelerate"}
 
 
 def now_text() -> str:
@@ -60,14 +62,14 @@ def load_recipe(recipe_id: str) -> dict[str, Any]:
     path = recipe_path(recipe_id)
     if not path.exists():
         raise KeyError(f"training recipe not found: {recipe_id}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return read_json_retry(path)
 
 
 def save_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
     recipe_id = validate_id(str(recipe.get("id", "")), "recipe id")
     recipe = normalize_recipe({**recipe, "id": recipe_id})
     RECIPE_DIR.mkdir(parents=True, exist_ok=True)
-    recipe_path(recipe_id).write_text(json.dumps(recipe, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    write_json_atomic(recipe_path(recipe_id), recipe)
     return recipe
 
 
@@ -87,6 +89,10 @@ def create_recipe(payload: dict[str, Any]) -> dict[str, Any]:
         "output_dir": payload.get("output_dir") or "",
         "hyperparams": {**template.get("hyperparams", {}), **(payload.get("hyperparams") or {})},
         "device": payload.get("device") or "cuda",
+        "launcher": payload.get("launcher") or "direct",
+        "num_processes": payload.get("num_processes") or 1,
+        "gpu_devices": payload.get("gpu_devices") or "",
+        "env_vars": payload.get("env_vars") or {},
         "extra_params": payload.get("extra_params") or {},
         "auto_profile_on_complete": payload.get("auto_profile_on_complete", True),
         "profile_name": payload.get("profile_name") or payload.get("name") or recipe_id,
@@ -125,6 +131,10 @@ def normalize_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
     recipe.setdefault("output_dir", "")
     recipe.setdefault("hyperparams", {})
     recipe.setdefault("device", "cuda")
+    recipe["launcher"] = normalize_launcher(recipe.get("launcher"))
+    recipe["num_processes"] = normalize_num_processes(recipe.get("num_processes"))
+    recipe["gpu_devices"] = str(recipe.get("gpu_devices") or "").strip()
+    recipe["env_vars"] = normalize_env_vars(recipe.get("env_vars") or {})
     recipe.setdefault("extra_params", {})
     recipe.setdefault("auto_profile_on_complete", True)
     recipe.setdefault("profile_name", recipe.get("name") or recipe.get("id"))
@@ -134,6 +144,41 @@ def normalize_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
     recipe.setdefault("created_at", now_text())
     recipe.setdefault("updated_at", recipe["created_at"])
     return recipe
+
+
+def normalize_launcher(value: Any) -> str:
+    launcher = str(value or "direct").strip() or "direct"
+    if launcher not in TRAINING_LAUNCHERS:
+        raise ValueError(f"training launcher must be one of: {', '.join(sorted(TRAINING_LAUNCHERS))}")
+    return launcher
+
+
+def normalize_num_processes(value: Any) -> int:
+    try:
+        result = int(value or 1)
+    except Exception as exc:
+        raise ValueError("num_processes must be an integer") from exc
+    if result < 1:
+        raise ValueError("num_processes must be >= 1")
+    return result
+
+
+def normalize_env_vars(raw: dict[str, Any] | None) -> dict[str, str]:
+    env_vars: dict[str, str] = {}
+    for key, value in (raw or {}).items():
+        name = str(key).strip()
+        if not name:
+            continue
+        if not ENV_VAR_RE.fullmatch(name):
+            raise ValueError(f"invalid environment variable name: {name}")
+        if value is None:
+            text = ""
+        elif isinstance(value, (str, int, float, bool)):
+            text = str(value)
+        else:
+            raise ValueError(f"environment variable value must be scalar: {name}")
+        env_vars[name] = text
+    return env_vars
 
 
 def public_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
@@ -147,6 +192,10 @@ def public_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
         "output_dir": recipe.get("output_dir", ""),
         "hyperparams": recipe.get("hyperparams", {}),
         "device": recipe.get("device", ""),
+        "launcher": recipe.get("launcher", "direct"),
+        "num_processes": recipe.get("num_processes", 1),
+        "gpu_devices": recipe.get("gpu_devices", ""),
+        "env_vars": recipe.get("env_vars", {}),
         "extra_params": recipe.get("extra_params", {}),
         "auto_profile_on_complete": bool(recipe.get("auto_profile_on_complete", True)),
         "profile_name": recipe.get("profile_name", ""),
@@ -174,13 +223,13 @@ def load_job(job_id: str) -> dict[str, Any]:
     path = job_path(job_id)
     if not path.exists():
         raise KeyError(f"training job not found: {job_id}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return read_json_retry(path)
 
 
 def save_job(job: dict[str, Any]) -> dict[str, Any]:
     job_id = validate_id(str(job.get("job_id", "")), "job id")
     JOB_DIR.mkdir(parents=True, exist_ok=True)
-    job_path(job_id).write_text(json.dumps(job, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    write_json_atomic(job_path(job_id), job)
     return job
 
 
@@ -255,11 +304,28 @@ def load_pipeline(pipeline_id: str) -> dict[str, Any]:
     path = pipeline_path(pipeline_id)
     if not path.exists():
         raise KeyError(f"training pipeline not found: {pipeline_id}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return read_json_retry(path)
 
 
 def save_pipeline(pipeline: dict[str, Any]) -> dict[str, Any]:
     pipeline_id = validate_id(str(pipeline.get("pipeline_id", "")), "pipeline id")
     PIPELINE_DIR.mkdir(parents=True, exist_ok=True)
-    pipeline_path(pipeline_id).write_text(json.dumps(pipeline, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    write_json_atomic(pipeline_path(pipeline_id), pipeline)
     return pipeline
+
+
+def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
+
+def read_json_retry(path: Path) -> dict[str, Any]:
+    last_error: Exception | None = None
+    for _ in range(20):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, PermissionError) as exc:
+            last_error = exc
+            time.sleep(0.02)
+    if last_error:
+        raise last_error
+    raise RuntimeError(f"failed to read JSON: {path}")
