@@ -15,6 +15,8 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+import app.backtesting as backtesting_module
+from app.adapters import BacktestAdapter
 from app.backtest_store import (
     export_action_csv,
     export_action_zip,
@@ -218,6 +220,8 @@ def check_multi_dataset_backtest_request() -> None:
                 assert_equal(len(names), 4, "action zip one csv per model-episode")
                 first_csv = archive.read(names[0]).decode("utf-8-sig")
                 assert_equal("predicted_action_1" in first_csv, True, "action zip csv includes action dimensions")
+            assert_equal(profile_id in backtesting_module.LOADED_ADAPTERS, False, "first run-loaded profile auto unloaded")
+            assert_equal(second_profile_id in backtesting_module.LOADED_ADAPTERS, False, "second run-loaded profile auto unloaded")
         finally:
             cleanup_profile(profile_id)
             cleanup_profile(second_profile_id)
@@ -301,8 +305,79 @@ def check_backtest_worker_job() -> None:
             assert_equal(persisted_job["run_id"], latest["run_id"], "worker job run id persisted")
             persisted = load_backtest_run(latest["run_id"])
             assert_equal(persisted["summary"]["done"], 1, "worker persisted done count")
+            assert_equal("result" in latest, False, "worker job does not keep full result in memory")
+            persisted_job = load_backtest_job_record(first_job["job_id"])
+            assert_equal("result" in persisted_job, False, "worker job does not persist full result")
         finally:
             cleanup_profile(profile_id)
+
+
+class VideoBatchAdapter(BacktestAdapter):
+    adapter_name = "video_batch_test"
+    label = "Video batch test"
+    test_only = False
+
+    def load(self, profile: dict) -> None:
+        self.profile = profile
+
+    def predict(self, observation: dict) -> np.ndarray:
+        assert_equal("observation.images.front" in observation, True, "front image passed to video adapter")
+        assert_equal("observation.images.wrist" in observation, True, "wrist image passed to video adapter")
+        return np.asarray([0.0, 0.0], dtype=np.float64)
+
+    def reset_episode(self) -> None:
+        return None
+
+    def unload(self) -> None:
+        self.profile = None
+
+
+def check_chunked_video_backtest_decode() -> None:
+    with tempfile.TemporaryDirectory(dir=PROJECT_ROOT) as directory:
+        dataset = Path(directory) / "dataset"
+        create_no_video_dataset(dataset, [45])
+        cache = DatasetCache(dataset)
+        cache.features = {
+            **cache.features,
+            "observation.images.front": {"dtype": "video", "shape": [3, 8, 8]},
+            "observation.images.wrist": {"dtype": "video", "shape": [3, 8, 8]},
+        }
+        cache.video_keys = ["observation.images.front", "observation.images.wrist"]
+        profile = {
+            "id": "video_batch_profile",
+            "name": "video batch profile",
+            "checkpoint_path": "",
+            "adapter": "video_batch_test",
+            "device": "cpu",
+            "runtime_params": {},
+            "extra_params": {},
+            "status": "created",
+            "inspection": {},
+        }
+        adapter = VideoBatchAdapter()
+        adapter.load(profile)
+        calls: list[tuple[int, int]] = []
+        original_decode = backtesting_module.decode_video_observations
+        original_chunk = backtesting_module.BACKTEST_VIDEO_DECODE_CHUNK_FRAMES
+
+        def fake_decode(_cache, _episode, start_frame: int, frame_count: int) -> dict[str, np.ndarray]:
+            calls.append((start_frame, frame_count))
+            assert_equal(frame_count <= 7, True, "video decode chunk does not exceed configured batch size")
+            return {
+                "observation.images.front": np.zeros((frame_count, 3, 8, 8), dtype=np.float32),
+                "observation.images.wrist": np.ones((frame_count, 3, 8, 8), dtype=np.float32),
+            }
+
+        try:
+            backtesting_module.BACKTEST_VIDEO_DECODE_CHUNK_FRAMES = 7
+            backtesting_module.decode_video_observations = fake_decode
+            result = run_episode_backtest(cache, adapter, profile, 0)
+            assert_equal(result["status"], "done", "chunked video backtest status")
+            assert_equal(result["frames"], 45, "chunked video backtest frames")
+            assert_equal(calls, [(0, 7), (7, 7), (14, 7), (21, 7), (28, 7), (35, 7), (42, 3)], "video decode chunk plan")
+        finally:
+            backtesting_module.decode_video_observations = original_decode
+            backtesting_module.BACKTEST_VIDEO_DECODE_CHUNK_FRAMES = original_chunk
 
 
 def check_video_observation_builder() -> None:
@@ -442,6 +517,8 @@ def main() -> None:
     print("ok: backtest environment variables passed")
     check_backtest_worker_job()
     print("ok: backtest worker job passed")
+    check_chunked_video_backtest_decode()
+    print("ok: chunked video backtest decode passed")
     check_video_observation_builder()
     print("ok: video observation builder passed")
     check_official_adapter_processor_flow()

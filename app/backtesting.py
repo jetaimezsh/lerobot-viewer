@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import gc
 import os
 import platform
 import re
@@ -54,13 +55,13 @@ class ProfileTestRequest(BaseModel):
 
 LOADED_ADAPTERS: dict[str, BacktestAdapter] = {}
 LOADED_ADAPTER_ENVS: dict[str, dict[str, str]] = {}
-BACKTEST_RUNS: dict[str, dict[str, Any]] = {}
 BACKTEST_JOBS: dict[str, dict[str, Any]] = {}
 BACKTEST_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="backtest-worker")
 BACKTEST_LOCK = Lock()
 BACKTEST_ENV_LOCK = RLock()
 ENV_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SENSITIVE_ENV_TOKENS = ("TOKEN", "SECRET", "PASSWORD", "PASS", "KEY", "CREDENTIAL", "AUTH")
+BACKTEST_VIDEO_DECODE_CHUNK_FRAMES = 4
 
 
 def model_runtime_status() -> dict[str, Any]:
@@ -230,10 +231,7 @@ def load_profile_adapter(profile_id: str, env_vars: dict[str, Any] | None = None
 
 
 def unload_profile_adapter(profile_id: str) -> dict[str, Any]:
-    adapter = LOADED_ADAPTERS.pop(profile_id, None)
-    LOADED_ADAPTER_ENVS.pop(profile_id, None)
-    if adapter:
-        adapter.unload()
+    close_profile_adapter(profile_id)
     profile = load_profile(profile_id)
     profile["status"] = "inspected" if profile.get("inspection", {}).get("valid") else "created"
     save_profile(profile)
@@ -245,6 +243,18 @@ def close_profile_adapter(profile_id: str) -> None:
     LOADED_ADAPTER_ENVS.pop(profile_id, None)
     if adapter:
         adapter.unload()
+    release_runtime_memory()
+
+
+def release_runtime_memory() -> None:
+    gc.collect()
+    try:
+        torch = importlib.import_module("torch")
+        cuda = getattr(torch, "cuda", None)
+        if cuda is not None and callable(getattr(cuda, "empty_cache", None)):
+            cuda.empty_cache()
+    except Exception:
+        pass
 
 
 def test_profile_on_frame(profile_id: str, request: ProfileTestRequest, cache_loader: Any) -> dict[str, Any]:
@@ -288,62 +298,73 @@ def run_backtest(request: BacktestRunRequest, cache_loader: Any) -> dict[str, An
     if not request.episodes:
         raise ValueError("at least one episode is required")
     env_vars = normalize_env_vars(request.env_vars)
+    managed_profile_ids: set[str] = set()
 
-    with applied_backtest_env(env_vars):
-        caches: dict[str, Any] = {}
-        for ref in request.episodes:
-            dataset_path = str(resolve_dataset_path(ref.dataset_path))
-            if dataset_path not in caches:
-                caches[dataset_path] = cache_loader(dataset_path)
+    try:
+        with applied_backtest_env(env_vars):
+            caches: dict[str, Any] = {}
+            for ref in request.episodes:
+                dataset_path = str(resolve_dataset_path(ref.dataset_path))
+                if dataset_path not in caches:
+                    caches[dataset_path] = cache_loader(dataset_path)
 
-        run_id = uuid.uuid4().hex[:12]
-        results: list[dict[str, Any]] = []
-        snapshots: list[dict[str, Any]] = []
-        for profile_id in request.profile_ids:
-            try:
-                profile = load_profile(profile_id)
-                snapshots.append(profile_snapshot(profile))
-                adapter = LOADED_ADAPTERS.get(profile_id)
-                if adapter is None or LOADED_ADAPTER_ENVS.get(profile_id, {}) != env_vars:
-                    try:
-                        load_profile_adapter(profile_id, env_vars)
-                        adapter = LOADED_ADAPTERS[profile_id]
-                    except Exception as exc:
-                        results.extend(failed_results(profile, request.episodes, str(exc)))
-                        continue
-                for ref in request.episodes:
-                    dataset_path = str(resolve_dataset_path(ref.dataset_path))
-                    results.append(
-                        run_episode_backtest(
-                            caches[dataset_path],
-                            adapter,
-                            profile,
-                            int(ref.episode_index),
-                            request.max_frames,
-                            dataset_path=dataset_path,
+            run_id = uuid.uuid4().hex[:12]
+            results: list[dict[str, Any]] = []
+            snapshots: list[dict[str, Any]] = []
+            for profile_id in request.profile_ids:
+                managed_current_profile = False
+                try:
+                    profile = load_profile(profile_id)
+                    snapshots.append(profile_snapshot(profile))
+                    adapter = LOADED_ADAPTERS.get(profile_id)
+                    if adapter is None or LOADED_ADAPTER_ENVS.get(profile_id, {}) != env_vars:
+                        try:
+                            load_profile_adapter(profile_id, env_vars)
+                            managed_current_profile = True
+                            managed_profile_ids.add(profile_id)
+                            adapter = LOADED_ADAPTERS[profile_id]
+                        except Exception as exc:
+                            results.extend(failed_results(profile, request.episodes, str(exc)))
+                            continue
+                    for ref in request.episodes:
+                        dataset_path = str(resolve_dataset_path(ref.dataset_path))
+                        results.append(
+                            run_episode_backtest(
+                                caches[dataset_path],
+                                adapter,
+                                profile,
+                                int(ref.episode_index),
+                                request.max_frames,
+                                dataset_path=dataset_path,
+                            )
                         )
-                    )
-            except Exception as exc:
-                fallback = {"id": profile_id, "name": profile_id, "adapter": "unknown", "device": "", "runtime_params": {}, "extra_params": {}}
-                snapshots.append(fallback)
-                results.extend(failed_results(fallback, request.episodes, str(exc)))
+                except Exception as exc:
+                    fallback = {"id": profile_id, "name": profile_id, "adapter": "unknown", "device": "", "runtime_params": {}, "extra_params": {}}
+                    snapshots.append(fallback)
+                    results.extend(failed_results(fallback, request.episodes, str(exc)))
+                finally:
+                    if managed_current_profile:
+                        close_profile_adapter(profile_id)
+                        managed_profile_ids.discard(profile_id)
 
-        run = {
-            "run_id": run_id,
-            "dataset_paths": sorted(caches.keys()),
-            "dataset_path": sorted(caches.keys())[0] if len(caches) == 1 else None,
-            "profile_ids": request.profile_ids,
-            "model_ids": request.profile_ids,
-            "profiles": snapshots,
-            "episodes": [public_episode_ref(caches[str(resolve_dataset_path(ref.dataset_path))], ref) for ref in request.episodes],
-            "episode_indexes": [int(ref.episode_index) for ref in request.episodes],
-            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "env_vars": public_env_vars(env_vars),
-            "env_var_names": sorted(env_vars.keys()),
-            "summary": summarize_results(results),
-            "results": results,
-        }
-    BACKTEST_RUNS[run_id] = run
+            run = {
+                "run_id": run_id,
+                "dataset_paths": sorted(caches.keys()),
+                "dataset_path": sorted(caches.keys())[0] if len(caches) == 1 else None,
+                "profile_ids": request.profile_ids,
+                "model_ids": request.profile_ids,
+                "profiles": snapshots,
+                "episodes": [public_episode_ref(caches[str(resolve_dataset_path(ref.dataset_path))], ref) for ref in request.episodes],
+                "episode_indexes": [int(ref.episode_index) for ref in request.episodes],
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "env_vars": public_env_vars(env_vars),
+                "env_var_names": sorted(env_vars.keys()),
+                "summary": summarize_results(results),
+                "results": results,
+            }
+    finally:
+        for profile_id in managed_profile_ids:
+            close_profile_adapter(profile_id)
     save_backtest_run(run)
     return run
 
@@ -419,7 +440,6 @@ def _run_backtest_job(job_id: str, request: BacktestRunRequest, cache_loader: An
             job["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             job["run_id"] = run.get("run_id")
             job["summary"] = run.get("summary")
-            job["result"] = run
             persist_backtest_job(job)
         log_operation(
             "backtest_job_done",
@@ -537,20 +557,27 @@ def run_episode_backtest(
         }
 
     ground_truth = np.array([flatten_action(value) for value in frames["action"]], dtype=np.float64)
-    video_observations = (
-        decode_video_observations(cache, episode, 0, len(frames))
-        if adapter_needs_video_observations(adapter, cache.features)
-        else {}
-    )
+    needs_video = adapter_needs_video_observations(adapter, cache.features)
     predictions = []
     adapter.prepare_backtest_context(cache)
     adapter.reset_episode()
     try:
-        for frame_offset, (_, frame) in enumerate(frames.iterrows()):
-            observation = build_observation(frame, cache.features, video_observations, frame_offset)
-            predictions.append(flatten_action(adapter.predict(observation)))
+        if needs_video:
+            for chunk_start in range(0, len(frames), BACKTEST_VIDEO_DECODE_CHUNK_FRAMES):
+                chunk_end = min(chunk_start + BACKTEST_VIDEO_DECODE_CHUNK_FRAMES, len(frames))
+                video_observations = decode_video_observations(cache, episode, chunk_start, chunk_end - chunk_start)
+                for chunk_offset, (_, frame) in enumerate(frames.iloc[chunk_start:chunk_end].iterrows()):
+                    observation = build_observation(frame, cache.features, video_observations, chunk_offset)
+                    predictions.append(flatten_action(adapter.predict(observation)))
+                del video_observations
+        else:
+            for _, frame in frames.iterrows():
+                observation = build_observation(frame, cache.features, {}, 0)
+                predictions.append(flatten_action(adapter.predict(observation)))
     except Exception as exc:
         return {**source, **profile_info, "episode_index": episode_index, "status": "failed", "error": str(exc)}
+    finally:
+        release_runtime_memory()
 
     predicted = np.array(predictions, dtype=np.float64)
     if predicted.shape != ground_truth.shape:
@@ -673,7 +700,7 @@ def decode_video_observations(cache: Any, episode: pd.Series, start_frame: int, 
             raise RuntimeError(
                 f"decoded video frames for {video_key} shorter than requested: {actual_frames} < {frame_count}"
             )
-        array = np.frombuffer(raw[:expected_bytes], dtype=np.uint8).reshape(frame_count, height, width, 3)
+        array = np.frombuffer(raw, dtype=np.uint8, count=expected_bytes).reshape(frame_count, height, width, 3)
         decoded[video_key] = np.transpose(array.astype(np.float32) / 255.0, (0, 3, 1, 2))
     return decoded
 

@@ -13,6 +13,8 @@ const state = {
   duration: 0,
   chartStart: 0,
   chartEnd: 0,
+  chartXStep: null,
+  chartYStep: null,
   panMode: false,
   playing: false,
   primaryVideo: null,
@@ -303,6 +305,11 @@ function resetChartWindow() {
   updateChartWindowLabel();
 }
 
+function resetChartAxisSteps() {
+  state.chartXStep = null;
+  state.chartYStep = null;
+}
+
 function chartSpan() {
   return Math.max(state.chartEnd - state.chartStart, minChartWindow());
 }
@@ -348,9 +355,68 @@ function panChart(deltaSeconds) {
   drawChart();
 }
 
+function episodeChartPad() {
+  return { left: 76, right: 24, top: 24, bottom: 62 };
+}
+
+function niceStep(rawStep) {
+  if (!Number.isFinite(rawStep) || rawStep <= 0) return 1;
+  const exponent = Math.floor(Math.log10(rawStep));
+  const power = 10 ** exponent;
+  const fraction = rawStep / power;
+  let niceFraction = 10;
+  if (fraction <= 1) niceFraction = 1;
+  else if (fraction <= 2) niceFraction = 2;
+  else if (fraction <= 5) niceFraction = 5;
+  return niceFraction * power;
+}
+
+function clampNumber(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
+
+function visibleSeriesValues(series, visibleStart, visibleEnd) {
+  const values = [];
+  for (const item of series) {
+    for (let index = 0; index < state.elapsed.length; index += 1) {
+      const elapsed = state.elapsed[index];
+      if (elapsed < visibleStart || elapsed > visibleEnd) continue;
+      const value = item.values[index];
+      if (value !== null && Number.isFinite(value)) values.push(value);
+    }
+  }
+  return values;
+}
+
+function episodeChartAxis(values) {
+  if (!values.length) {
+    return { min: -1, max: 1, step: 0.5 };
+  }
+  let min = Math.min(...values);
+  let max = Math.max(...values);
+  if (min === max) {
+    const padding = Math.max(Math.abs(min) * 0.1, 1);
+    min -= padding;
+    max += padding;
+  }
+  const range = Math.max(max - min, 1e-9);
+  const step = state.chartYStep || niceStep(range / 5);
+  const axisMin = Math.floor(min / step) * step;
+  const axisMax = Math.ceil(max / step) * step;
+  return {
+    min: axisMin,
+    max: axisMax > axisMin ? axisMax : axisMin + step,
+    step,
+  };
+}
+
+function episodeChartXStep(visibleSpan) {
+  return state.chartXStep || niceStep(Math.max(visibleSpan, 0.001) / 6);
+}
+
 function chartElapsedFromEvent(event) {
   const rect = els.chart.getBoundingClientRect();
-  const pad = { left: 52, right: 18 };
+  const pad = episodeChartPad();
   const x = Math.max(pad.left, Math.min(event.clientX - rect.left, rect.width - pad.right));
   const ratio = (x - pad.left) / Math.max(rect.width - pad.left - pad.right, 1);
   return state.chartStart + ratio * chartSpan();
@@ -664,6 +730,7 @@ function resetEpisodeView() {
   state.selectedSeries = [];
   state.currentElapsed = 0;
   state.duration = 0;
+  resetChartAxisSteps();
   resetChartWindow();
   state.videos = [];
   state.primaryVideo = null;
@@ -725,6 +792,7 @@ async function loadEpisode(index) {
     state.trimDraftStart = existingMark.start_time;
     state.trimDraftEnd = existingMark.end_time;
   }
+  resetChartAxisSteps();
   resetChartWindow();
 
   for (const item of els.episodeList.querySelectorAll(".episode-item")) {
@@ -880,28 +948,60 @@ function drawChart() {
 
   const width = canvas.width / dpr;
   const height = canvas.height / dpr;
-  const pad = { left: 52, right: 18, top: 20, bottom: 36 };
+  const pad = episodeChartPad();
   ctx.clearRect(0, 0, width, height);
 
   const plotW = width - pad.left - pad.right;
   const plotH = height - pad.top - pad.bottom;
   ctx.fillStyle = "#fbfcfd";
   ctx.fillRect(0, 0, width, height);
-  ctx.strokeStyle = "#dde4eb";
-  ctx.lineWidth = 1;
-  for (let i = 0; i <= 5; i++) {
-    const y = pad.top + plotH * i / 5;
-    ctx.beginPath();
-    ctx.moveTo(pad.left, y);
-    ctx.lineTo(width - pad.right, y);
-    ctx.stroke();
-  }
-
   clampChartWindow();
   const visibleStart = state.chartStart;
   const visibleEnd = state.chartEnd || Math.max(state.duration, 0.001);
   const visibleSpan = Math.max(visibleEnd - visibleStart, 0.001);
   const series = selectedSeries();
+  const values = visibleSeriesValues(series, visibleStart, visibleEnd);
+  const yAxis = episodeChartAxis(values);
+  const ySpan = Math.max(yAxis.max - yAxis.min, 1e-9);
+  const xStep = episodeChartXStep(visibleSpan);
+
+  ctx.save();
+  ctx.font = "12px Segoe UI, sans-serif";
+  ctx.fillStyle = "#475569";
+  ctx.strokeStyle = "#dde4eb";
+  ctx.lineWidth = 1;
+
+  const yStart = Math.ceil(yAxis.min / yAxis.step) * yAxis.step;
+  for (let value = yStart, count = 0; value <= yAxis.max + yAxis.step * 0.5 && count < 80; value += yAxis.step, count += 1) {
+    const y = pad.top + (1 - ((value - yAxis.min) / ySpan)) * plotH;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(width - pad.right, y);
+    ctx.stroke();
+    ctx.fillText(formatAxisValue(value), 8, y + 4);
+  }
+
+  const firstXTick = Math.ceil(visibleStart / xStep) * xStep;
+  for (let value = firstXTick, count = 0; value <= visibleEnd + xStep * 0.5 && count < 100; value += xStep, count += 1) {
+    const x = pad.left + ((value - visibleStart) / visibleSpan) * plotW;
+    ctx.beginPath();
+    ctx.moveTo(x, pad.top);
+    ctx.lineTo(x, height - pad.bottom);
+    ctx.stroke();
+    ctx.fillText(`${formatAxisValue(value)}s`, Math.max(pad.left, x - 18), height - pad.bottom + 20);
+  }
+
+  ctx.strokeStyle = "#94a3b8";
+  ctx.strokeRect(pad.left, pad.top, plotW, plotH);
+  ctx.fillStyle = "#334155";
+  ctx.fillText(`横轴步长 ${formatAxisValue(xStep)}s`, pad.left, height - 14);
+  ctx.fillText("拖动底部坐标轴调整", pad.left + 132, height - 14);
+  ctx.save();
+  ctx.translate(18, pad.top + 108);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText(`纵轴步长 ${formatAxisValue(yAxis.step)}`, 0, 0);
+  ctx.restore();
+  ctx.restore();
 
   if (!state.elapsed.length || !series.length) {
     ctx.fillStyle = "#64717f";
@@ -910,11 +1010,6 @@ function drawChart() {
   }
 
   series.forEach((item, index) => {
-    const valid = item.values.filter((value) => value !== null && Number.isFinite(value));
-    if (!valid.length) return;
-    const min = Math.min(...valid);
-    const max = Math.max(...valid);
-    const span = Math.max(max - min, 1e-9);
     ctx.strokeStyle = palette[index % palette.length];
     ctx.lineWidth = 1.8;
     ctx.beginPath();
@@ -931,7 +1026,7 @@ function drawChart() {
         continue;
       }
       const x = pad.left + ((elapsed - visibleStart) / visibleSpan) * plotW;
-      const y = pad.top + (1 - (value - min) / span) * plotH;
+      const y = pad.top + (1 - ((value - yAxis.min) / ySpan)) * plotH;
       if (!started) {
         ctx.moveTo(x, y);
         started = true;
@@ -952,10 +1047,6 @@ function drawChart() {
     ctx.stroke();
   }
 
-  ctx.fillStyle = "#64717f";
-  ctx.font = "12px Segoe UI";
-  ctx.fillText(`${fmt(visibleStart)}s`, pad.left, height - 13);
-  ctx.fillText(`${fmt(visibleEnd)}s`, Math.max(pad.left + 24, width - pad.right - 72), height - 13);
 }
 
 function currentFrameIndex() {
@@ -4000,6 +4091,7 @@ if (els.resetBacktestZoom) els.resetBacktestZoom.addEventListener("click", () =>
 els.zoomIn.addEventListener("click", () => zoomChart(0.5));
 els.zoomOut.addEventListener("click", () => zoomChart(2));
 els.resetZoom.addEventListener("click", () => {
+  resetChartAxisSteps();
   resetChartWindow();
   drawChart();
 });
@@ -4026,14 +4118,79 @@ document.addEventListener("click", (event) => {
 
 let chartDragging = false;
 let chartLastX = 0;
+let chartLastY = 0;
+let chartDragMode = null;
 function chartSeek(event) {
   if (!state.duration) return;
   setElapsed(chartElapsedFromEvent(event));
 }
+
+function setChartCursor(cursor = "") {
+  if (!els.chart) return;
+  els.chart.style.cursor = cursor;
+}
+
+function chartPointerArea(event) {
+  const rect = els.chart.getBoundingClientRect();
+  const pad = episodeChartPad();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+  if (y >= rect.height - pad.bottom && x >= pad.left && x <= rect.width - pad.right) return "x-step";
+  if (x <= pad.left && y >= pad.top && y <= rect.height - pad.bottom) return "y-step";
+  return "plot";
+}
+
+function currentVisibleChartValues() {
+  return visibleSeriesValues(selectedSeries(), state.chartStart, state.chartEnd || Math.max(state.duration, 0.001));
+}
+
+function adjustChartXStep(deltaPixels) {
+  const span = chartSpan();
+  const current = state.chartXStep || episodeChartXStep(span);
+  const factor = 1.018 ** deltaPixels;
+  const min = Math.max(0.001, span / 200);
+  const max = Math.max(min, Math.max(state.duration, span, 0.001));
+  state.chartXStep = niceStep(clampNumber(current * factor, min, max));
+  drawChart();
+}
+
+function adjustChartYStep(deltaPixels) {
+  const values = currentVisibleChartValues();
+  const axis = episodeChartAxis(values);
+  const range = Math.max(axis.max - axis.min, 1e-9);
+  const current = state.chartYStep || axis.step;
+  const factor = 1.018 ** deltaPixels;
+  const min = Math.max(range / 200, 1e-9);
+  const max = Math.max(min, range * 5);
+  state.chartYStep = niceStep(clampNumber(current * factor, min, max));
+  drawChart();
+}
+
+function updateChartHoverCursor(event) {
+  if (chartDragging) return;
+  const area = chartPointerArea(event);
+  if (area === "x-step") {
+    setChartCursor("ew-resize");
+  } else if (area === "y-step") {
+    setChartCursor("ns-resize");
+  } else {
+    setChartCursor("");
+  }
+}
+
 els.chart.addEventListener("mousedown", (event) => {
   chartDragging = true;
   chartLastX = event.clientX;
-  if (state.panMode || event.shiftKey) {
+  chartLastY = event.clientY;
+  const area = chartPointerArea(event);
+  if (area === "x-step" || area === "y-step") {
+    chartDragMode = area;
+    setChartCursor(area === "x-step" ? "ew-resize" : "ns-resize");
+    event.preventDefault();
+    return;
+  }
+  chartDragMode = state.panMode || event.shiftKey ? "pan" : "seek";
+  if (chartDragMode === "pan") {
     event.preventDefault();
     return;
   }
@@ -4041,11 +4198,24 @@ els.chart.addEventListener("mousedown", (event) => {
 });
 window.addEventListener("mousemove", (event) => {
   if (!chartDragging) return;
-  if (state.panMode || event.shiftKey) {
+  if (chartDragMode === "x-step") {
+    const deltaPixels = event.clientX - chartLastX;
+    chartLastX = event.clientX;
+    adjustChartXStep(deltaPixels);
+    return;
+  }
+  if (chartDragMode === "y-step") {
+    const deltaPixels = event.clientY - chartLastY;
+    chartLastY = event.clientY;
+    adjustChartYStep(deltaPixels);
+    return;
+  }
+  if (chartDragMode === "pan") {
     const rect = els.chart.getBoundingClientRect();
     const deltaPixels = event.clientX - chartLastX;
     chartLastX = event.clientX;
-    const secondsPerPixel = chartSpan() / Math.max(rect.width - 70, 1);
+    const pad = episodeChartPad();
+    const secondsPerPixel = chartSpan() / Math.max(rect.width - pad.left - pad.right, 1);
     panChart(-deltaPixels * secondsPerPixel);
   } else {
     chartSeek(event);
@@ -4053,6 +4223,12 @@ window.addEventListener("mousemove", (event) => {
 });
 window.addEventListener("mouseup", () => {
   chartDragging = false;
+  chartDragMode = null;
+  setChartCursor("");
+});
+els.chart.addEventListener("mousemove", updateChartHoverCursor);
+els.chart.addEventListener("mouseleave", () => {
+  if (!chartDragging) setChartCursor("");
 });
 els.chart.addEventListener("wheel", (event) => {
   if (!state.duration) return;
