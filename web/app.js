@@ -384,15 +384,23 @@ function clampNumber(value, min, max) {
 
 function visibleSeriesValues(series, visibleStart, visibleEnd) {
   const values = [];
+  const indexes = visibleElapsedIndexes(visibleStart, visibleEnd);
   for (const item of series) {
-    for (let index = 0; index < state.elapsed.length; index += 1) {
-      const elapsed = state.elapsed[index];
-      if (elapsed < visibleStart || elapsed > visibleEnd) continue;
+    for (const index of indexes) {
       const value = item.values[index];
       if (value !== null && Number.isFinite(value)) values.push(value);
     }
   }
   return values;
+}
+
+function visibleElapsedIndexes(visibleStart, visibleEnd) {
+  const indexes = [];
+  for (let index = 0; index < state.elapsed.length; index += 1) {
+    const elapsed = state.elapsed[index];
+    if (elapsed >= visibleStart && elapsed <= visibleEnd) indexes.push(index);
+  }
+  return indexes;
 }
 
 function episodeChartAxis(values) {
@@ -1084,6 +1092,7 @@ function drawChart() {
   ctx.fillStyle = "#475569";
   ctx.strokeStyle = "#dde4eb";
   ctx.lineWidth = 1;
+  ctx.textBaseline = "middle";
 
   const yStart = Math.ceil(yAxis.min / yAxis.step) * yAxis.step;
   for (let value = yStart, count = 0; value <= yAxis.max + yAxis.step * 0.5 && count < 80; value += yAxis.step, count += 1) {
@@ -1092,9 +1101,10 @@ function drawChart() {
     ctx.moveTo(pad.left, y);
     ctx.lineTo(width - pad.right, y);
     ctx.stroke();
-    ctx.fillText(formatAxisValue(value), 8, y + 4);
+    ctx.fillText(formatAxisValue(value), 8, y);
   }
 
+  ctx.textBaseline = "alphabetic";
   const firstXTick = Math.ceil(visibleStart / xStep) * xStep;
   for (let value = firstXTick, count = 0; value <= visibleEnd + xStep * 0.5 && count < 100; value += xStep, count += 1) {
     const x = pad.left + ((value - visibleStart) / visibleSpan) * plotW;
@@ -3604,6 +3614,7 @@ function drawChartAxes(ctx, width, height, pad, min, max, start, end, maxLength)
   ctx.fillStyle = "#475569";
   ctx.strokeStyle = "#e2e8f0";
   ctx.lineWidth = 1;
+  ctx.textBaseline = "middle";
   const yTicks = 5;
   for (let i = 0; i <= yTicks; i += 1) {
     const ratio = i / yTicks;
@@ -3613,8 +3624,9 @@ function drawChartAxes(ctx, width, height, pad, min, max, start, end, maxLength)
     ctx.moveTo(pad.left, y);
     ctx.lineTo(width - pad.right, y);
     ctx.stroke();
-    ctx.fillText(formatAxisValue(value), 8, y + 4);
+    ctx.fillText(formatAxisValue(value), 8, y);
   }
+  ctx.textBaseline = "alphabetic";
   const xTicks = 6;
   for (let i = 0; i <= xTicks; i += 1) {
     const ratio = i / xTicks;
