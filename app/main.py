@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from app.backtesting import (
     BacktestRunRequest,
     ProfileTestRequest,
+    cancel_backtest_job,
     close_profile_adapter,
     get_backtest_job,
     inspect_profile_record,
@@ -248,6 +249,7 @@ class DatasetCache:
             "video_keys": self.video_keys,
             "numeric_keys": self.numeric_keys,
             "features": self.features,
+            "stats": self.stats,
             "tasks": self.tasks[:100],
         }
 
@@ -748,6 +750,19 @@ def backtest_job(job_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@app.post("/api/backtests/jobs/{job_id}/cancel")
+def backtest_job_cancel(job_id: str) -> dict[str, Any]:
+    try:
+        result = cancel_backtest_job(job_id)
+        log_operation("backtest_job_cancel", "success", target=job_id)
+        return result
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        log_operation("backtest_job_cancel", "failed", target=job_id, error=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/api/backtests/runs")
 def backtest_runs(limit: int = Query(100, ge=1, le=500)) -> list[dict[str, Any]]:
     return list_backtest_runs(limit)
@@ -1073,6 +1088,11 @@ def suggest_paths(path: str = Query("", description="Partial local path")) -> di
     return build_path_suggestions(path)
 
 
+@app.get("/api/path/list")
+def list_directory(path: str = Query("/", description="Directory path")) -> dict[str, Any]:
+    return build_directory_listing(path)
+
+
 @app.get("/api/datasets/{key}")
 def get_dataset(key: str) -> dict[str, Any]:
     return get_cache(key).summary()
@@ -1187,11 +1207,58 @@ def build_path_suggestions(raw_path: str) -> dict[str, Any]:
                 "name": child.name,
                 "path": str(child),
                 "is_dir": child.is_dir(),
-                "has_dataset_marker": child.is_dir() and (child / "meta" / "info.json").exists(),
+                "has_dataset_marker": child.is_dir() and has_dataset_marker(child),
             }
         )
 
     return {"base": str(parent), "query": query, "items": items}
+
+
+def build_directory_listing(raw_path: str) -> dict[str, Any]:
+    current = normalize_directory_path(raw_path)
+    try:
+        children = sorted(
+            (child for child in current.iterdir() if child.is_dir()),
+            key=lambda child: child.name.lower(),
+        )
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"无法读取目录: {exc}") from exc
+
+    items = [
+        {
+            "name": child.name,
+            "path": str(child),
+            "has_dataset_marker": has_dataset_marker(child),
+        }
+        for child in children
+    ]
+    parent = current.parent if current.parent != current else None
+    return {
+        "path": str(current),
+        "parent": str(parent) if parent else None,
+        "is_root": parent is None,
+        "items": items,
+    }
+
+
+def normalize_directory_path(raw_path: str) -> Path:
+    cleaned = raw_path.strip().strip('"').strip("'")
+    if not cleaned:
+        cleaned = "/"
+    path = Path(os.path.expanduser(cleaned))
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    try:
+        resolved = path.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"目录不存在: {path}") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"目录无法访问: {path}") from exc
+    if resolved.is_file():
+        resolved = resolved.parent
+    if not resolved.is_dir():
+        raise HTTPException(status_code=400, detail=f"不是目录: {resolved}")
+    return resolved
 
 
 def list_path_roots() -> list[dict[str, Any]]:
@@ -1227,10 +1294,17 @@ def list_posix_start_points() -> list[dict[str, Any]]:
                 "name": name,
                 "path": str(resolved),
                 "is_dir": True,
-                "has_dataset_marker": (resolved / "meta" / "info.json").exists(),
+                "has_dataset_marker": has_dataset_marker(resolved),
             }
         )
     return items
+
+
+def has_dataset_marker(path: Path) -> bool:
+    try:
+        return (path / "meta" / "info.json").exists()
+    except OSError:
+        return False
 
 
 def is_numeric_feature(feature: dict[str, Any]) -> bool:

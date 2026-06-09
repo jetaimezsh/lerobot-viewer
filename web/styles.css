@@ -385,8 +385,47 @@ h3 {
 .episode-list {
   display: grid;
   gap: 8px;
-  max-height: calc(100vh - 340px);
+  max-height: calc(100vh - 320px);
   overflow: auto;
+}
+
+.episode-side-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.episode-side-header .side-title {
+  margin-bottom: 0;
+}
+
+.episode-sort-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: #b9c9d4;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.episode-sort-control select {
+  width: 92px;
+  height: 28px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  color: #f4fbfc;
+  font-size: 12px;
+  line-height: 28px;
+  padding: 0 24px 0 8px;
+}
+
+.episode-sort-control option {
+  color: #13212a;
 }
 
 .episode-list.empty,
@@ -549,6 +588,40 @@ h3 {
   border-color: rgba(183, 110, 0, 0.3);
   background: #fff7e8;
   color: #805000;
+}
+
+.dataset-stats-surface {
+  margin-top: 16px;
+}
+
+.dataset-stats {
+  overflow-x: auto;
+}
+
+.dataset-stats table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.dataset-stats th,
+.dataset-stats td {
+  border-bottom: 1px solid var(--line);
+  padding: 9px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.dataset-stats th {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  background: var(--soft);
+}
+
+.dataset-stats td {
+  overflow-wrap: anywhere;
 }
 
 .task-list {
@@ -832,9 +905,9 @@ h3 {
 
 .folder-browser-dialog {
   background: #fff;
-  border-radius: 12px;
-  width: min(560px, 90vw);
-  max-height: 80vh;
+  border-radius: 8px;
+  width: min(720px, 92vw);
+  max-height: 84vh;
   display: flex;
   flex-direction: column;
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.18);
@@ -870,10 +943,18 @@ h3 {
   color: #334155;
   font-size: 13px;
   height: 32px;
+  min-width: 58px;
+  padding: 0 12px;
+}
+
+.folder-browser-nav button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .folder-browser-nav input {
   flex: 1;
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 4px 10px;
@@ -884,7 +965,7 @@ h3 {
 .folder-browser-list {
   flex: 1;
   overflow-y: auto;
-  max-height: 360px;
+  max-height: 420px;
   padding: 8px 20px;
   display: flex;
   flex-direction: column;
@@ -895,6 +976,7 @@ h3 {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 8px 10px;
   border-radius: 6px;
   cursor: pointer;
@@ -908,12 +990,21 @@ h3 {
 }
 .fb-item:hover { background: #f1f5f9; }
 .fb-item strong { font-size: 11px; color: #2f9e44; }
-.fb-item.fb-file {
-  cursor: default;
-  color: #94a3b8;
-  opacity: 0.72;
+
+.fb-item-name {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.fb-item.fb-file:hover { background: none; }
+
+.fb-folder-icon {
+  color: #64717f;
+  font-size: 11px;
+}
 
 .fb-empty { color: #94a3b8; font-size: 13px; padding: 12px 0; text-align: center; }
 
@@ -939,6 +1030,11 @@ h3 {
   background: var(--blue, #2f6fbb);
   height: 34px;
   font-size: 14px;
+}
+
+.fb-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .system-grid {

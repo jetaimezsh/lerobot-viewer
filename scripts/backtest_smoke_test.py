@@ -29,6 +29,7 @@ from app.backtesting import (
     BacktestRunRequest,
     ProfileTestRequest,
     build_observation,
+    cancel_backtest_job,
     close_profile_adapter,
     decode_video_observations,
     get_backtest_job,
@@ -312,18 +313,73 @@ def check_backtest_worker_job() -> None:
             cleanup_profile(profile_id)
 
 
+def check_backtest_worker_cancel_queued_job() -> None:
+    profile_id = new_profile_id("mock_cancel")
+    with tempfile.TemporaryDirectory(dir=PROJECT_ROOT) as directory:
+        work = Path(directory)
+        dataset = work / "dataset"
+        create_no_video_dataset(dataset, [3], task="cancel task")
+        caches = {str(dataset.resolve()): DatasetCache(dataset)}
+        try:
+            create_mock_profile(profile_id, [0.0, 0.0], {"sleep_ms": 80})
+            first_job = submit_backtest_job(
+                BacktestRunRequest(
+                    profile_ids=[profile_id],
+                    episodes=[BacktestEpisodeRef(dataset_path=str(dataset), episode_index=0)],
+                    max_frames=3,
+                ),
+                lambda path: caches[str(Path(path).resolve())],
+            )
+            second_job = submit_backtest_job(
+                BacktestRunRequest(
+                    profile_ids=[profile_id],
+                    episodes=[BacktestEpisodeRef(dataset_path=str(dataset), episode_index=0)],
+                    max_frames=3,
+                ),
+                lambda path: caches[str(Path(path).resolve())],
+            )
+            cancelled = cancel_backtest_job(second_job["job_id"])
+            assert_equal(cancelled["status"], "cancelled", "queued backtest job cancelled")
+            assert_equal(cancelled["run_id"], None, "cancelled job has no run id")
+            latest = first_job
+            for _ in range(40):
+                latest = get_backtest_job(first_job["job_id"])
+                if latest["status"] in {"done", "failed"}:
+                    break
+                time.sleep(0.05)
+            assert_equal(latest["status"], "done", "first job still completes after queued cancel")
+            second_latest = get_backtest_job(second_job["job_id"])
+            assert_equal(second_latest["status"], "cancelled", "cancelled job remains cancelled")
+            assert_equal(second_latest["run_id"], None, "cancelled job never creates a run")
+        finally:
+            cleanup_profile(profile_id)
+
+
 class VideoBatchAdapter(BacktestAdapter):
     adapter_name = "video_batch_test"
     label = "Video batch test"
     test_only = False
 
+    def __init__(self) -> None:
+        super().__init__()
+        self.predict_calls = 0
+        self.predict_batch_calls: list[int] = []
+
     def load(self, profile: dict) -> None:
         self.profile = profile
 
     def predict(self, observation: dict) -> np.ndarray:
+        self.predict_calls += 1
         assert_equal("observation.images.front" in observation, True, "front image passed to video adapter")
         assert_equal("observation.images.wrist" in observation, True, "wrist image passed to video adapter")
         return np.asarray([0.0, 0.0], dtype=np.float64)
+
+    def predict_batch(self, observations: list[dict]) -> list[np.ndarray]:
+        self.predict_batch_calls.append(len(observations))
+        for observation in observations:
+            assert_equal("observation.images.front" in observation, True, "front image passed to video adapter")
+            assert_equal("observation.images.wrist" in observation, True, "wrist image passed to video adapter")
+        return [np.asarray([0.0, 0.0], dtype=np.float64) for _ in observations]
 
     def reset_episode(self) -> None:
         return None
@@ -375,6 +431,8 @@ def check_chunked_video_backtest_decode() -> None:
             assert_equal(result["status"], "done", "chunked video backtest status")
             assert_equal(result["frames"], 45, "chunked video backtest frames")
             assert_equal(calls, [(0, 7), (7, 7), (14, 7), (21, 7), (28, 7), (35, 7), (42, 3)], "video decode chunk plan")
+            assert_equal(adapter.predict_batch_calls, [7, 7, 7, 7, 7, 7, 3], "video predictions batched by chunk")
+            assert_equal(adapter.predict_calls, 0, "video backtest does not fall back to per-frame predict")
         finally:
             backtesting_module.decode_video_observations = original_decode
             backtesting_module.BACKTEST_VIDEO_DECODE_CHUNK_FRAMES = original_chunk
@@ -413,6 +471,10 @@ class FakeTensor:
     @property
     def ndim(self):
         return self.value.ndim
+
+    @property
+    def shape(self):
+        return self.value.shape
 
     def reshape(self, *shape):
         return FakeTensor(self.value.reshape(*shape))
@@ -454,6 +516,10 @@ class FakePolicy:
     def select_action(self, batch):
         self.seen_batch = batch
         assert_equal(batch.get("normalized"), True, "official adapter preprocessor applied")
+        sample = batch.get("sample") or {}
+        state = sample.get("observation.state")
+        if getattr(state, "shape", ()) and state.shape[0] == 2:
+            return np.asarray([[0.25, 0.5], [0.75, 1.0]], dtype=np.float32)
         return np.asarray([[0.25, 0.5]], dtype=np.float32)
 
 
@@ -468,6 +534,11 @@ def check_official_adapter_processor_flow() -> None:
     action = adapter.predict({"observation.state": np.asarray([1.0, 2.0]), "timestamp": 0.0})
     assert_equal(action.tolist(), [1.0, 2.0], "official adapter postprocessor unnormalizes action")
     assert_equal("sample" in policy.seen_batch, True, "official adapter forwards preprocessed sample")
+    actions = adapter.predict_batch([
+        {"observation.state": np.asarray([1.0, 2.0]), "timestamp": 0.0},
+        {"observation.state": np.asarray([3.0, 4.0]), "timestamp": 0.1},
+    ])
+    assert_equal([action.tolist() for action in actions], [[1.0, 2.0], [3.0, 4.0]], "official adapter batched actions split per observation")
     assert_equal(policy_action_to_array({"action": [[3.0, 4.0]]}).tolist(), [3.0, 4.0], "policy action dict flattened")
 
     def keyword_only_factory(*, policy_cfg, pretrained_path):
@@ -517,6 +588,8 @@ def main() -> None:
     print("ok: backtest environment variables passed")
     check_backtest_worker_job()
     print("ok: backtest worker job passed")
+    check_backtest_worker_cancel_queued_job()
+    print("ok: backtest queued job cancellation passed")
     check_chunked_video_backtest_decode()
     print("ok: chunked video backtest decode passed")
     check_video_observation_builder()

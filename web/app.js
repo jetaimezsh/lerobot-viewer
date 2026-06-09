@@ -2,6 +2,7 @@ const state = {
   datasetId: null,
   summary: null,
   episodes: [],
+  episodeSort: "index-asc",
   history: [],
   suggestions: [],
   suggestionTimer: null,
@@ -46,6 +47,9 @@ const state = {
   selectedTrainingRecipeId: null,
   trainingJobs: [],
   trainingPipelines: [],
+  folderBrowserPath: "",
+  folderBrowserParent: null,
+  folderBrowserRequestId: 0,
 };
 
 const ACTIVE_BACKTEST_JOB_KEY = "lerobotViewer.activeBacktestJobId";
@@ -61,8 +65,10 @@ const els = {
   installRequirements: document.getElementById("installRequirements"),
   installOutput: document.getElementById("installOutput"),
   episodeList: document.getElementById("episodeList"),
+  episodeSort: document.getElementById("episodeSort"),
   episodeSideSection: document.getElementById("episodeSideSection"),
   datasetSummary: document.getElementById("datasetSummary"),
+  datasetStats: document.getElementById("datasetStats"),
   featureList: document.getElementById("featureList"),
   taskList: document.getElementById("taskList"),
   pageTitle: document.getElementById("pageTitle"),
@@ -130,6 +136,7 @@ const els = {
   folderBrowser: document.getElementById("folderBrowser"),
   folderBrowserClose: document.getElementById("folderBrowserClose"),
   folderBrowserUp: document.getElementById("folderBrowserUp"),
+  folderBrowserRefresh: document.getElementById("folderBrowserRefresh"),
   folderBrowserPath: document.getElementById("folderBrowserPath"),
   folderBrowserList: document.getElementById("folderBrowserList"),
   folderBrowserSelect: document.getElementById("folderBrowserSelect"),
@@ -496,7 +503,7 @@ function currentEpisodeIndex() {
 function currentEpisodePosition() {
   const episodeIndex = currentEpisodeIndex();
   if (episodeIndex === null) return -1;
-  return state.episodes.findIndex((episode) => Number(episode.episode_index) === episodeIndex);
+  return sortedEpisodes().findIndex((episode) => Number(episode.episode_index) === episodeIndex);
 }
 
 async function loadEnv() {
@@ -548,6 +555,7 @@ async function openDataset() {
     renderSummary();
     renderFeatures();
     renderTasks();
+    renderDatasetStats();
     renderEpisodes();
     resetEpisodeView();
     await loadHistory();
@@ -685,6 +693,89 @@ function renderFeatures() {
   }).join("");
 }
 
+function renderDatasetStats() {
+  if (!els.datasetStats) return;
+  const stats = state.summary?.stats || {};
+  const rows = datasetStatRows(stats);
+  if (!rows.length) {
+    els.datasetStats.classList.add("empty");
+    els.datasetStats.innerHTML = "meta/stats.json 中没有可显示的统计信息。";
+    return;
+  }
+  els.datasetStats.classList.remove("empty");
+  const columns = datasetStatColumns(rows);
+  els.datasetStats.innerHTML = `
+    <table>
+      <thead>
+        <tr>
+          <th>Feature</th>
+          ${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map((row) => `
+          <tr>
+            <td><strong>${escapeHtml(row.name)}</strong></td>
+            ${columns.map((column) => `<td>${escapeHtml(formatStatValue(row.stats[column]))}</td>`).join("")}
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function datasetStatColumns(rows) {
+  const standard = ["count", "min", "max", "mean", "std"];
+  return standard.filter((key) => rows.some((row) => row.stats[key] !== undefined));
+}
+
+function datasetStatRows(stats) {
+  if (!stats || typeof stats !== "object") return [];
+  return Object.entries(stats)
+    .filter(([, value]) => value && typeof value === "object" && !Array.isArray(value))
+    .map(([name, value]) => ({ name, stats: standardStats(value) }))
+    .filter((row) => Object.keys(row.stats).length)
+    .sort((a, b) => statFeatureRank(a.name) - statFeatureRank(b.name) || a.name.localeCompare(b.name));
+}
+
+function standardStats(raw) {
+  const result = {};
+  for (const key of ["count", "min", "max", "mean", "std"]) {
+    if (Object.prototype.hasOwnProperty.call(raw, key)) result[key] = raw[key];
+  }
+  return result;
+}
+
+function statFeatureRank(name) {
+  const lower = String(name).toLowerCase();
+  if (lower.includes("action")) return 0;
+  if (lower.includes("state")) return 1;
+  if (lower.includes("observation")) return 2;
+  return 3;
+}
+
+function formatStatValue(value) {
+  if (value === undefined || value === null) return "-";
+  if (typeof value === "number") return formatNumber(value);
+  if (Array.isArray(value)) {
+    const flat = value.flat ? value.flat(Infinity) : value;
+    const shown = flat.slice(0, 6).map(formatStatValue).join(", ");
+    return flat.length > 6 ? `[${shown}, ...]` : `[${shown}]`;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value).slice(0, 4).map(([key, item]) => `${key}: ${formatStatValue(item)}`);
+    return entries.length ? `{${entries.join(", ")}}` : "{}";
+  }
+  return String(value);
+}
+
+function formatNumber(value) {
+  if (!Number.isFinite(value)) return String(value);
+  const abs = Math.abs(value);
+  if (abs !== 0 && (abs < 0.001 || abs >= 100000)) return value.toExponential(3);
+  return Number(value.toFixed(6)).toString();
+}
+
 function renderTasks() {
   const tasks = state.summary?.tasks || [];
   if (!tasks.length) {
@@ -705,13 +796,14 @@ function renderEpisodes() {
     return;
   }
   els.episodeList.classList.remove("empty");
-  els.episodeList.innerHTML = state.episodes.map((episode) => {
+  const currentIndex = currentEpisodeIndex();
+  els.episodeList.innerHTML = sortedEpisodes().map((episode) => {
     const index = episode.episode_index;
     const length = episode.length ?? "-";
     const task = Array.isArray(episode.tasks) ? episode.tasks.join(", ") : "";
     const videoCount = Array.isArray(episode.videos) ? episode.videos.length : 0;
     return `
-      <button class="episode-item" data-episode="${index}">
+      <button class="episode-item ${Number(index) === currentIndex ? "active" : ""}" data-episode="${index}">
         <strong>Episode ${index}</strong>
         <small>${length} frames · ${videoCount} views${task ? ` · ${escapeHtml(task)}` : ""}</small>
       </button>
@@ -721,6 +813,27 @@ function renderEpisodes() {
     item.addEventListener("click", () => loadEpisode(Number(item.dataset.episode)));
   }
   renderEpisodeNavigation();
+}
+
+function sortedEpisodes() {
+  const direction = state.episodeSort.endsWith("-desc") ? -1 : 1;
+  const field = state.episodeSort.startsWith("frames") ? "length" : "episode_index";
+  return state.episodes.slice().sort((a, b) => {
+    const primary = compareNumber(a[field], b[field]) * direction;
+    if (primary) return primary;
+    return compareNumber(a.episode_index, b.episode_index);
+  });
+}
+
+function compareNumber(a, b) {
+  const left = Number(a);
+  const right = Number(b);
+  const leftValid = Number.isFinite(left);
+  const rightValid = Number.isFinite(right);
+  if (leftValid && rightValid) return left - right;
+  if (leftValid) return -1;
+  if (rightValid) return 1;
+  return 0;
 }
 
 function resetEpisodeView() {
@@ -755,14 +868,15 @@ function renderEpisodeNavigation() {
   if (!els.prevEpisode || !els.nextEpisode) return;
   const position = currentEpisodePosition();
   const hasEpisode = position >= 0;
+  const episodes = sortedEpisodes();
   els.prevEpisode.disabled = !hasEpisode || position === 0;
-  els.nextEpisode.disabled = !hasEpisode || position >= state.episodes.length - 1;
+  els.nextEpisode.disabled = !hasEpisode || position >= episodes.length - 1;
 }
 
 async function loadAdjacentEpisode(delta) {
   const position = currentEpisodePosition();
   if (position < 0) return;
-  const next = state.episodes[position + delta];
+  const next = sortedEpisodes()[position + delta];
   if (!next) return;
   await loadEpisode(Number(next.episode_index));
 }
@@ -2814,6 +2928,16 @@ async function pollBacktestJob(jobId) {
         await loadBacktestHistory();
         return;
       }
+      if (job.status === "cancelled") {
+        if (isDisplayingBacktestJob(jobId)) {
+          els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测任务已取消</h4><p>${escapeHtml(job.error || "已取消等待中的回测任务")}</p></div>`;
+          state.displayedBacktestJobId = null;
+        }
+        forgetActiveBacktestJob(jobId);
+        await loadBacktestJobs();
+        await loadBacktestHistory();
+        return;
+      }
       if (job.status === "interrupted") {
         if (isDisplayingBacktestJob(jobId)) {
           els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测任务已中断</h4><p>${escapeHtml(job.error || "服务重启后无法继续这个后台任务")}</p></div>`;
@@ -2846,58 +2970,102 @@ function isDisplayingBacktestJob(jobId) {
 }
 
 function rememberActiveBacktestJob(jobId) {
+  if (!jobId) return;
   try {
-    localStorage.setItem(ACTIVE_BACKTEST_JOB_KEY, jobId);
+    const ids = activeBacktestJobIds();
+    if (!ids.includes(jobId)) ids.push(jobId);
+    saveActiveBacktestJobIds(ids);
   } catch (_) {}
 }
 
 function forgetActiveBacktestJob(jobId) {
   try {
-    if (!jobId || localStorage.getItem(ACTIVE_BACKTEST_JOB_KEY) === jobId) {
+    if (!jobId) {
       localStorage.removeItem(ACTIVE_BACKTEST_JOB_KEY);
+      return;
     }
+    saveActiveBacktestJobIds(activeBacktestJobIds().filter((id) => id !== jobId));
   } catch (_) {}
 }
 
-async function restoreActiveBacktestJob() {
-  let jobId = "";
+function activeBacktestJobIds() {
   try {
-    jobId = localStorage.getItem(ACTIVE_BACKTEST_JOB_KEY) || "";
+    const raw = localStorage.getItem(ACTIVE_BACKTEST_JOB_KEY) || "";
+    if (!raw) return [];
+    if (raw.trim().startsWith("[")) {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : [];
+    }
+    return [raw];
   } catch (_) {
-    jobId = "";
+    return [];
   }
-  if (!jobId) return;
+}
+
+function saveActiveBacktestJobIds(jobIds) {
+  const unique = Array.from(new Set(jobIds.filter(Boolean)));
+  if (!unique.length) {
+    localStorage.removeItem(ACTIVE_BACKTEST_JOB_KEY);
+    return;
+  }
+  localStorage.setItem(ACTIVE_BACKTEST_JOB_KEY, JSON.stringify(unique));
+}
+
+async function restoreActiveBacktestJob() {
+  const jobIds = activeBacktestJobIds();
+  if (!jobIds.length) return;
   setView("modelBacktestView");
+  await Promise.all(jobIds.map((jobId) => restoreOneActiveBacktestJob(jobId)));
+}
+
+async function restoreOneActiveBacktestJob(jobId) {
   try {
     const job = await api(`/api/backtests/jobs/${encodeURIComponent(jobId)}`);
-    showBacktestJobStatus(job);
+    if (!state.displayedBacktestJobId) showBacktestJobStatus(job);
     await loadBacktestJobs();
     if (job.status === "done") {
-      state.backtestResult = job.result || await api(`/api/backtests/runs/${encodeURIComponent(job.run_id)}`);
-      state.visibleBacktestModels = new Set(state.backtestResult.profile_ids || state.backtestResult.model_ids || []);
-      renderBacktestResult();
+      if (isDisplayingBacktestJob(jobId)) {
+        state.backtestResult = job.result || await api(`/api/backtests/runs/${encodeURIComponent(job.run_id)}`);
+        state.visibleBacktestModels = new Set(state.backtestResult.profile_ids || state.backtestResult.model_ids || []);
+        renderBacktestResult();
+      }
       forgetActiveBacktestJob(jobId);
       await loadBacktestHistory();
       return;
     }
     if (job.status === "failed") {
-      els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测失败</h4><p>${escapeHtml(job.error || "后台任务失败")}</p></div>`;
-      state.displayedBacktestJobId = null;
+      if (isDisplayingBacktestJob(jobId)) {
+        els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测失败</h4><p>${escapeHtml(job.error || "后台任务失败")}</p></div>`;
+        state.displayedBacktestJobId = null;
+      }
+      forgetActiveBacktestJob(jobId);
+      await loadBacktestHistory();
+      return;
+    }
+    if (job.status === "cancelled") {
+      if (isDisplayingBacktestJob(jobId)) {
+        els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测任务已取消</h4><p>${escapeHtml(job.error || "已取消等待中的回测任务")}</p></div>`;
+        state.displayedBacktestJobId = null;
+      }
       forgetActiveBacktestJob(jobId);
       await loadBacktestHistory();
       return;
     }
     if (job.status === "interrupted") {
-      els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测任务已中断</h4><p>${escapeHtml(job.error || "服务重启后无法继续这个后台任务")}</p></div>`;
-      state.displayedBacktestJobId = null;
+      if (isDisplayingBacktestJob(jobId)) {
+        els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测任务已中断</h4><p>${escapeHtml(job.error || "服务重启后无法继续这个后台任务")}</p></div>`;
+        state.displayedBacktestJobId = null;
+      }
       forgetActiveBacktestJob(jobId);
       return;
     }
     pollBacktestJob(jobId);
   } catch (error) {
     forgetActiveBacktestJob(jobId);
-    state.displayedBacktestJobId = null;
-    els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测任务未找到</h4><p>${escapeHtml(error.message)}</p></div>`;
+    if (isDisplayingBacktestJob(jobId)) {
+      state.displayedBacktestJobId = null;
+      els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>回测任务未找到</h4><p>${escapeHtml(error.message)}</p></div>`;
+    }
   }
 }
 
@@ -3081,6 +3249,11 @@ async function loadBacktestRun(runId) {
 }
 
 function handleBacktestHistoryClick(event) {
+  const cancelJobId = event.target?.dataset?.backtestCancelJobId;
+  if (cancelJobId) {
+    cancelBacktestJob(cancelJobId);
+    return;
+  }
   const runId = event.target?.dataset?.backtestRunId;
   if (!runId) return;
   loadBacktestRun(runId).catch((error) => {
@@ -3233,7 +3406,7 @@ function renderBacktestJobs(jobs) {
     return;
   }
   const ordered = jobs.slice().sort((a, b) => {
-    const rank = { running: 0, queued: 1, failed: 2, done: 3 };
+    const rank = { running: 0, queued: 1, cancelled: 2, failed: 3, done: 4 };
     const diff = (rank[a.status] ?? 9) - (rank[b.status] ?? 9);
     if (diff) return diff;
     return String(b.created_at || "").localeCompare(String(a.created_at || ""));
@@ -3261,7 +3434,7 @@ function renderBacktestJobs(jobs) {
           const episodes = request.episodes || [];
           return `
             <tr>
-              <td><span class="result-status ${job.status === "done" ? "ok" : job.status === "failed" ? "fail" : "neutral"}">${escapeHtml(job.status)}</span></td>
+              <td><span class="result-status ${job.status === "done" ? "ok" : job.status === "failed" || job.status === "cancelled" ? "fail" : "neutral"}">${escapeHtml(job.status)}</span></td>
               <td><code>${escapeHtml(job.job_id)}</code></td>
               <td>${escapeHtml(profileIds.join(", ") || "-")}</td>
               <td>${escapeHtml(episodes.length)}</td>
@@ -3269,13 +3442,41 @@ function renderBacktestJobs(jobs) {
               <td>${escapeHtml(job.created_at || "-")}</td>
               <td>${escapeHtml(job.started_at || "-")}</td>
               <td>${escapeHtml(job.finished_at || "-")}</td>
-              <td>${job.run_id ? `<button type="button" data-backtest-run-id="${escapeAttr(job.run_id)}">查看</button>` : escapeHtml(job.error || "-")}</td>
+              <td>${renderBacktestJobAction(job)}</td>
             </tr>
           `;
         }).join("")}
       </tbody>
     </table>
   `;
+}
+
+function renderBacktestJobAction(job) {
+  if (job.run_id) {
+    return `<button type="button" data-backtest-run-id="${escapeAttr(job.run_id)}">查看</button>`;
+  }
+  if (job.status === "queued") {
+    return `<button type="button" data-backtest-cancel-job-id="${escapeAttr(job.job_id)}">取消</button>`;
+  }
+  return escapeHtml(job.error || "-");
+}
+
+async function cancelBacktestJob(jobId) {
+  if (!jobId) return;
+  try {
+    const job = await api(`/api/backtests/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
+    forgetActiveBacktestJob(jobId);
+    if (isDisplayingBacktestJob(jobId)) {
+      renderBacktestJobStatus(job);
+      state.displayedBacktestJobId = null;
+    }
+    await loadBacktestJobs();
+    await loadBacktestHistory();
+  } catch (error) {
+    els.backtestResult.classList.remove("empty");
+    els.backtestResult.innerHTML = `<div class="result-section result-error"><h4>取消回测失败</h4><p>${escapeHtml(error.message)}</p></div>`;
+    await loadBacktestJobs();
+  }
 }
 
 function drawBacktestChart() {
@@ -3600,47 +3801,58 @@ function openFolderBrowser(targetInput, onSelect) {
   els.folderBrowser.style.display = "flex";
   state._fbOnSelect = onSelect;
   state._fbTarget = targetInput;
-  const startDir = (targetInput && targetInput.value) ? targetInput.value.trim() : "";
+  const startDir = (targetInput && targetInput.value) ? targetInput.value.trim() : "/";
   navigateFolderBrowser(startDir);
 }
 
 function closeFolderBrowser() {
   if (els.folderBrowser) els.folderBrowser.style.display = "none";
+  state.folderBrowserRequestId += 1;
 }
 
 async function navigateFolderBrowser(dir) {
+  const requestId = state.folderBrowserRequestId + 1;
+  state.folderBrowserRequestId = requestId;
   try {
     if (!els.folderBrowserList || !els.folderBrowserCurrent) return;
-    const result = await api("/api/path/suggest?path=" + encodeURIComponent(dir));
-    state._fbBase = result.base || dir;
-    state._fbItems = result.items || [];
-    els.folderBrowserCurrent.textContent = result.base || dir || "/";
-    els.folderBrowserPath.value = "";
-    if (!state._fbItems.length) {
+    state.folderBrowserPath = "";
+    state.folderBrowserParent = null;
+    setFolderBrowserBusy(true);
+    els.folderBrowserList.innerHTML = "<span class=\"fb-empty\">加载中...</span>";
+    const result = await api("/api/path/list?path=" + encodeURIComponent(dir || "/"));
+    if (requestId !== state.folderBrowserRequestId) return;
+    const items = result.items || [];
+    state.folderBrowserPath = result.path || "/";
+    state.folderBrowserParent = result.parent || null;
+    els.folderBrowserCurrent.textContent = state.folderBrowserPath;
+    els.folderBrowserPath.value = state.folderBrowserPath;
+    if (els.folderBrowserUp) {
+      els.folderBrowserUp.disabled = !state.folderBrowserParent;
+      els.folderBrowserUp.dataset.path = state.folderBrowserParent || "";
+    }
+    if (!items.length) {
       els.folderBrowserList.innerHTML = "<span class=\"fb-empty\">此目录下没有子文件夹</span>";
       return;
     }
-    const html = state._fbItems.map(function (item) {
-      if (item.is_dir) {
-        return `<button class="fb-item" type="button" data-path="${escapeAttr(item.path)}">
-          <span>📁 ${escapeHtml(item.name)}</span>
-          ${item.has_dataset_marker ? "<strong>dataset</strong>" : ""}
-        </button>`;
-      }
-      return `<div class="fb-item fb-file">
-        <span>📄 ${escapeHtml(item.name)}</span>
-      </div>`;
+    const html = items.map(function (item) {
+      return `<button class="fb-item" type="button" data-path="${escapeAttr(item.path)}">
+        <span class="fb-item-name"><span class="fb-folder-icon">▸</span>${escapeHtml(item.name)}</span>
+        ${item.has_dataset_marker ? "<strong>dataset</strong>" : ""}
+      </button>`;
     }).join("");
     els.folderBrowserList.innerHTML = html;
-    const buttons = els.folderBrowserList.querySelectorAll(".fb-item:not(.fb-file)");
-    for (let i = 0; i < buttons.length; i++) {
-      buttons[i].addEventListener("click", (function (path) {
-        return function () { navigateFolderBrowser(path); };
-      })(buttons[i].dataset.path));
-    }
   } catch (error) {
+    if (requestId !== state.folderBrowserRequestId) return;
     els.folderBrowserList.innerHTML = "<span class=\"fb-empty\">" + escapeHtml(error.message) + "</span>";
+  } finally {
+    if (requestId === state.folderBrowserRequestId) setFolderBrowserBusy(false);
   }
+}
+
+function setFolderBrowserBusy(isBusy) {
+  if (els.folderBrowserSelect) els.folderBrowserSelect.disabled = isBusy || !state.folderBrowserPath;
+  if (els.folderBrowserRefresh) els.folderBrowserRefresh.disabled = isBusy;
+  if (els.folderBrowserUp) els.folderBrowserUp.disabled = isBusy || !state.folderBrowserParent;
 }
 
 function resetMergeStatus() {
@@ -3934,7 +4146,7 @@ els.applyMerge.addEventListener("click", applyMergePlan);
 
 if (els.folderBrowserClose) els.folderBrowserClose.addEventListener("click", closeFolderBrowser);
 if (els.folderBrowserSelect) els.folderBrowserSelect.addEventListener("click", () => {
-  const dir = (state._fbBase || "").trim();
+  const dir = (state.folderBrowserPath || "").trim();
   if (dir) {
     if (state._fbOnSelect) {
       state._fbOnSelect(dir);
@@ -3945,37 +4157,11 @@ if (els.folderBrowserSelect) els.folderBrowserSelect.addEventListener("click", (
   closeFolderBrowser();
 });
 if (els.folderBrowserUp) els.folderBrowserUp.addEventListener("click", () => {
-  const current = (state._fbBase || "").trim();
-  // Windows 盘符根目录（D:\）→ 退回盘符列表
-  if (/^[A-Za-z]:[\\/]$/.test(current)) {
-    navigateFolderBrowser("");
-    return;
-  }
-  // Unix 根目录 / → 不再往上
-  if (current === "/") {
-    navigateFolderBrowser("/");
-    return;
-  }
-  // 先去掉末尾分隔符再找上级
-  const stripped = current.replace(/[\\/]+$/, "");
-  const idx = Math.max(stripped.lastIndexOf("/"), stripped.lastIndexOf("\\"));
-  let parent;
-  if (idx > 0) {
-    parent = stripped.substring(0, idx);
-    // Windows: D: → D:\
-    if (/^[A-Za-z]:$/.test(parent)) parent += "\\";
-  } else if (idx === 0) {
-    // Unix: /home → /
-    parent = "/";
-  } else {
-    // 无分隔符（如裸 D:）→ 退回盘符列表
-    if (/^[A-Za-z]:$/.test(stripped)) {
-      navigateFolderBrowser("");
-      return;
-    }
-    parent = stripped;
-  }
-  navigateFolderBrowser(parent);
+  const parent = state.folderBrowserParent || els.folderBrowserUp.dataset.path || "";
+  if (parent) navigateFolderBrowser(parent);
+});
+if (els.folderBrowserRefresh) els.folderBrowserRefresh.addEventListener("click", () => {
+  navigateFolderBrowser(state.folderBrowserPath || "/");
 });
 if (els.folderBrowserPath) els.folderBrowserPath.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
@@ -3983,8 +4169,18 @@ if (els.folderBrowserPath) els.folderBrowserPath.addEventListener("keydown", (ev
     navigateFolderBrowser(els.folderBrowserPath.value.trim());
   }
 });
+if (els.folderBrowserList) els.folderBrowserList.addEventListener("click", (event) => {
+  const item = event.target.closest(".fb-item");
+  if (!item || !els.folderBrowserList.contains(item)) return;
+  const path = item.dataset.path || "";
+  if (path) navigateFolderBrowser(path);
+});
 if (els.folderBrowser) els.folderBrowser.addEventListener("click", (event) => {
   if (event.target === els.folderBrowser) closeFolderBrowser();
+});
+if (els.episodeSort) els.episodeSort.addEventListener("change", () => {
+  state.episodeSort = els.episodeSort.value || "index-asc";
+  renderEpisodes();
 });
 
 // Enter key in merge textarea adds path, then clears input

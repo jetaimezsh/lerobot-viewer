@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>LeRobot Dataset v3.0 Viewer</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260603-select-align-fix">
+  <link rel="stylesheet" href="/static/styles.css?v=20260609-folder-browser-fix">
 </head>
 <body>
   <div class="shell">
@@ -59,7 +59,18 @@
       </nav>
 
       <section id="episodeSideSection" class="side-section">
-        <div class="side-title">Episodes</div>
+        <div class="episode-side-header">
+          <div class="side-title">Episodes</div>
+          <label class="episode-sort-control">
+            <span>排序</span>
+            <select id="episodeSort">
+              <option value="index-asc">Index ↑</option>
+              <option value="index-desc">Index ↓</option>
+              <option value="frames-asc">Frames ↑</option>
+              <option value="frames-desc">Frames ↓</option>
+            </select>
+          </label>
+        </div>
         <div id="episodeList" class="episode-list empty">加载数据集后显示 episode</div>
       </section>
     </aside>
@@ -96,6 +107,11 @@
             <div id="taskList" class="task-list empty">暂无任务信息</div>
           </section>
         </div>
+
+        <section class="surface dataset-stats-surface">
+          <div class="section-kicker">Dataset Statistics</div>
+          <div id="datasetStats" class="dataset-stats empty">暂无统计信息</div>
+        </section>
       </section>
 
       <section id="episodeView" class="view">
@@ -599,7 +615,8 @@
       <button id="folderBrowserClose" type="button" class="fb-close">✕</button>
     </div>
     <div class="folder-browser-nav">
-      <button id="folderBrowserUp" type="button">⬆ 上级目录</button>
+      <button id="folderBrowserUp" type="button">上级</button>
+      <button id="folderBrowserRefresh" type="button">刷新</button>
       <input id="folderBrowserPath" type="text" placeholder="输入路径后按 Enter 跳转">
     </div>
     <div id="folderBrowserList" class="folder-browser-list">加载中...</div>
@@ -610,7 +627,7 @@
   </div>
 </div>
 
-  <script src="/static/app.js?v=20260603-accelerate-train"></script>
+  <script src="/static/app.js?v=20260609-folder-browser-fix"></script>
 
 </body>
 </html>

@@ -160,6 +160,23 @@ class LeRobotOfficialAdapter(BacktestAdapter):
             action = self.postprocessor(action)
         return policy_action_to_array(action)
 
+    def predict_batch(self, observations: list[dict[str, Any]]) -> list[np.ndarray]:
+        if not observations:
+            return []
+        if len(observations) == 1:
+            return [self.predict(observations[0])]
+        if self.policy is None or self.torch is None or self.profile is None:
+            raise RuntimeError("model is not loaded")
+        try:
+            batch = self._build_policy_batch_many(observations)
+            with self.torch.inference_mode():
+                actions = self.policy.select_action(batch)
+            if self.postprocessor is not None:
+                actions = self.postprocessor(actions)
+            return policy_actions_to_arrays(actions, len(observations))
+        except Exception:
+            return super().predict_batch(observations)
+
     def _build_policy_batch(self, observation: dict[str, Any]) -> dict[str, Any]:
         if self.preprocessor is not None:
             sample = {key: self._to_tensor(value, add_batch=False) for key, value in observation.items()}
@@ -176,6 +193,17 @@ class LeRobotOfficialAdapter(BacktestAdapter):
                     ) from second_exc
         return {key: self._to_tensor(value, add_batch=True) for key, value in observation.items()}
 
+    def _build_policy_batch_many(self, observations: list[dict[str, Any]]) -> dict[str, Any]:
+        keys = list(observations[0].keys())
+        batch = {
+            key: self._to_batched_tensor([observation[key] for observation in observations])
+            for key in keys
+            if all(key in observation for observation in observations)
+        }
+        if self.preprocessor is not None:
+            return self.preprocessor(batch)
+        return batch
+
     def _to_tensor(self, value: Any, add_batch: bool) -> Any:
         if isinstance(value, str):
             return [value] if add_batch else value
@@ -187,6 +215,21 @@ class LeRobotOfficialAdapter(BacktestAdapter):
             tensor = tensor.reshape(1)
         if add_batch:
             tensor = tensor.unsqueeze(0)
+        return tensor.to((self.profile or {}).get("device") or "cuda")
+
+    def _to_batched_tensor(self, values: list[Any]) -> Any:
+        if any(isinstance(value, str) for value in values):
+            return [str(value) for value in values]
+        arrays = [np.asarray(value) for value in values]
+        if any(array.dtype.kind in {"U", "S", "O"} for array in arrays):
+            return values
+        try:
+            array = np.stack(arrays)
+        except ValueError:
+            array = np.asarray(values)
+        tensor = self.torch.as_tensor(array)
+        if tensor.ndim == 1 and arrays and arrays[0].ndim == 0:
+            tensor = tensor.unsqueeze(-1)
         return tensor.to((self.profile or {}).get("device") or "cuda")
 
     def unload(self) -> None:
@@ -222,6 +265,27 @@ def policy_action_to_array(action: Any) -> np.ndarray:
     if array.ndim == 2:
         array = array[0]
     return array.reshape(-1)
+
+
+def policy_actions_to_arrays(actions: Any, expected_count: int) -> list[np.ndarray]:
+    if isinstance(actions, dict):
+        for key in ["action", "actions", "predicted_action"]:
+            if key in actions:
+                actions = actions[key]
+                break
+    if hasattr(actions, "detach"):
+        actions = actions.detach().to("cpu").numpy()
+    array = np.asarray(actions, dtype=np.float64)
+    if array.ndim == 0:
+        array = array.reshape(1, 1)
+    if array.ndim == 1:
+        if expected_count == 1:
+            return [array.reshape(-1)]
+        if array.shape[0] == expected_count:
+            return [array[index:index + 1] for index in range(expected_count)]
+    if array.shape[0] != expected_count:
+        raise RuntimeError(f"batched action count {array.shape[0]} != observations {expected_count}")
+    return [array[index].reshape(-1) for index in range(expected_count)]
 
 
 def find_processor_factory() -> Any | None:

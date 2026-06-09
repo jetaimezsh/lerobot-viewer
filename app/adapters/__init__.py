@@ -35,6 +35,9 @@ class BacktestAdapter(ABC):
     def predict(self, observation: dict[str, Any]) -> np.ndarray:
         ...
 
+    def predict_batch(self, observations: list[dict[str, Any]]) -> list[np.ndarray]:
+        return [self.predict(observation) for observation in observations]
+
     def prepare_backtest_context(self, dataset: Any) -> None:
         return None
 

@@ -61,7 +61,8 @@ BACKTEST_LOCK = Lock()
 BACKTEST_ENV_LOCK = RLock()
 ENV_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SENSITIVE_ENV_TOKENS = ("TOKEN", "SECRET", "PASSWORD", "PASS", "KEY", "CREDENTIAL", "AUTH")
-BACKTEST_VIDEO_DECODE_CHUNK_FRAMES = 4
+BACKTEST_DEFAULT_BATCH_SIZE = 64
+BACKTEST_VIDEO_DECODE_CHUNK_FRAMES = BACKTEST_DEFAULT_BATCH_SIZE
 
 
 def model_runtime_status() -> dict[str, Any]:
@@ -413,6 +414,33 @@ def get_backtest_job(job_id: str) -> dict[str, Any]:
     return normalize_persisted_job(load_backtest_job_record(job_id))
 
 
+def cancel_backtest_job(job_id: str) -> dict[str, Any]:
+    with BACKTEST_LOCK:
+        job = BACKTEST_JOBS.get(job_id)
+        if job is None:
+            job = load_backtest_job_record(job_id)
+            status = str(job.get("status") or "")
+            if status != "queued":
+                raise ValueError(f"only queued backtest jobs can be cancelled; current status: {status or 'unknown'}")
+            job["status"] = "cancelled"
+            job["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            job["error"] = "cancelled by user"
+            persist_backtest_job(job)
+            return normalize_persisted_job(job)
+
+        status = str(job.get("status") or "")
+        if status != "queued":
+            raise ValueError(f"only queued backtest jobs can be cancelled; current status: {status or 'unknown'}")
+        future = job.get("future")
+        if isinstance(future, Future):
+            future.cancel()
+        job["status"] = "cancelled"
+        job["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        job["error"] = "cancelled by user"
+        persist_backtest_job(job)
+        return public_backtest_job(job)
+
+
 def backtest_worker_status() -> dict[str, Any]:
     with BACKTEST_LOCK:
         queued = sum(1 for job in BACKTEST_JOBS.values() if job.get("status") == "queued")
@@ -429,6 +457,9 @@ def backtest_worker_status() -> dict[str, Any]:
 def _run_backtest_job(job_id: str, request: BacktestRunRequest, cache_loader: Any) -> None:
     with BACKTEST_LOCK:
         job = BACKTEST_JOBS[job_id]
+        if job.get("status") == "cancelled":
+            persist_backtest_job(job)
+            return
         job["status"] = "running"
         job["started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         persist_backtest_job(job)
@@ -562,18 +593,25 @@ def run_episode_backtest(
     adapter.prepare_backtest_context(cache)
     adapter.reset_episode()
     try:
+        batch_size = backtest_batch_size()
         if needs_video:
-            for chunk_start in range(0, len(frames), BACKTEST_VIDEO_DECODE_CHUNK_FRAMES):
-                chunk_end = min(chunk_start + BACKTEST_VIDEO_DECODE_CHUNK_FRAMES, len(frames))
+            for chunk_start in range(0, len(frames), batch_size):
+                chunk_end = min(chunk_start + batch_size, len(frames))
                 video_observations = decode_video_observations(cache, episode, chunk_start, chunk_end - chunk_start)
-                for chunk_offset, (_, frame) in enumerate(frames.iloc[chunk_start:chunk_end].iterrows()):
-                    observation = build_observation(frame, cache.features, video_observations, chunk_offset)
-                    predictions.append(flatten_action(adapter.predict(observation)))
+                observations = [
+                    build_observation(frame, cache.features, video_observations, chunk_offset)
+                    for chunk_offset, (_, frame) in enumerate(frames.iloc[chunk_start:chunk_end].iterrows())
+                ]
+                predictions.extend(flatten_action(action) for action in adapter.predict_batch(observations))
                 del video_observations
         else:
-            for _, frame in frames.iterrows():
-                observation = build_observation(frame, cache.features, {}, 0)
-                predictions.append(flatten_action(adapter.predict(observation)))
+            for chunk_start in range(0, len(frames), batch_size):
+                chunk_end = min(chunk_start + batch_size, len(frames))
+                observations = [
+                    build_observation(frame, cache.features, {}, 0)
+                    for _, frame in frames.iloc[chunk_start:chunk_end].iterrows()
+                ]
+                predictions.extend(flatten_action(action) for action in adapter.predict_batch(observations))
     except Exception as exc:
         return {**source, **profile_info, "episode_index": episode_index, "status": "failed", "error": str(exc)}
     finally:
@@ -599,6 +637,16 @@ def run_episode_backtest(
         "metrics": metrics,
         "series": action_series(ground_truth, predicted),
     }
+
+
+def backtest_batch_size() -> int:
+    raw = os.environ.get("BACKTEST_BATCH_SIZE")
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return BACKTEST_DEFAULT_BATCH_SIZE
+    return max(1, int(BACKTEST_VIDEO_DECODE_CHUNK_FRAMES))
 
 
 def episode_result_source(cache: Any, episode: Any, dataset_path: str | None = None) -> dict[str, Any]:
