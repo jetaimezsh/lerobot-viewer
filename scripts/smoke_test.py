@@ -65,13 +65,22 @@ def check_multiview(path: Path) -> None:
     assert_at_least(len(detail["series"]), 4, "multiview numeric series count")
 
 
-def create_no_video_dataset(root: Path, lengths: list[int], task: str = "test task") -> None:
+def create_no_video_dataset(
+    root: Path,
+    lengths: list[int],
+    task: str | list[str] = "test task",
+    task_index_name: str | None = "task",
+) -> None:
     (root / "data/chunk-000").mkdir(parents=True, exist_ok=True)
     (root / "meta/episodes/chunk-000").mkdir(parents=True, exist_ok=True)
+    task_texts = [task] if isinstance(task, str) else list(dict.fromkeys(task))
+    task_lookup = {text: index for index, text in enumerate(task_texts)}
     frames = []
     episodes = []
     global_index = 0
     for episode_index, length in enumerate(lengths):
+        episode_task = task if isinstance(task, str) else task[episode_index % len(task)]
+        task_index = task_lookup[episode_task]
         start = global_index
         for frame_index in range(length):
             frames.append(
@@ -85,7 +94,7 @@ def create_no_video_dataset(root: Path, lengths: list[int], task: str = "test ta
                     "frame_index": frame_index,
                     "timestamp": np.float32(frame_index / 10),
                     "index": global_index,
-                    "task_index": 0,
+                    "task_index": task_index,
                     "next.done": frame_index == length - 1,
                 }
             )
@@ -97,7 +106,8 @@ def create_no_video_dataset(root: Path, lengths: list[int], task: str = "test ta
                 "data/file_index": 0,
                 "dataset_from_index": start,
                 "dataset_to_index": global_index,
-                "tasks": [task],
+                "task_index": task_index,
+                "tasks": [episode_task],
                 "length": length,
                 "meta/episodes/chunk_index": 0,
                 "meta/episodes/file_index": 0,
@@ -106,7 +116,10 @@ def create_no_video_dataset(root: Path, lengths: list[int], task: str = "test ta
 
     pd.DataFrame(frames).to_parquet(root / "data/chunk-000/file-000.parquet", index=False)
     pd.DataFrame(episodes).to_parquet(root / "meta/episodes/chunk-000/file-000.parquet", index=False)
-    pd.DataFrame({"task_index": [0]}, index=pd.Index([task], name="task")).to_parquet(root / "meta/tasks.parquet")
+    pd.DataFrame(
+        {"task_index": list(range(len(task_texts)))},
+        index=pd.Index(task_texts, name=task_index_name),
+    ).to_parquet(root / "meta/tasks.parquet")
     info = {
         "codebase_version": "v3.0",
         "robot_type": "test",
@@ -160,6 +173,35 @@ def check_no_video_edit_and_merge() -> None:
         assert_equal(merged_cache.summary()["total_episodes"], 5, "merged episode count")
         assert_equal(merged_cache.summary()["total_frames"], 22, "merged frame count")
         assert_equal(merged_cache.summary()["total_tasks"], 1, "merged task count")
+
+
+def check_multi_task_merge_task_table() -> None:
+    with tempfile.TemporaryDirectory(dir=PROJECT_ROOT) as directory:
+        work = Path(directory)
+        src_a = work / "src_a"
+        src_b = work / "src_b"
+        create_no_video_dataset(src_a, [2, 3], task=["task red", "task blue"], task_index_name=None)
+        create_no_video_dataset(src_b, [4, 2], task=["task blue", "task green"], task_index_name=None)
+
+        merged_path = work / "merged"
+        merged = apply_merge_plan([DatasetCache(src_a), DatasetCache(src_b)], merged_path, overwrite=True)
+        assert_equal(merged["ok"], True, "multi-task merge apply ok")
+
+        tasks = pd.read_parquet(merged_path / "meta/tasks.parquet")
+        assert_equal(tasks.index.tolist(), ["task red", "task blue", "task green"], "merged task labels")
+        assert_equal(tasks.index.name, None, "merged task index name")
+        assert_equal(tasks["task_index"].astype(int).tolist(), [0, 1, 2], "merged task indexes")
+
+        episodes = pd.read_parquet(merged_path / "meta/episodes/chunk-000/file-000.parquet")
+        assert_equal(episodes["task_index"].astype(int).tolist(), [0, 1, 1, 2], "merged episode task_index")
+        assert_equal(episodes["tasks"].tolist(), [["task red"], ["task blue"], ["task blue"], ["task green"]], "merged episode tasks")
+
+        frames = pd.read_parquet(merged_path / "data/chunk-000/file-000.parquet")
+        frame_task_indexes = [
+            int(frames[frames["episode_index"] == index]["task_index"].iloc[0])
+            for index in range(4)
+        ]
+        assert_equal(frame_task_indexes, [0, 1, 1, 2], "merged frame task_index")
 
 
 def check_video_edit(path: Path) -> None:
@@ -259,6 +301,8 @@ def main() -> None:
 
     check_no_video_edit_and_merge()
     print("ok: no-video edit and merge checks passed")
+    check_multi_task_merge_task_table()
+    print("ok: multi-task merge task table checks passed")
 
 
 if __name__ == "__main__":

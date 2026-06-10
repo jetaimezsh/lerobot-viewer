@@ -238,8 +238,13 @@ def read_tasks(root: Path) -> pd.DataFrame:
     if not path.exists():
         raise ValueError(f"缺少文件: {path}")
     df = pd.read_parquet(path)
-    if df.index.name == "task":
+    if "task" in df.columns:
+        df = df.reset_index(drop=True)
+    elif df.index.name == "task":
         df = df.reset_index()
+    elif not isinstance(df.index, pd.RangeIndex):
+        normalized = df.reset_index()
+        df = normalized.rename(columns={normalized.columns[0]: "task"})
     if "task_index" not in df.columns:
         raise ValueError("meta/tasks.parquet 缺少 task_index")
     return df

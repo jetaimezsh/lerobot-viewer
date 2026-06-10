@@ -45,6 +45,7 @@ from app.editing import (
     apply_edit_plan,
     dataset_validation_summary,
     editing_tool_status,
+    read_tasks_table,
     resolve_dataset_path,
     validate_edit_plan,
     validate_merge_compatibility,
@@ -215,9 +216,7 @@ class DatasetCache:
         path = self.root / "meta/tasks.parquet"
         if not path.exists():
             raise HTTPException(status_code=400, detail=f"严格 v3.0 需要 meta/tasks.parquet: {path}")
-        df = pd.read_parquet(path)
-        if df.index.name == "task":
-            df = df.reset_index()
+        df = read_tasks_table(self.root)
         return dataframe_records(df)
 
     def _load_episodes(self) -> pd.DataFrame:

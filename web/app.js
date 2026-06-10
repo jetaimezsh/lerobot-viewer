@@ -724,7 +724,7 @@ function renderDatasetStats() {
         ${rows.map((row) => `
           <tr>
             <td><strong>${escapeHtml(row.name)}</strong></td>
-            ${columns.map((column) => `<td>${escapeHtml(formatStatValue(row.stats[column]))}</td>`).join("")}
+            ${columns.map((column) => `<td><span class="stat-value">${escapeHtml(formatStatValue(row.stats[column]))}</span></td>`).join("")}
           </tr>
         `).join("")}
       </tbody>
@@ -767,11 +767,10 @@ function formatStatValue(value) {
   if (typeof value === "number") return formatNumber(value);
   if (Array.isArray(value)) {
     const flat = value.flat ? value.flat(Infinity) : value;
-    const shown = flat.slice(0, 6).map(formatStatValue).join(", ");
-    return flat.length > 6 ? `[${shown}, ...]` : `[${shown}]`;
+    return `[${flat.map(formatStatValue).join(", ")}]`;
   }
   if (typeof value === "object") {
-    const entries = Object.entries(value).slice(0, 4).map(([key, item]) => `${key}: ${formatStatValue(item)}`);
+    const entries = Object.entries(value).map(([key, item]) => `${key}: ${formatStatValue(item)}`);
     return entries.length ? `{${entries.join(", ")}}` : "{}";
   }
   return String(value);

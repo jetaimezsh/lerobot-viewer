@@ -630,7 +630,7 @@ def build_merged_tasks(caches: list[Any]) -> tuple[pd.DataFrame, list[dict[int, 
     return (
         pd.DataFrame(
             {"task_index": [index for _, index in ordered_tasks]},
-            index=pd.Index([task for task, _ in ordered_tasks], name="task"),
+            index=pd.Index([task for task, _ in ordered_tasks]),
         ),
         task_maps,
     )
@@ -652,14 +652,24 @@ def rebuild_tasks_for_frames(cache: Any, frames: pd.DataFrame, episodes: pd.Data
     task_texts = [task_lookup.get(old_index, str(old_index)) for old_index in used_old_indexes]
     return pd.DataFrame(
         {"task_index": list(range(len(task_texts)))},
-        index=pd.Index(task_texts, name="task"),
+        index=pd.Index(task_texts),
     )
 
 
 def read_tasks_table(root: Path) -> pd.DataFrame:
     df = pd.read_parquet(root / "meta/tasks.parquet")
+    return normalize_tasks_table(df)
+
+
+def normalize_tasks_table(df: pd.DataFrame) -> pd.DataFrame:
+    if "task" in df.columns:
+        return df.reset_index(drop=True)
     if df.index.name == "task":
-        df = df.reset_index()
+        return df.reset_index()
+    if not isinstance(df.index, pd.RangeIndex):
+        normalized = df.reset_index()
+        index_column = normalized.columns[0]
+        return normalized.rename(columns={index_column: "task"})
     return df
 
 

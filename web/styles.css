@@ -624,6 +624,16 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+.dataset-stats .stat-value {
+  display: block;
+  max-width: 520px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .task-list {
   display: grid;
   gap: 8px;
