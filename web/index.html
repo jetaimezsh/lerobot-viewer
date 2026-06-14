@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>LeRobot Dataset v3.0 Viewer</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260614-state-action-series">
+  <link rel="stylesheet" href="/static/styles.css?v=20260614-help-panel">
 </head>
 <body>
   <div class="shell">
@@ -316,10 +316,12 @@
             <p>v4 使用持久化 profile 管理 checkpoint、设备和运行参数。推理仍仅支持 Linux，Windows 可编辑、检查和查看历史。</p>
           </div>
           <div class="model-actions">
+            <button class="help-toggle" data-help="modelManagerView" title="页面帮助">?</button>
             <button id="checkModelEnv" type="button">检测模型环境</button>
             <button id="refreshModels" type="button">刷新档案</button>
           </div>
         </section>
+        <div class="help-panel" id="help-modelManagerView"></div>
         <div class="model-grid">
           <section class="surface">
             <div class="section-kicker">Profile Editor</div>
@@ -377,12 +379,14 @@
             <p>选择一个或多个模型、一个或多个 episode，离线推理后对比模型 action 与数据集真实 action。</p>
           </div>
           <div class="model-actions">
+            <button class="help-toggle" data-help="modelBacktestView" title="页面帮助">?</button>
             <button id="runBacktest" type="button">运行回测</button>
             <button id="refreshBacktestJobs" type="button">刷新队列</button>
             <button id="clearBacktest" type="button">清空结果</button>
             <button id="refreshBacktestHistory" type="button">刷新历史</button>
           </div>
         </section>
+        <div class="help-panel" id="help-modelBacktestView"></div>
         <div class="backtest-grid">
           <section class="surface">
             <div class="section-kicker">Backtest Setup</div>
@@ -452,10 +456,12 @@
             <p>管理训练数据集、输出目录、超参数和训练完成后的回测档案桥接。</p>
           </div>
           <div class="model-actions">
+            <button class="help-toggle" data-help="trainingRecipeView" title="页面帮助">?</button>
             <button id="refreshTrainingRecipes" type="button">刷新配方</button>
             <button id="checkTrainingEnv" type="button">检测训练环境</button>
           </div>
         </section>
+        <div class="help-panel" id="help-trainingRecipeView"></div>
         <div class="model-grid">
           <section class="surface">
             <div class="section-kicker">Recipe Editor</div>
@@ -537,9 +543,11 @@
             <p>训练作业和日志落盘保存，单 worker 顺序执行，避免同机 GPU 资源冲突。</p>
           </div>
           <div class="model-actions">
+            <button class="help-toggle" data-help="trainingQueueView" title="页面帮助">?</button>
             <button id="refreshTrainingJobs" type="button">刷新队列</button>
           </div>
         </section>
+        <div class="help-panel" id="help-trainingQueueView"></div>
         <section class="surface backtest-history-surface">
           <div class="section-kicker">Jobs</div>
           <div id="trainingJobList" class="backtest-history empty">暂无训练作业。</div>
@@ -558,10 +566,12 @@
             <p>当前版本先提供轻量流水线记录：提交训练作业并保存回测样本和对比 profile，训练完成后的自动回测将作为后续增强。</p>
           </div>
           <div class="model-actions">
+            <button class="help-toggle" data-help="trainingPipelineView" title="页面帮助">?</button>
             <button id="createTrainingPipeline" type="button">创建流水线</button>
             <button id="refreshTrainingPipelines" type="button">刷新流水线</button>
           </div>
         </section>
+        <div class="help-panel" id="help-trainingPipelineView"></div>
         <div class="model-grid">
           <section class="surface">
             <div class="section-kicker">Pipeline Setup</div>
@@ -634,7 +644,7 @@
   </div>
 </div>
 
-  <script src="/static/app.js?v=20260614-state-action-series"></script>
+  <script src="/static/app.js?v=20260614-help-panel"></script>
 
 </body>
 </html>

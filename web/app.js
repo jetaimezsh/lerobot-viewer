@@ -4583,6 +4583,155 @@ if (els.backtestChart) els.backtestChart.addEventListener("wheel", (event) => {
 window.addEventListener("resize", drawChart);
 window.addEventListener("resize", drawBacktestChart);
 
+// ── Help panel ─────────────────────────────────────────────────────
+
+const HELP_TITLES = {
+  modelManagerView: "模型档案",
+  modelBacktestView: "回测任务",
+  trainingRecipeView: "训练配方",
+  trainingQueueView: "训练队列",
+  trainingPipelineView: "训练流水线",
+};
+
+const HELP_CONTENT = {
+  modelManagerView: [
+    { label: "Profile ID", desc: "唯一标识，回测时用于选择模型。只允许小写字母、数字、下划线和连字符。提交后不可修改。" },
+    { label: "模板下拉", desc: "选择预置参数模板快速填充，可选 ACT、Diffusion、VQ-BeT 或空白模板。" },
+    { label: "显示名称", desc: "模型在回测结果和档案列表中展示的名称。" },
+    { label: "描述", desc: "可选，记录实验背景、checkpoint 来源和备注。" },
+    { label: "Checkpoint 路径", desc: "包含 config.json 和模型权重文件的目录。可使用右侧「选择目录」按钮浏览。" },
+    { label: "适配器", desc: "决定模型加载和推理方式。当前使用 LeRobot 官方 checkpoint 适配器。" },
+    { label: "设备", desc: "模型加载到的设备。cuda 使用 GPU（仅 Linux），cpu 使用 CPU。" },
+    { label: "运行期参数表", desc: "传给适配器的推理参数，如 policy_type（act/diffusion/vq_bet）、temporal_agg。由模板预填，可按需增删。" },
+    { label: "自定义参数表", desc: "用户自由定义的扩展参数，官方适配器不直接使用，用于记录实验信息。" },
+    { label: "新建档案", desc: "使用当前编辑器的参数创建新的 model profile 并保存到磁盘。" },
+    { label: "保存", desc: "保存对当前选中 profile 的修改。" },
+    { label: "检查", desc: "读取 checkpoint 目录结构，验证 config.json 和权重文件是否齐全。" },
+    { label: "加载", desc: "将模型加载到内存（仅 Linux）。加载后可用于真实帧测试和回测。" },
+    { label: "卸载", desc: "从内存中卸载模型，释放 GPU/CPU 资源。" },
+    { label: "真实帧测试", desc: "使用当前加载数据集的一帧，实际调用模型推理并显示 action 输出。" },
+    { label: "删除", desc: "删除当前 profile 及其磁盘文件。" },
+  ],
+  modelBacktestView: [
+    { label: "回测样本池", desc: "从 Episode 播放页加入的 episode 集合。支持跨不同数据集混合回测。点击「清空样本」可全部移除。" },
+    { label: "仅测试前 20 帧", desc: "限制每个 episode 只回测前 20 帧。用于快速验证模型是否正确加载和推理，节省时间。" },
+    { label: "回测环境变量", desc: "回测执行期间临时设置的环境变量，如 CUDA_VISIBLE_DEVICES=0 或 =0,1。任务完成后自动恢复原值。变量名仅允许字母、数字和下划线。" },
+    { label: "模型选择区", desc: "勾选要参与回测的 profile。需先在模型档案页创建并加载 profile。" },
+    { label: "运行回测", desc: "创建后台回测任务，所有任务进入单 worker 队列依次执行。结果矩阵显示各 profile × episode 的 MAE/RMSE/max error。" },
+    { label: "刷新队列 / 刷新历史", desc: "刷新后台任务队列状态和历史回测记录。" },
+    { label: "清空结果", desc: "清空当前页面显示的回测结果矩阵。" },
+    { label: "Episode 选择", desc: "在 action 对比图表中选择要查看的 episode。" },
+    { label: "Action 维度选择", desc: "勾选要在图表中对比的 action 维度。使用「全选」/「清空」快速切换。" },
+    { label: "真实 action / error", desc: "切换图表显示 ground truth 曲线和/或 prediction error 曲线。" },
+    { label: "放大 / 缩小 / 重置", desc: "调整 action 对比图表的时间轴缩放。" },
+  ],
+  trainingRecipeView: [
+    { label: "Recipe ID", desc: "配方唯一标识，同时也是训练完成后自动生成 profile 的默认 ID。只允许小写字母、数字、下划线和连字符。" },
+    { label: "模板下拉", desc: "选择预置训练模板自动填充超参数。可选 ACT、Diffusion Policy、VQ-BeT 或空白模板。" },
+    { label: "显示名称", desc: "训练配方在列表中展示的名称。" },
+    { label: "描述", desc: "可选，记录实验目的和参数变更原因。" },
+    { label: "框架", desc: "训练框架，封装 lerobot-train CLI。当前使用 LeRobot Train 官方命令行工具。" },
+    { label: "设备", desc: "训练使用的设备。cuda 使用 GPU，cpu 使用 CPU。" },
+    { label: "启动方式", desc: "直接运行 = 单进程启动；accelerate launch = 多 GPU 分布式训练，需配合 GPU 列表和进程数。" },
+    { label: "GPU 列表", desc: "训练子进程可见的 GPU 编号，如 0 或 0,1。写入 CUDA_VISIBLE_DEVICES 环境变量。" },
+    { label: "进程数", desc: "accelerate launch --num_processes 参数。单卡通常为 1，双卡通常为 2。" },
+    { label: "训练数据集路径", desc: "LeRobot v3 格式数据集根目录。" },
+    { label: "Episode 过滤", desc: "可选，仅使用指定 episode 训练。留空 = 使用全部 episode。格式：逗号分隔的编号，如 0,5,10。" },
+    { label: "输出目录", desc: "checkpoint 保存目录。训练完成后自动生成的 profile 会将此路径作为 checkpoint_path。" },
+    { label: "自动创建档案", desc: "训练成功后自动生成 model profile，无缝衔接回测系统。勾选后需填写下方 profile 名称和适配器。" },
+    { label: "Profile 名称", desc: "自动生成的 model profile 显示名称。仅当勾选「自动创建档案」时生效。" },
+    { label: "Profile 适配器", desc: "自动生成的 profile 使用的推理适配器类型。" },
+    { label: "训练超参数表", desc: "训练命令的超参数，如 policy_type、batch_size、epochs、learning_rate。由模板预填关键字段，可按需增删。" },
+    { label: "训练环境变量", desc: "训练子进程的额外环境变量。GPU 列表已自动设置 CUDA_VISIBLE_DEVICES，此处可补充 NCCL_DEBUG 等。" },
+    { label: "自定义参数表", desc: "用户自由定义的扩展参数，用于记录实验分组、备注等信息。" },
+    { label: "新建配方", desc: "使用当前编辑器参数创建新的 training recipe 并保存到磁盘。" },
+    { label: "保存", desc: "保存对当前选中 recipe 的修改。" },
+    { label: "检查", desc: "训练前检查：数据集是否存在、输出目录是否可写、CLI 是否可用。" },
+    { label: "提交训练", desc: "将当前配方提交到训练队列，作业落盘保存，单 worker 顺序执行。" },
+    { label: "删除", desc: "删除当前 recipe 及其磁盘文件。" },
+  ],
+  trainingQueueView: [
+    { label: "作业列表", desc: "显示所有训练作业及其状态。queued = 排队等待，running = 执行中（含 epoch/loss 进度），done = 已完成，failed = 失败。" },
+    { label: "刷新队列", desc: "更新作业状态和进度信息。运行中的作业每 5 秒自动轮询。" },
+    { label: "日志区域", desc: "显示选中作业的 stdout/stderr 输出。用于排查训练错误和监控进度。" },
+    { label: "操作按钮", desc: "取消 = 终止排队或运行中的作业；重新排队 = 将已完成/失败的作业重新加入队列；删除 = 删除作业记录和日志；↑↓ 拖拽排序调整队列顺序。" },
+  ],
+  trainingPipelineView: [
+    { label: "训练配方", desc: "选择要执行的 training recipe。需先在训练配方页创建并保存。" },
+    { label: "对比 Profile", desc: "勾选要与训练后模型对比回测的 baseline profile。训练完成后结果对比会显示新旧模型的指标差异。" },
+    { label: "回测样本", desc: "从 Episode 播放页加入的 episode。这些样本将用于训练完成后的回测对比。" },
+    { label: "创建流水线", desc: "提交训练作业并记录流水线状态。流水线会追踪训练→回测的完整过程。" },
+    { label: "流水线列表", desc: "查看所有流水线的状态。waiting = 训练排队中，training = 训练中，backtesting = 回测中，done = 完成。" },
+    { label: "刷新流水线", desc: "更新流水线列表状态。" },
+  ],
+};
+
+function renderHelpContent(viewId) {
+  const items = HELP_CONTENT[viewId] || [];
+  if (!items.length) return "";
+  return '<div class="help-panel-card">'
+    + `<div class="help-panel-head"><span>${escapeHtml(HELP_TITLES[viewId] || viewId)} — 控件说明</span><button class="help-panel-close" title="关闭">×</button></div>`
+    + '<dl class="help-panel-body">'
+    + items.map(function (item) {
+        return "<dt>" + escapeHtml(item.label) + "</dt><dd>" + escapeHtml(item.desc) + "</dd>";
+      }).join("")
+    + '</dl>'
+    + '</div>';
+}
+
+let _helpPanel = null;
+
+function closeHelpPanel() {
+  if (!_helpPanel) return;
+  _helpPanel.classList.remove("open");
+  const btn = document.querySelector('.help-toggle[data-help="' + (_helpPanel.id || "").replace("help-", "") + '"]');
+  if (btn) btn.classList.remove("active");
+  _helpPanel = null;
+}
+
+function toggleHelp(viewId) {
+  var panel = document.getElementById("help-" + viewId);
+  if (!panel) return;
+
+  if (_helpPanel && _helpPanel !== panel) {
+    closeHelpPanel();
+  }
+
+  var isOpen = panel.classList.contains("open");
+  if (isOpen) {
+    closeHelpPanel();
+  } else {
+    if (!panel.innerHTML.trim()) {
+      panel.innerHTML = renderHelpContent(viewId);
+    }
+    panel.classList.add("open");
+    _helpPanel = panel;
+    var btn = document.querySelector('.help-toggle[data-help="' + viewId + '"]');
+    if (btn) btn.classList.add("active");
+  }
+}
+
+document.addEventListener("click", function (event) {
+  // help toggle button
+  var helpBtn = event.target.closest(".help-toggle");
+  if (helpBtn) {
+    event.stopPropagation();
+    var viewId = helpBtn.dataset.help;
+    if (viewId) toggleHelp(viewId);
+    return;
+  }
+  // help panel close button
+  var closeBtn = event.target.closest(".help-panel-close");
+  if (closeBtn) {
+    closeHelpPanel();
+    return;
+  }
+  // click outside panel closes it
+  if (_helpPanel && !_helpPanel.contains(event.target) && !event.target.closest(".help-toggle")) {
+    closeHelpPanel();
+  }
+});
+
 initBacktestEnvVars();
 loadEnv().catch((error) => {
   els.envInfo.textContent = error.message;
