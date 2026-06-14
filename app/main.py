@@ -92,6 +92,11 @@ class OpenDatasetRequest(BaseModel):
     full_sweep: bool = False
 
 
+class CreateDirectoryRequest(BaseModel):
+    parent: str
+    name: str
+
+
 class ProfileCreateRequest(BaseModel):
     id: str
     name: str | None = None
@@ -1092,6 +1097,26 @@ def list_directory(path: str = Query("/", description="Directory path")) -> dict
     return build_directory_listing(path)
 
 
+@app.post("/api/path/create-directory")
+def create_directory(request: CreateDirectoryRequest) -> dict[str, Any]:
+    parent = normalize_directory_path(request.parent)
+    raw_name = request.name.strip().strip('"').strip("'")
+    if not raw_name:
+        raise HTTPException(status_code=400, detail="文件夹名称不能为空")
+    child = Path(raw_name)
+    if child.is_absolute() or any(part in {"", ".", ".."} for part in child.parts):
+        raise HTTPException(status_code=400, detail="文件夹名称只能是当前目录下的单级名称")
+    target = parent / raw_name
+    try:
+        target.mkdir(mode=0o755, exist_ok=False)
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail=f"目录已存在: {target}") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"无法创建目录: {exc}") from exc
+    log_operation("path_create_directory", "success", target=str(target), details={"parent": str(parent)})
+    return {"path": str(target), "parent": str(parent), "name": target.name}
+
+
 @app.get("/api/datasets/{key}")
 def get_dataset(key: str) -> dict[str, Any]:
     return get_cache(key).summary()
@@ -1214,7 +1239,7 @@ def build_path_suggestions(raw_path: str) -> dict[str, Any]:
 
 
 def build_directory_listing(raw_path: str) -> dict[str, Any]:
-    current = normalize_directory_path(raw_path)
+    current = normalize_directory_path(raw_path, fallback_to_existing_parent=True)
     try:
         children = sorted(
             (child for child in current.iterdir() if child.is_dir()),
@@ -1240,7 +1265,7 @@ def build_directory_listing(raw_path: str) -> dict[str, Any]:
     }
 
 
-def normalize_directory_path(raw_path: str) -> Path:
+def normalize_directory_path(raw_path: str, fallback_to_existing_parent: bool = False) -> Path:
     cleaned = raw_path.strip().strip('"').strip("'")
     if not cleaned:
         cleaned = "/"
@@ -1250,6 +1275,12 @@ def normalize_directory_path(raw_path: str) -> Path:
     try:
         resolved = path.resolve(strict=True)
     except FileNotFoundError as exc:
+        if fallback_to_existing_parent:
+            parent = path.parent
+            while parent != parent.parent and not parent.exists():
+                parent = parent.parent
+            if parent.exists() and parent.is_dir():
+                return parent.resolve(strict=True)
         raise HTTPException(status_code=404, detail=f"目录不存在: {path}") from exc
     except OSError as exc:
         raise HTTPException(status_code=400, detail=f"目录无法访问: {path}") from exc
