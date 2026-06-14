@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import shutil
 import subprocess
@@ -8,6 +9,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -17,6 +19,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.editing import EditOperation, apply_edit_plan, apply_merge_plan, ffmpeg_executable, source_keyframe_interval
 from app.main import DatasetCache
+from app.validation import validate_lerobot_v3_dataset
 
 
 def assert_equal(actual: Any, expected: Any, label: str) -> None:
@@ -186,6 +189,7 @@ def check_multi_task_merge_task_table() -> None:
         merged_path = work / "merged"
         merged = apply_merge_plan([DatasetCache(src_a), DatasetCache(src_b)], merged_path, overwrite=True)
         assert_equal(merged["ok"], True, "multi-task merge apply ok")
+        assert_equal(merged.get("merge_engine"), "official_lerobot", "official merge preferred")
 
         tasks = pd.read_parquet(merged_path / "meta/tasks.parquet")
         assert_equal(tasks.index.tolist(), ["task red", "task blue", "task green"], "merged task labels")
@@ -202,6 +206,56 @@ def check_multi_task_merge_task_table() -> None:
             for index in range(4)
         ]
         assert_equal(frame_task_indexes, [0, 1, 1, 2], "merged frame task_index")
+
+
+def check_merge_fallback_when_official_fails() -> None:
+    with tempfile.TemporaryDirectory(dir=PROJECT_ROOT) as directory:
+        work = Path(directory)
+        src_a = work / "src_a"
+        src_b = work / "src_b"
+        create_no_video_dataset(src_a, [2], task="task a")
+        create_no_video_dataset(src_b, [3], task="task b")
+
+        merged_path = work / "merged"
+        with patch("app.editing.apply_official_merge_plan", side_effect=RuntimeError("forced official failure")):
+            merged = apply_merge_plan([DatasetCache(src_a), DatasetCache(src_b)], merged_path, overwrite=True)
+        assert_equal(merged["ok"], True, "fallback merge apply ok")
+        assert_equal(merged.get("merge_engine"), "custom_fallback", "fallback merge engine")
+        assert_equal(DatasetCache(merged_path).summary()["total_episodes"], 2, "fallback merged episode count")
+
+
+def check_strict_validation_torchcodec_skip() -> None:
+    with tempfile.TemporaryDirectory(dir=PROJECT_ROOT) as directory:
+        root = Path(directory) / "src"
+        create_no_video_dataset(root, [2])
+
+        class BrokenOfficialDataset:
+            def __init__(self, **_: Any) -> None:
+                raise RuntimeError(
+                    "Could not load libtorchcodec. FFmpeg version 6: "
+                    "OSError: libavutil.so.58: cannot open shared object file"
+                )
+
+        class FakeOfficialModule:
+            LeRobotDataset = BrokenOfficialDataset
+
+        real_import_module = importlib.import_module
+
+        def fake_import_module(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "lerobot.datasets.lerobot_dataset":
+                return FakeOfficialModule
+            return real_import_module(name, *args, **kwargs)
+
+        with patch("app.validation.importlib.import_module", side_effect=fake_import_module):
+            result = validate_lerobot_v3_dataset(root, run_official=True)
+
+        assert_equal(result["valid"], True, "torchcodec official failure is non-fatal")
+        assert_equal(result["official"]["status"], "skipped", "torchcodec official status")
+        assert_equal(
+            any("官方校验跳过" in warning for warning in result["warnings"]),
+            True,
+            "torchcodec skip warning",
+        )
 
 
 def check_video_edit(path: Path) -> None:
@@ -303,6 +357,10 @@ def main() -> None:
     print("ok: no-video edit and merge checks passed")
     check_multi_task_merge_task_table()
     print("ok: multi-task merge task table checks passed")
+    check_merge_fallback_when_official_fails()
+    print("ok: merge fallback checks passed")
+    check_strict_validation_torchcodec_skip()
+    print("ok: strict validation torchcodec skip checks passed")
 
 
 if __name__ == "__main__":

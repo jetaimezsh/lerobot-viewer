@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>LeRobot Dataset v3.0 Viewer</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260610-full-dataset-stats">
+  <link rel="stylesheet" href="/static/styles.css?v=20260614-state-action-series">
 </head>
 <body>
   <div class="shell">
@@ -235,7 +235,10 @@
             <p>这里处理整个数据集级别的待应用操作。具体 episode 的删除和裁剪标记仍在 Episode 播放页完成。</p>
           </div>
           <div class="edit-run-controls">
-            <input id="editOutputPath" type="text" placeholder="输出目录，例如 D:\datasets\edited_dataset">
+            <div class="output-path-picker">
+              <input id="editOutputPath" type="text" readonly placeholder="选择输出目录">
+              <button id="selectEditOutputPath" type="button" onclick="window._openEditOutputBrowser && window._openEditOutputBrowser()">选择输出目录</button>
+            </div>
             <label class="checkbox-row">
               <input id="editOverwrite" type="checkbox">
               覆盖已存在输出目录
@@ -276,18 +279,17 @@
 
             <div class="merge-controls">
               <button id="addCurrentDatasetToMerge" type="button">+ 加入当前数据集</button>
-              <button id="addMergePathBtn" type="button" onclick="window._openMergeBrowser && window._openMergeBrowser()">+ 添加路径</button>
+              <button id="addMergePathBtn" type="button" onclick="window._openMergeBrowser && window._openMergeBrowser()">+ 选择数据集目录</button>
               <button id="clearMergeList" type="button">清空</button>
             </div>
 
             <div id="mergePathTable" class="merge-path-table empty">
-              <span class="merge-empty-hint">用上方按钮或下方输入框添加数据集路径</span>
+              <span class="merge-empty-hint">用上方按钮添加数据集目录</span>
             </div>
 
-            <textarea id="mergePaths" rows="3" placeholder="输入路径后按 Enter 添加，或粘贴多行路径"></textarea>
-
-            <div style="margin-top: 12px;">
-              <input id="mergeOutputPath" type="text" placeholder="输出目录，例如 D:\datasets\merged_dataset">
+            <div class="output-path-picker">
+              <input id="mergeOutputPath" type="text" readonly placeholder="选择输出目录">
+              <button id="selectMergeOutputPath" type="button" onclick="window._openMergeOutputBrowser && window._openMergeOutputBrowser()">选择输出目录</button>
               <label class="checkbox-row" style="margin-top: 8px;">
                 <input id="mergeOverwrite" type="checkbox">
                 覆盖已存在输出目录
@@ -619,6 +621,11 @@
       <button id="folderBrowserRefresh" type="button">刷新</button>
       <input id="folderBrowserPath" type="text" placeholder="输入路径后按 Enter 跳转">
     </div>
+    <div class="folder-browser-create">
+      <input id="folderBrowserNewName" type="text" placeholder="新文件夹名称">
+      <button id="folderBrowserCreate" type="button">新建文件夹</button>
+      <span id="folderBrowserCreateError"></span>
+    </div>
     <div id="folderBrowserList" class="folder-browser-list">加载中...</div>
     <div class="folder-browser-foot">
       <span id="folderBrowserCurrent" class="fb-current"></span>
@@ -627,7 +634,7 @@
   </div>
 </div>
 
-  <script src="/static/app.js?v=20260610-full-dataset-stats"></script>
+  <script src="/static/app.js?v=20260614-state-action-series"></script>
 
 </body>
 </html>

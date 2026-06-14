@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field
 
+from app.hf_cache import writable_hf_cache_env
 from app.validation import validate_lerobot_v3_dataset
 
 
@@ -433,6 +434,19 @@ def apply_merge_plan(caches: list[Any], output_path: Path, overwrite: bool = Fal
             return {"ok": False, "errors": [f"输出路径不是目录: {output_path}"], "warnings": [], "validation": validation}
         shutil.rmtree(output_path)
 
+    official_error = None
+    try:
+        result = apply_official_merge_plan(caches, output_path, validation)
+        result["warnings"] = [*validation["warnings"], *result.get("warnings", [])]
+        return result
+    except Exception as exc:
+        official_error = str(exc)
+        if output_path.exists():
+            shutil.rmtree(output_path)
+
+    fallback_warnings = list(validation["warnings"])
+    fallback_warnings.append(f"官方 LeRobot merge 不可用，已回退到内置合并: {official_error}")
+
     merged = build_merged_dataset(caches)
     v_overrides = None
     if caches[0].video_keys:
@@ -453,19 +467,24 @@ def apply_merge_plan(caches: list[Any], output_path: Path, overwrite: bool = Fal
         video_info_overrides=v_overrides,
         stats_source_total=merge_source_total,
     )
-    validation = validate_lerobot_v3_dataset(output_path)
+    with writable_hf_cache_env():
+        validation = validate_lerobot_v3_dataset(output_path)
     if not validation["valid"]:
         return {
             "ok": False,
             "errors": validation["errors"],
-            "warnings": validation["warnings"],
+            "warnings": [*fallback_warnings, *validation["warnings"]],
             "validation": validation,
+            "merge_engine": "custom_fallback",
         }
     return {
         "ok": True,
         "output_path": str(output_path),
         "validation": validation,
+        "warnings": fallback_warnings,
+        "merge_engine": "custom_fallback",
         "summary": {
+            "engine": "custom_fallback",
             "datasets": len(caches),
             "episodes": int(len(merged["episodes"])),
             "frames": int(len(merged["frames"])),
@@ -546,6 +565,110 @@ def apply_edit_plan(cache: Any, operations: list[EditOperation], output_path: Pa
             "episodes_file": str(output_path / "meta/episodes/chunk-000/file-000.parquet"),
         },
     }
+
+
+def apply_official_merge_plan(caches: list[Any], output_path: Path, validation: dict[str, Any]) -> dict[str, Any]:
+    with writable_hf_cache_env():
+        dataset_tools = importlib.import_module("lerobot.datasets.dataset_tools")
+        lerobot_dataset = importlib.import_module("lerobot.datasets.lerobot_dataset")
+        merge_datasets = getattr(dataset_tools, "merge_datasets")
+        dataset_cls = getattr(lerobot_dataset, "LeRobotDataset")
+        source_datasets = [
+            dataset_cls(local_repo_id_for_path(cache.root, index), root=cache.root)
+            for index, cache in enumerate(caches)
+        ]
+        merge_datasets(
+            source_datasets,
+            output_repo_id=output_path.name,
+            output_dir=output_path,
+        )
+        repair_warnings = repair_episode_task_indexes(output_path)
+
+        output_validation = validate_lerobot_v3_dataset(output_path)
+    if not output_validation["valid"]:
+        raise RuntimeError("; ".join(output_validation["errors"]))
+
+    summary = merged_output_summary(output_path, len(caches))
+    warnings = [*output_validation["warnings"], *repair_warnings]
+    return {
+        "ok": True,
+        "output_path": str(output_path),
+        "validation": output_validation,
+        "warnings": warnings,
+        "merge_engine": "official_lerobot",
+        "summary": {
+            "engine": "official_lerobot",
+            **summary,
+        },
+    }
+
+
+def local_repo_id_for_path(path: Path, index: int) -> str:
+    name = path.name or f"dataset_{index}"
+    return f"local/{index:03d}_{name}"
+
+
+def merged_output_summary(output_path: Path, dataset_count: int) -> dict[str, Any]:
+    info = json.loads((output_path / "meta/info.json").read_text(encoding="utf-8"))
+    tasks = read_tasks_table(output_path)
+    data_files = sorted((output_path / "data").glob("**/*.parquet"))
+    episode_files = sorted((output_path / "meta/episodes").glob("**/*.parquet"))
+    return {
+        "datasets": dataset_count,
+        "episodes": int(info.get("total_episodes", 0)),
+        "frames": int(info.get("total_frames", 0)),
+        "tasks": int(info.get("total_tasks", len(tasks))),
+        "data_file": str(data_files[0]) if data_files else "",
+        "episodes_file": str(episode_files[0]) if episode_files else "",
+    }
+
+
+def repair_episode_task_indexes(output_path: Path) -> list[str]:
+    warnings: list[str] = []
+    tasks = read_tasks_table(output_path)
+    if "task" not in tasks.columns or "task_index" not in tasks.columns:
+        return ["跳过 episode task_index 修复：meta/tasks 缺少 task 或 task_index 列"]
+    task_to_index = {str(row["task"]): int(row["task_index"]) for row in tasks.to_dict(orient="records")}
+    for episode_path in sorted((output_path / "meta/episodes").glob("**/*.parquet")):
+        episodes = pd.read_parquet(episode_path)
+        if "tasks" not in episodes.columns:
+            warnings.append(f"跳过 episode task_index 修复：{episode_path} 缺少 tasks 列")
+            continue
+        repaired = episodes["tasks"].map(lambda value: task_index_for_episode_tasks(value, task_to_index))
+        if repaired.isna().any():
+            skipped = episodes.loc[repaired.isna()]
+            episode_ids = (
+                skipped["episode_index"].astype(str).tolist()
+                if "episode_index" in skipped.columns
+                else [str(index) for index in skipped.index.tolist()]
+            )
+            warnings.append(
+                f"跳过 episode task_index 修复：{episode_path} 中 {len(episode_ids)} 条 episode 无法匹配 task: "
+                + ", ".join(episode_ids[:10])
+                + ("..." if len(episode_ids) > 10 else "")
+            )
+            continue
+        episodes["task_index"] = repaired.astype("int64")
+        _enforce_episode_int_dtypes(episodes)
+        episodes.to_parquet(episode_path, index=False)
+    return warnings
+
+
+def task_index_for_episode_tasks(value: Any, task_to_index: dict[str, int]) -> int | None:
+    tasks = clean_task_sequence(value)
+    if not tasks:
+        return None
+    return task_to_index.get(str(tasks[0]))
+
+
+def clean_task_sequence(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
 
 
 def build_merged_dataset(caches: list[Any]) -> dict[str, pd.DataFrame]:

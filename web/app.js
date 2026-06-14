@@ -25,6 +25,7 @@ const state = {
   currentView: "overviewView",
   editMode: "edit",
   mergePaths: [],   // source of truth for merge path list
+  mergePathInfo: {},
   editOperations: [],
   trimDraftStart: null,
   trimDraftEnd: null,
@@ -118,6 +119,7 @@ const els = {
   runEditDryRun: document.getElementById("runEditDryRun"),
   applyEditPlan: document.getElementById("applyEditPlan"),
   editOutputPath: document.getElementById("editOutputPath"),
+  selectEditOutputPath: document.getElementById("selectEditOutputPath"),
   editOverwrite: document.getElementById("editOverwrite"),
   editDryRunOutput: document.getElementById("editDryRunOutput"),
   toolStatusReport: document.getElementById("toolStatusReport"),
@@ -126,8 +128,8 @@ const els = {
   clearMergeList: document.getElementById("clearMergeList"),
   validateMerge: document.getElementById("validateMerge"),
   applyMerge: document.getElementById("applyMerge"),
-  mergePaths: document.getElementById("mergePaths"),
   mergeOutputPath: document.getElementById("mergeOutputPath"),
+  selectMergeOutputPath: document.getElementById("selectMergeOutputPath"),
   mergeOverwrite: document.getElementById("mergeOverwrite"),
   mergeResult: document.getElementById("mergeResult"),
   mergePathTable: document.getElementById("mergePathTable"),
@@ -139,6 +141,9 @@ const els = {
   folderBrowserRefresh: document.getElementById("folderBrowserRefresh"),
   folderBrowserPath: document.getElementById("folderBrowserPath"),
   folderBrowserList: document.getElementById("folderBrowserList"),
+  folderBrowserNewName: document.getElementById("folderBrowserNewName"),
+  folderBrowserCreate: document.getElementById("folderBrowserCreate"),
+  folderBrowserCreateError: document.getElementById("folderBrowserCreateError"),
   folderBrowserSelect: document.getElementById("folderBrowserSelect"),
   folderBrowserCurrent: document.getElementById("folderBrowserCurrent"),
   checkModelEnv: document.getElementById("checkModelEnv"),
@@ -235,9 +240,27 @@ const els = {
 window._openMergeBrowser = function () {
   try {
     if (typeof openFolderBrowser !== "function") return;
-    openFolderBrowser(els.mergePaths, function (dir) {
+    const startPath = state.summary?.root || state.currentRoot || "/";
+    openFolderBrowser({ value: startPath }, function (dir) {
       addMergePath(dir);
-      if (els.mergePaths) els.mergePaths.value = "";
+    });
+  } catch (_) {}
+};
+window._openMergeOutputBrowser = function () {
+  try {
+    if (typeof openFolderBrowser !== "function") return;
+    const startPath = els.mergeOutputPath?.value || state.summary?.root || "/";
+    openFolderBrowser({ value: startPath }, function (dir) {
+      if (els.mergeOutputPath) els.mergeOutputPath.value = dir;
+    });
+  } catch (_) {}
+};
+window._openEditOutputBrowser = function () {
+  try {
+    if (typeof openFolderBrowser !== "function") return;
+    const startPath = els.editOutputPath?.value || state.summary?.root || "/";
+    openFolderBrowser({ value: startPath }, function (dir) {
+      if (els.editOutputPath) els.editOutputPath.value = dir;
     });
   } catch (_) {}
 };
@@ -941,7 +964,7 @@ function preferredSeries(series) {
     const name = item.name.toLowerCase();
     return name.includes("action") || name.includes("state");
   });
-  const selected = (priority.length ? priority : series).slice(0, Math.min(12, series.length));
+  const selected = priority.length ? priority : series.slice(0, Math.min(12, series.length));
   return selected.map((item) => item.name);
 }
 
@@ -3719,12 +3742,58 @@ async function applyEditPlan() {
   }
 }
 
-// state.mergePaths is the single source of truth.
-// els.mergePaths (textarea) is for input only — never read as the
-// authoritative list, always written to reflect state.mergePaths.
-
 function mergePathList() {
   return state.mergePaths.slice();
+}
+
+function datasetNameFromPath(path) {
+  const cleanPath = String(path || "").replace(/[\\/]+$/, "");
+  if (!cleanPath) return "-";
+  const parts = cleanPath.split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : cleanPath;
+}
+
+function getMergePathInfo(path) {
+  const existing = state.mergePathInfo[path] || {};
+  return {
+    name: existing.name || datasetNameFromPath(path),
+    path,
+    count: existing.count ?? null,
+    status: existing.status || "pending",
+    error: existing.error || "",
+  };
+}
+
+function setMergePathInfo(path, patch) {
+  state.mergePathInfo[path] = {
+    ...getMergePathInfo(path),
+    ...patch,
+    path,
+  };
+}
+
+function formatMergePathCount(info) {
+  if (info.status === "checking") return "检查中";
+  if (info.status === "invalid") return "校验失败";
+  if (info.status === "valid" && Number.isFinite(info.count)) return `${info.count} eps`;
+  return "-";
+}
+
+async function refreshMergePathInfo(path) {
+  if (!path) return;
+  setMergePathInfo(path, { status: "checking", error: "" });
+  renderMergePathTable();
+  try {
+    const validation = await api("/api/datasets/strict-validate", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    });
+    if (!state.mergePaths.includes(path)) return;
+    setMergeStatus(path, validation.valid ? "valid" : "invalid", validation);
+  } catch (error) {
+    if (!state.mergePaths.includes(path)) return;
+    setMergeStatus(path, "invalid", { errors: [error.message] });
+  }
 }
 
 function addMergePath(path) {
@@ -3732,10 +3801,20 @@ function addMergePath(path) {
   const incoming = path.split(/\r?\n/).map((p) => p.trim()).filter(Boolean);
   if (!incoming.length) return 0;
   let added = 0;
+  const addedPaths = [];
   const skipped = [];
   for (const p of incoming) {
     if (!state.mergePaths.includes(p)) {
       state.mergePaths.push(p);
+      setMergePathInfo(p, {
+        name: state.summary?.root === p
+          ? (state.summary?.repo_id || datasetNameFromPath(p))
+          : datasetNameFromPath(p),
+        count: null,
+        status: "pending",
+        error: "",
+      });
+      addedPaths.push(p);
       added++;
     } else {
       skipped.push(p);
@@ -3744,6 +3823,9 @@ function addMergePath(path) {
   if (added) {
     renderMergePathTable();
     updateMergePathCount();
+    for (const p of addedPaths) {
+      refreshMergePathInfo(p);
+    }
   }
   // Brief feedback in result area.
   const parts = [];
@@ -3758,6 +3840,7 @@ function addMergePath(path) {
 
 function removeMergePath(path) {
   state.mergePaths = state.mergePaths.filter((p) => p !== path);
+  delete state.mergePathInfo[path];
   renderMergePathTable();
   updateMergePathCount();
 }
@@ -3771,19 +3854,31 @@ function renderMergePathTable() {
   if (!els.mergePathTable) return;
   if (!state.mergePaths.length) {
     els.mergePathTable.classList.add("empty");
-    els.mergePathTable.innerHTML = `<span class="merge-empty-hint">用上方按钮或下方输入框添加数据集路径</span>`;
+    els.mergePathTable.innerHTML = `<span class="merge-empty-hint">用上方按钮添加数据集目录</span>`;
     updateMergePathCount();
     return;
   }
   els.mergePathTable.classList.remove("empty");
-  els.mergePathTable.innerHTML = state.mergePaths.map((p, i) => `
-    <div class="merge-path-row" data-path="${escapeAttr(p)}">
-      <span class="merge-path-index">${i + 1}</span>
-      <span class="merge-path-text" title="${escapeAttr(p)}">${escapeHtml(p)}</span>
-      <span class="merge-path-status" data-path="${escapeAttr(p)}">-</span>
-      <button type="button" class="merge-path-remove" data-path="${escapeAttr(p)}">✕</button>
+  const rows = state.mergePaths.map((p) => {
+    const info = getMergePathInfo(p);
+    return `
+      <div class="merge-path-row" data-path="${escapeAttr(p)}">
+        <span class="merge-path-name" title="${escapeAttr(info.name)}">${escapeHtml(info.name)}</span>
+        <span class="merge-path-text" title="${escapeAttr(p)}">${escapeHtml(p)}</span>
+        <span class="merge-path-count status-${escapeAttr(info.status)}" data-path="${escapeAttr(p)}" title="${escapeAttr(info.error || "")}">${escapeHtml(formatMergePathCount(info))}</span>
+        <button type="button" class="merge-path-remove" data-path="${escapeAttr(p)}" title="删除">✕</button>
+      </div>
+    `;
+  }).join("");
+  els.mergePathTable.innerHTML = `
+    <div class="merge-path-header">
+      <span>数据集名称</span>
+      <span>路径</span>
+      <span>数量</span>
+      <span></span>
     </div>
-  `).join("");
+    ${rows}
+  `;
   for (const btn of els.mergePathTable.querySelectorAll(".merge-path-remove")) {
     btn.addEventListener("click", () => {
       removeMergePath(btn.dataset.path);
@@ -3802,16 +3897,19 @@ function addCurrentDatasetToMerge() {
 
 function clearMergeList() {
   state.mergePaths = [];
+  state.mergePathInfo = {};
   renderMergePathTable();
   resetMergeStatus();
 }
 
-// ── Folder Browser for merge path input ────────────────────────────────
+// ── Folder Browser for dataset directory selection ─────────────────────
 function openFolderBrowser(targetInput, onSelect) {
   if (!els.folderBrowser) return;
   els.folderBrowser.style.display = "flex";
   state._fbOnSelect = onSelect;
   state._fbTarget = targetInput;
+  if (els.folderBrowserNewName) els.folderBrowserNewName.value = "";
+  setFolderBrowserCreateError("");
   const startDir = (targetInput && targetInput.value) ? targetInput.value.trim() : "/";
   navigateFolderBrowser(startDir);
 }
@@ -3819,6 +3917,7 @@ function openFolderBrowser(targetInput, onSelect) {
 function closeFolderBrowser() {
   if (els.folderBrowser) els.folderBrowser.style.display = "none";
   state.folderBrowserRequestId += 1;
+  setFolderBrowserCreateError("");
 }
 
 async function navigateFolderBrowser(dir) {
@@ -3864,13 +3963,47 @@ function setFolderBrowserBusy(isBusy) {
   if (els.folderBrowserSelect) els.folderBrowserSelect.disabled = isBusy || !state.folderBrowserPath;
   if (els.folderBrowserRefresh) els.folderBrowserRefresh.disabled = isBusy;
   if (els.folderBrowserUp) els.folderBrowserUp.disabled = isBusy || !state.folderBrowserParent;
+  if (els.folderBrowserCreate) els.folderBrowserCreate.disabled = isBusy || !state.folderBrowserPath;
+}
+
+function setFolderBrowserCreateError(message) {
+  if (!els.folderBrowserCreateError) return;
+  els.folderBrowserCreateError.textContent = message || "";
+}
+
+async function createFolderInBrowser() {
+  const parent = (state.folderBrowserPath || "").trim();
+  const name = (els.folderBrowserNewName?.value || "").trim();
+  if (!parent) return;
+  if (!name) {
+    setFolderBrowserCreateError("请输入文件夹名称");
+    return;
+  }
+  setFolderBrowserCreateError("");
+  setFolderBrowserBusy(true);
+  try {
+    const result = await api("/api/path/create-directory", {
+      method: "POST",
+      body: JSON.stringify({ parent, name }),
+    });
+    if (els.folderBrowserNewName) els.folderBrowserNewName.value = "";
+    await navigateFolderBrowser(result.path || parent);
+  } catch (error) {
+    setFolderBrowserCreateError(error.message);
+  } finally {
+    setFolderBrowserBusy(false);
+  }
 }
 
 function resetMergeStatus() {
-  for (const el of (els.mergePathTable?.querySelectorAll(".merge-path-status") || [])) {
-    el.textContent = "-";
-    el.className = "merge-path-status";
+  for (const path of state.mergePaths) {
+    const info = getMergePathInfo(path);
+    setMergePathInfo(path, {
+      status: Number.isFinite(info.count) ? "valid" : "pending",
+      error: "",
+    });
   }
+  renderMergePathTable();
   if (els.mergeResult) {
     els.mergeResult.classList.add("empty");
     els.mergeResult.innerHTML = "尚未检查合并。";
@@ -3965,7 +4098,7 @@ async function validateMergePlan() {
   // Check if all individual validations passed
   const allValid = datasetValidations.every((v) => v.valid);
   if (!allValid) {
-    els.mergeResult.innerHTML = renderMergeResult({
+    renderMergeResult({
       ok: false,
       errors: ["部分数据集未通过严格校验，无法继续合并检查。"],
       dataset_validations: datasetValidations,
@@ -3987,7 +4120,7 @@ async function validateMergePlan() {
       setMergeStatus(v.path, "valid", v);
     }
   } catch (error) {
-    els.mergeResult.innerHTML = renderMergeResult({
+    renderMergeResult({
       ok: false,
       errors: [error.message],
       dataset_validations: datasetValidations,
@@ -3996,17 +4129,18 @@ async function validateMergePlan() {
 }
 
 function setMergeStatus(path, status, validation) {
-  if (!els.mergePathTable) return;
-  const el = els.mergePathTable.querySelector(`.merge-path-status[data-path="${escapeAttr(path)}"]`);
-  if (!el) return;
-  el.className = `merge-path-status status-${status}`;
-  if (status === "checking") {
-    el.textContent = "...";
-  } else if (status === "valid") {
-    el.textContent = "✓ " + (validation?.summary?.total_episodes ?? "?") + " eps";
-  } else {
-    el.textContent = "✗";
+  const infoPatch = {
+    status,
+    error: "",
+  };
+  if (validation?.summary?.total_episodes !== undefined) {
+    infoPatch.count = validation.summary.total_episodes;
   }
+  if (status === "invalid") {
+    infoPatch.error = (validation?.errors || [])[0] || "校验失败";
+  }
+  setMergePathInfo(path, infoPatch);
+  renderMergePathTable();
 }
 
 async function applyMergePlan() {
@@ -4174,6 +4308,13 @@ if (els.folderBrowserUp) els.folderBrowserUp.addEventListener("click", () => {
 if (els.folderBrowserRefresh) els.folderBrowserRefresh.addEventListener("click", () => {
   navigateFolderBrowser(state.folderBrowserPath || "/");
 });
+if (els.folderBrowserCreate) els.folderBrowserCreate.addEventListener("click", createFolderInBrowser);
+if (els.folderBrowserNewName) els.folderBrowserNewName.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    createFolderInBrowser();
+  }
+});
 if (els.folderBrowserPath) els.folderBrowserPath.addEventListener("keydown", (event) => {
   if (event.key === "Enter") {
     event.preventDefault();
@@ -4192,16 +4333,6 @@ if (els.folderBrowser) els.folderBrowser.addEventListener("click", (event) => {
 if (els.episodeSort) els.episodeSort.addEventListener("change", () => {
   state.episodeSort = els.episodeSort.value || "index-asc";
   renderEpisodes();
-});
-
-// Enter key in merge textarea adds path, then clears input
-if (els.mergePaths) els.mergePaths.addEventListener("keydown", (event) => {
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
-    const text = els.mergePaths.value.trim();
-    if (text) addMergePath(text);
-    els.mergePaths.value = "";
-  }
 });
 els.checkModelEnv.addEventListener("click", loadModelEnv);
 els.refreshModels.addEventListener("click", loadModels);

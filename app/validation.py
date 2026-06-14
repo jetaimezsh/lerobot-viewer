@@ -12,6 +12,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from app.hf_cache import local_hf_cache_env
+
 
 def validate_lerobot_v3_dataset(
     root: Path, run_official: bool = True, full_sweep: bool = False
@@ -50,6 +52,8 @@ def validate_lerobot_v3_dataset(
     if official.get("status") == "failed":
         result["valid"] = False
         result["errors"].append(f"lerobot 官方校验失败: {official.get('error')}")
+    elif official.get("status") == "skipped" and official.get("reason"):
+        result["warnings"].append(f"lerobot 官方校验跳过: {official.get('reason')}")
 
     if result["errors"]:
         result["valid"] = False
@@ -64,78 +68,119 @@ def official_lerobot_validation(root: Path, full_sweep: bool = False) -> dict[st
     video timestamp mismatches, shape inconsistencies, etc.) that only
     surface when individual samples are accessed.
     """
-    try:
-        module = importlib.import_module("lerobot.datasets.lerobot_dataset")
-    except Exception as exc:
-        return {
-            "status": "skipped",
-            "reason": "未安装 lerobot，跳过官方 LeRobotDataset 校验",
-            "error": str(exc),
-        }
-
-    dataset_cls = getattr(module, "LeRobotDataset", None)
-    if dataset_cls is None:
-        return {"status": "failed", "error": "lerobot.datasets.lerobot_dataset 中未找到 LeRobotDataset"}
-
-    pre_check_issues = _info_type_precheck(root)
-
-    attempts = [
-        {"repo_id": root.name, "root": root},
-        {"repo_id": root.name, "root": str(root)},
-        {"root": root},
-        {"root": str(root)},
-    ]
-    errors: list[str] = []
-    tracebacks: list[str] = []
-    for kwargs in attempts:
+    with local_hf_cache_env():
         try:
-            dataset = dataset_cls(**kwargs)
-            length = len(dataset)
-            if not length:
-                result: dict[str, Any] = {
+            module = importlib.import_module("lerobot.datasets.lerobot_dataset")
+        except Exception as exc:
+            return {
+                "status": "skipped",
+                "reason": "未安装 lerobot，跳过官方 LeRobotDataset 校验",
+                "error": str(exc),
+            }
+
+        dataset_cls = getattr(module, "LeRobotDataset", None)
+        if dataset_cls is None:
+            return {"status": "failed", "error": "lerobot.datasets.lerobot_dataset 中未找到 LeRobotDataset"}
+
+        pre_check_issues = _info_type_precheck(root)
+
+        attempts = [
+            {"repo_id": root.name, "root": root},
+            {"repo_id": root.name, "root": str(root)},
+            {"root": root},
+            {"root": str(root)},
+        ]
+        errors: list[str] = []
+        tracebacks: list[str] = []
+        for kwargs in attempts:
+            try:
+                dataset = dataset_cls(**kwargs)
+                length = len(dataset)
+                if not length:
+                    result: dict[str, Any] = {
+                        "status": "passed",
+                        "repo_id": kwargs.get("repo_id"),
+                        "root": str(kwargs.get("root", root)),
+                        "length": 0,
+                    }
+                    if pre_check_issues:
+                        result["pre_check_issues"] = pre_check_issues
+                    return result
+
+                # Quick sanity: load first and last samples, verify
+                # normalization works on both.
+                _ = _load_and_normalize(dataset, 0)
+                if length > 1:
+                    _ = _load_and_normalize(dataset, length - 1)
+
+                # Full-sweep: iterate every frame.
+                sweep = None
+                if full_sweep:
+                    sweep = _full_sweep_validation(dataset, length)
+
+                result = {
                     "status": "passed",
                     "repo_id": kwargs.get("repo_id"),
                     "root": str(kwargs.get("root", root)),
-                    "length": 0,
+                    "length": int(length),
                 }
                 if pre_check_issues:
                     result["pre_check_issues"] = pre_check_issues
+                if sweep:
+                    result["full_sweep"] = sweep
                 return result
+            except Exception as exc:
+                import traceback
+                tb = traceback.format_exc()
+                summary = f"{kwargs}: {exc}"
+                errors.append(summary)
+                tracebacks.append(summary + "\n" + tb)
 
-            # Quick sanity: load first and last samples, verify
-            # normalization works on both.
-            _ = _load_and_normalize(dataset, 0)
-            if length > 1:
-                _ = _load_and_normalize(dataset, length - 1)
-
-            # Full-sweep: iterate every frame.
-            sweep = None
-            if full_sweep:
-                sweep = _full_sweep_validation(dataset, length)
-
-            result = {
-                "status": "passed",
-                "repo_id": kwargs.get("repo_id"),
-                "root": str(kwargs.get("root", root)),
-                "length": int(length),
+        if _is_torchcodec_runtime_failure(errors, tracebacks):
+            failure = {
+                "status": "skipped",
+                "reason": (
+                    "当前环境缺少 torchcodec 可加载的 FFmpeg shared libraries，"
+                    "已跳过官方 LeRobotDataset 视频解码校验"
+                ),
+                "error": _short_official_error(errors),
             }
             if pre_check_issues:
-                result["pre_check_issues"] = pre_check_issues
-            if sweep:
-                result["full_sweep"] = sweep
-            return result
-        except Exception as exc:
-            import traceback
-            tb = traceback.format_exc()
-            summary = f"{kwargs}: {exc}"
-            errors.append(summary)
-            tracebacks.append(summary + "\n" + tb)
+                failure["pre_check_issues"] = pre_check_issues
+            return failure
 
-    failure: dict[str, Any] = {"status": "failed", "error": " | ".join(errors)}
-    failure["tracebacks"] = tracebacks
-    if pre_check_issues:
-        failure["pre_check_issues"] = pre_check_issues
-    return failure
+        failure: dict[str, Any] = {"status": "failed", "error": " | ".join(errors)}
+        failure["tracebacks"] = tracebacks
+        if pre_check_issues:
+            failure["pre_check_issues"] = pre_check_issues
+        return failure
+
+
+def _is_torchcodec_runtime_failure(errors: list[str], tracebacks: list[str]) -> bool:
+    text = "\n".join(errors + tracebacks).lower()
+    if not text:
+        return False
+    torchcodec_markers = (
+        "could not load libtorchcodec",
+        "libtorchcodec_core",
+        "torchcodec",
+    )
+    codec_runtime_markers = (
+        "ffmpeg shared libraries",
+        "libavutil.so",
+        "libavcodec.so",
+        "libavformat.so",
+        "libavdevice.so",
+        "cannot open shared object file",
+    )
+    return any(marker in text for marker in torchcodec_markers) and any(marker in text for marker in codec_runtime_markers)
+
+
+def _short_official_error(errors: list[str]) -> str:
+    joined = " | ".join(errors)
+    if len(joined) <= 600:
+        return joined
+    return joined[:600] + "..."
 
 
 def _load_and_normalize(dataset: Any, idx: int) -> Any:
