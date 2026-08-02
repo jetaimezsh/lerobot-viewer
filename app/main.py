@@ -50,7 +50,27 @@ from app.editing import (
     validate_edit_plan,
     validate_merge_compatibility,
 )
+from app.lerobot_cli import (
+    RecomputeStatsRequest,
+    lerobot_cli_status,
+    preview_recompute_stats_command,
+)
 from app.operation_log import log_operation, read_operation_logs
+from app.schema_editing import (
+    SchemaEditApplyRequest,
+    SchemaEditDryRunRequest,
+    apply_schema_edit_plan,
+    inspect_editable_schema,
+    validate_schema_edit_plan,
+)
+from app.stats_jobs import (
+    cancel_stats_job,
+    get_stats_job,
+    list_stats_jobs,
+    stats_job_log,
+    stats_runtime_status,
+    submit_stats_job,
+)
 from app.model_templates import builtin_templates
 from app.profile_store import create_profile, delete_profile, load_profile, update_profile
 from app.trainers import list_trainers
@@ -95,6 +115,12 @@ class OpenDatasetRequest(BaseModel):
 class CreateDirectoryRequest(BaseModel):
     parent: str
     name: str
+
+
+class SuggestOutputDirectoryRequest(BaseModel):
+    parent: str
+    source_path: str
+    suffix: str = "schema_edit"
 
 
 class ProfileCreateRequest(BaseModel):
@@ -937,6 +963,137 @@ def delete_history_item(request: DeleteHistoryRequest) -> dict[str, Any]:
     return {"ok": True, "deleted": target}
 
 
+@app.get("/api/datasets/{key}/schema")
+def dataset_schema(key: str) -> dict[str, Any]:
+    try:
+        cache = get_cache(key)
+        result = inspect_editable_schema(cache)
+        log_operation("schema_inspect", "success", target=str(cache.root))
+        return result
+    except Exception as exc:
+        log_failure("schema_inspect", key, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/schema-edit/dry-run")
+def schema_edit_dry_run(request: SchemaEditDryRunRequest) -> dict[str, Any]:
+    try:
+        cache = cache_for_path(request.path)
+        result = validate_schema_edit_plan(cache, request.operations)
+        log_operation(
+            "schema_edit_dry_run",
+            "success" if result.get("valid") else "failed",
+            target=str(cache.root),
+            details={"operations": [op.model_dump() for op in request.operations]},
+            error="; ".join(result.get("errors", [])) if result.get("errors") else None,
+        )
+        return result
+    except Exception as exc:
+        log_failure("schema_edit_dry_run", request.path, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/schema-edit/apply")
+def schema_edit_apply(request: SchemaEditApplyRequest) -> dict[str, Any]:
+    try:
+        cache = cache_for_path(request.path)
+        result = apply_schema_edit_plan(
+            cache=cache,
+            operations=request.operations,
+            output_path=resolve_dataset_path(request.output_path),
+            overwrite=request.overwrite,
+        )
+        log_operation(
+            "schema_edit_apply",
+            "success" if result.get("ok") else "failed",
+            target=str(cache.root),
+            details={
+                "output_path": request.output_path,
+                "overwrite": request.overwrite,
+                "operations": [op.model_dump() for op in request.operations],
+                "processed_data_shards": result.get("processed_data_shards"),
+                "processed_episode_metadata_shards": result.get("processed_episode_metadata_shards"),
+                "validation_valid": (result.get("validation") or {}).get("valid"),
+            },
+            error=str(result) if not result.get("ok") else None,
+        )
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result)
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log_failure("schema_edit_apply", request.path, exc, {"output_path": request.output_path})
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/stats/env")
+def stats_env() -> dict[str, Any]:
+    result = lerobot_cli_status()
+    log_operation("stats_env_check", "success" if result.get("available") else "failed", details={"available": result.get("available")})
+    return result
+
+
+@app.post("/api/stats/preview")
+def stats_preview(request: RecomputeStatsRequest) -> dict[str, Any]:
+    try:
+        result = preview_recompute_stats_command(request)
+        log_operation(
+            "stats_preview",
+            "success" if result.get("valid") else "failed",
+            target=request.root,
+            details={"repo_id": request.repo_id, "new_root": request.new_root},
+            error="; ".join(result.get("errors", [])) if result.get("errors") else None,
+        )
+        return result
+    except Exception as exc:
+        log_failure("stats_preview", request.root, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/stats/jobs")
+def stats_jobs_list() -> list[dict[str, Any]]:
+    return list_stats_jobs()
+
+
+@app.post("/api/stats/jobs")
+def stats_job_create(request: RecomputeStatsRequest) -> dict[str, Any]:
+    try:
+        return submit_stats_job(request)
+    except Exception as exc:
+        log_failure("stats_job_create", request.root, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/stats/jobs/runtime")
+def stats_jobs_runtime() -> dict[str, Any]:
+    return stats_runtime_status()
+
+
+@app.get("/api/stats/jobs/{job_id}")
+def stats_job_get(job_id: str) -> dict[str, Any]:
+    try:
+        return get_stats_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/stats/jobs/{job_id}/log")
+def stats_job_log_endpoint(job_id: str, tail: int = Query(200, ge=1, le=5000)) -> dict[str, Any]:
+    return stats_job_log(job_id, tail=tail)
+
+
+@app.post("/api/stats/jobs/{job_id}/cancel")
+def stats_job_cancel_endpoint(job_id: str) -> dict[str, Any]:
+    try:
+        return cancel_stats_job(job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log_failure("stats_job_cancel", job_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/api/edit/dry-run")
 def edit_dry_run(request: EditDryRunRequest) -> dict[str, Any]:
     try:
@@ -1115,6 +1272,30 @@ def create_directory(request: CreateDirectoryRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=f"无法创建目录: {exc}") from exc
     log_operation("path_create_directory", "success", target=str(target), details={"parent": str(parent)})
     return {"path": str(target), "parent": str(parent), "name": target.name}
+
+
+@app.post("/api/path/suggest-output-directory")
+def suggest_output_directory(request: SuggestOutputDirectoryRequest) -> dict[str, Any]:
+    parent = normalize_directory_path(request.parent)
+    source_name = safe_child_name(Path(request.source_path).name or "dataset")
+    suffix = safe_child_name(request.suffix or "schema_edit")
+    base_name = f"{source_name}_{suffix}"
+    candidate = parent / base_name
+    index = 1
+    while candidate.exists():
+        candidate = parent / f"{base_name}_{index}"
+        index += 1
+    return {
+        "path": str(candidate),
+        "parent": str(parent),
+        "name": candidate.name,
+    }
+
+
+def safe_child_name(value: str) -> str:
+    cleaned = "".join(char if char.isalnum() or char in {"-", "_", "."} else "_" for char in str(value).strip())
+    cleaned = cleaned.strip("._ ")
+    return cleaned or "dataset"
 
 
 @app.get("/api/datasets/{key}")

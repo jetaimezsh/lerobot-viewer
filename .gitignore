@@ -1,6 +1,7 @@
 .venv/
 sample_datasets/
 tmp_multiview_dataset/
+tmp_datasets/
 .viewer_history.json
 logs/
 state/

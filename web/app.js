@@ -23,10 +23,13 @@ const state = {
   raf: null,
   currentRoot: "data",
   currentView: "overviewView",
+  editSection: "episodes",
   editMode: "edit",
   mergePaths: [],   // source of truth for merge path list
   mergePathInfo: {},
   editOperations: [],
+  schemaFeatures: [],
+  statsJobs: [],
   trimDraftStart: null,
   trimDraftEnd: null,
   models: [],
@@ -51,6 +54,7 @@ const state = {
   folderBrowserPath: "",
   folderBrowserParent: null,
   folderBrowserRequestId: 0,
+  editOutputParent: "",
 };
 
 const ACTIVE_BACKTEST_JOB_KEY = "lerobotViewer.activeBacktestJobId";
@@ -118,10 +122,34 @@ const els = {
   fullSweep: document.getElementById("fullSweep"),
   runEditDryRun: document.getElementById("runEditDryRun"),
   applyEditPlan: document.getElementById("applyEditPlan"),
+  editOutputName: document.getElementById("editOutputName"),
   editOutputPath: document.getElementById("editOutputPath"),
   selectEditOutputPath: document.getElementById("selectEditOutputPath"),
   editOverwrite: document.getElementById("editOverwrite"),
   editDryRunOutput: document.getElementById("editDryRunOutput"),
+  refreshSchema: document.getElementById("refreshSchema"),
+  clearSchemaPlan: document.getElementById("clearSchemaPlan"),
+  runSchemaDryRun: document.getElementById("runSchemaDryRun"),
+  applySchemaPlan: document.getElementById("applySchemaPlan"),
+  schemaFeatureList: document.getElementById("schemaFeatureList"),
+  schemaEditResult: document.getElementById("schemaEditResult"),
+  statsRoot: document.getElementById("statsRoot"),
+  statsRepoId: document.getElementById("statsRepoId"),
+  statsNewRoot: document.getElementById("statsNewRoot"),
+  statsNewRepoId: document.getElementById("statsNewRepoId"),
+  statsSkipImageVideo: document.getElementById("statsSkipImageVideo"),
+  statsRelativeAction: document.getElementById("statsRelativeAction"),
+  statsExcludeJoints: document.getElementById("statsExcludeJoints"),
+  statsChunkSize: document.getElementById("statsChunkSize"),
+  statsNumWorkers: document.getElementById("statsNumWorkers"),
+  statsOverwrite: document.getElementById("statsOverwrite"),
+  checkStatsEnv: document.getElementById("checkStatsEnv"),
+  previewStatsCommand: document.getElementById("previewStatsCommand"),
+  submitStatsJob: document.getElementById("submitStatsJob"),
+  refreshStatsJobs: document.getElementById("refreshStatsJobs"),
+  statsEnvReport: document.getElementById("statsEnvReport"),
+  statsCommandPreview: document.getElementById("statsCommandPreview"),
+  statsJobList: document.getElementById("statsJobList"),
   toolStatusReport: document.getElementById("toolStatusReport"),
   operationLogReport: document.getElementById("operationLogReport"),
   addCurrentDatasetToMerge: document.getElementById("addCurrentDatasetToMerge"),
@@ -258,9 +286,18 @@ window._openMergeOutputBrowser = function () {
 window._openEditOutputBrowser = function () {
   try {
     if (typeof openFolderBrowser !== "function") return;
-    const startPath = els.editOutputPath?.value || state.summary?.root || "/";
-    openFolderBrowser({ value: startPath }, function (dir) {
-      if (els.editOutputPath) els.editOutputPath.value = dir;
+    const currentOutput = els.editOutputPath?.value || "";
+    const startPath = state.editOutputParent || (currentOutput ? dirnamePath(currentOutput) : (dirnamePath(state.summary?.root || "") || state.summary?.root || "/"));
+    openFolderBrowser({ value: startPath }, async function (dir) {
+      state.editOutputParent = dir;
+      const typedName = safeOutputName(els.editOutputName?.value || "");
+      if (typedName) {
+        if (els.editOutputPath) els.editOutputPath.value = joinPath(dir, typedName);
+        return;
+      }
+      const suggestion = await suggestEditOutputDirectory(dir);
+      if (els.editOutputName) els.editOutputName.value = suggestion.name;
+      if (els.editOutputPath) els.editOutputPath.value = suggestion.path;
     });
   } catch (_) {}
 };
@@ -309,6 +346,9 @@ async function api(path, options = {}) {
     try {
       const body = await response.json();
       message = body.detail || message;
+      if (message && typeof message === "object" && Array.isArray(message.errors)) {
+        message = message.errors.join("\n");
+      }
       if (typeof message !== "string") message = JSON.stringify(message, null, 2);
     } catch (_) {
       message = await response.text();
@@ -316,6 +356,57 @@ async function api(path, options = {}) {
     throw new Error(message);
   }
   return response.json();
+}
+
+async function suggestEditOutputDirectory(parent) {
+  const fallbackName = safeOutputName(`${datasetName(state.summary?.root || "dataset")}_schema_edit`) || "dataset_schema_edit";
+  const fallback = { path: joinPath(parent, fallbackName), name: fallbackName };
+  try {
+    const result = await api("/api/path/suggest-output-directory", {
+      method: "POST",
+      body: JSON.stringify({
+        parent,
+        source_path: state.summary?.root || "",
+        suffix: "schema_edit",
+      }),
+    });
+    const path = result.path || fallback.path;
+    return { path, name: safeOutputName(result.name || datasetName(path)) || fallback.name };
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function joinPath(parent, child) {
+  const rawParent = String(parent || "").replace(/[\\/]+$/, "");
+  const separator = rawParent.includes("\\") ? "\\" : "/";
+  return rawParent ? `${rawParent}${separator}${child}` : child;
+}
+
+function dirnamePath(path) {
+  const value = String(path || "").replace(/[\\/]+$/, "");
+  const parts = value.split(/[\\/]/);
+  if (parts.length <= 1) return "";
+  const separator = value.includes("\\") ? "\\" : "/";
+  return parts.slice(0, -1).join(separator);
+}
+
+function safeOutputName(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
+    .replace(/^[.]+$/, "")
+    .replace(/[. ]+$/g, "");
+}
+
+function updateEditOutputPathFromName() {
+  if (!els.editOutputPath || !els.editOutputName) return;
+  const name = safeOutputName(els.editOutputName.value);
+  if (!name) return;
+  const parent = state.editOutputParent || dirnamePath(els.editOutputPath.value || "") || dirnamePath(state.summary?.root || "");
+  if (!parent) return;
+  state.editOutputParent = parent;
+  els.editOutputPath.value = joinPath(parent, name);
 }
 
 function fmt(value, digits = 3) {
@@ -523,6 +614,16 @@ function setView(viewId) {
   }
 }
 
+function setEditSection(section) {
+  state.editSection = section || "episodes";
+  document.querySelectorAll(".edit-section-tab").forEach((button) => {
+    button.classList.toggle("active", button.dataset.editSection === state.editSection);
+  });
+  document.querySelectorAll("[data-edit-panel]").forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.editPanel === state.editSection);
+  });
+}
+
 function goToModelBacktest() {
   setView("modelBacktestView");
 }
@@ -587,6 +688,9 @@ async function openDataset() {
     renderFeatures();
     renderTasks();
     renderDatasetStats();
+    await loadSchemaEditor();
+    fillStatsDefaults();
+    await loadStatsJobs();
     renderEpisodes();
     resetEpisodeView();
     await loadHistory();
@@ -719,9 +823,45 @@ function renderFeatures() {
   }
   els.featureList.innerHTML = entries.map(([key, feature]) => {
     const cls = videoKeys.has(key) ? "video" : numericKeys.has(key) ? "numeric" : "";
-    const shape = feature.shape ? ` · [${feature.shape.join(", ")}]` : "";
-    return `<div class="feature-chip ${cls}">${escapeHtml(key)} · ${escapeHtml(feature.dtype)}${escapeHtml(shape)}</div>`;
+    const shape = feature.shape ? `[${feature.shape.join(", ")}]` : "[]";
+    const keys = featureKeyRows(feature.names);
+    const keyHtml = keys.length ? `
+      <div class="feature-key-list">
+        ${keys.map((item) => `
+          <span class="feature-key" title="${escapeAttr(item.label)}">
+            ${item.group ? `<small>${escapeHtml(item.group)}</small>` : ""}
+            ${escapeHtml(item.label)}
+          </span>
+        `).join("")}
+      </div>
+    ` : `<div class="feature-key-empty">${videoKeys.has(key) ? "video feature" : "no named keys"}</div>`;
+    return `
+      <div class="feature-card ${cls}">
+        <div class="feature-card-head">
+          <strong>${escapeHtml(key)}</strong>
+          <span>${escapeHtml(feature.dtype || "-")} · ${escapeHtml(shape)}</span>
+        </div>
+        ${keyHtml}
+      </div>
+    `;
   }).join("");
+}
+
+function featureKeyRows(names) {
+  if (Array.isArray(names)) {
+    return names.map((label) => ({ label: String(label), group: "" }));
+  }
+  if (names && typeof names === "object") {
+    const rows = [];
+    for (const [group, values] of Object.entries(names)) {
+      if (!Array.isArray(values)) continue;
+      for (const label of values) {
+        rows.push({ label: String(label), group: String(group) });
+      }
+    }
+    return rows;
+  }
+  return [];
 }
 
 function renderDatasetStats() {
@@ -758,6 +898,434 @@ function renderDatasetStats() {
 function datasetStatColumns(rows) {
   const standard = ["count", "min", "max", "mean", "std"];
   return standard.filter((key) => rows.some((row) => row.stats[key] !== undefined));
+}
+
+async function loadSchemaEditor() {
+  if (!els.schemaFeatureList) return;
+  if (!state.datasetId) {
+    state.schemaFeatures = [];
+    renderSchemaFeatures();
+    return;
+  }
+  try {
+    const result = await api(`/api/datasets/${encodeURIComponent(state.datasetId)}/schema`);
+    state.schemaFeatures = result.features || [];
+    renderSchemaFeatures();
+  } catch (error) {
+    els.schemaFeatureList.classList.add("empty");
+    els.schemaFeatureList.textContent = error.message;
+  }
+}
+
+function schemaFeatureKeyNames(feature) {
+  const names = feature?.names;
+  if (Array.isArray(names)) return names.map((name) => String(name));
+  if (names && typeof names === "object") {
+    return Object.values(names).flatMap((group) => Array.isArray(group) ? group.map((name) => String(name)) : []);
+  }
+  return [];
+}
+
+function refreshSchemaActionVisibility(card) {
+  if (!card) return;
+  const action = card.querySelector("[data-schema-action]")?.value || "";
+  for (const section of card.querySelectorAll("[data-action-controls]")) {
+    section.classList.toggle("hidden", section.dataset.actionControls !== action);
+  }
+}
+
+function clearSchemaPlan() {
+  if (!els.schemaFeatureList) return;
+  renderSchemaFeatures();
+  if (els.schemaEditResult) {
+    els.schemaEditResult.classList.add("empty");
+    els.schemaEditResult.textContent = "schema 计划已清空。";
+  }
+}
+
+function buildSchemaOperations() {
+  const operations = [];
+  if (!els.schemaFeatureList) return operations;
+  for (const card of els.schemaFeatureList.querySelectorAll("[data-schema-feature]")) {
+    const feature = card.dataset.schemaFeature;
+    const action = card.querySelector("[data-schema-action]")?.value || "";
+    if (action === "drop_feature") {
+      operations.push({ type: "drop_feature", feature });
+    } else if (action === "drop_feature_keys") {
+      operations.push({ type: "drop_feature_keys", feature, keys: selectedSchemaKeys(card, "drop_feature_keys") });
+    } else if (action === "rename_feature") {
+      const target = (card.querySelector("[data-schema-rename-feature]")?.value || "").trim();
+      operations.push({ type: "rename_feature", source: feature, target });
+    } else if (action === "rename_feature_keys") {
+      const mapping = {};
+      const section = card.querySelector('[data-action-controls="rename_feature_keys"]');
+      for (const input of Array.from(section?.querySelectorAll("[data-schema-key]:checked") || [])) {
+        const row = input.closest("[data-schema-key-row]");
+        mapping[input.dataset.schemaKey] = (row?.querySelector("[data-schema-key-rename]")?.value || "").trim();
+      }
+      operations.push({ type: "rename_feature_keys", feature, mapping });
+    } else if (action === "reorder_feature_keys") {
+      const rows = Array.from(card.querySelectorAll('[data-action-controls="reorder_feature_keys"] [data-schema-order-key]'));
+      const order = rows.map((row) => row.dataset.schemaOrderKey).filter(Boolean);
+      operations.push({ type: "reorder_feature_keys", feature, order });
+    }
+  }
+  return operations;
+}
+
+function selectedSchemaKeys(card, action) {
+  const section = card.querySelector(`[data-action-controls="${action}"]`);
+  return Array.from(section?.querySelectorAll("[data-schema-key]:checked") || []).map((input) => input.dataset.schemaKey);
+}
+
+function renderSchemaFeatures() {
+  if (!els.schemaFeatureList) return;
+  if (!state.schemaFeatures.length) {
+    els.schemaFeatureList.classList.add("empty");
+    els.schemaFeatureList.textContent = "加载数据集后显示可编辑 feature。";
+    return;
+  }
+  els.schemaFeatureList.classList.remove("empty");
+  const editableFeatures = state.schemaFeatures.filter((feature) => feature.editable);
+  if (!editableFeatures.length) {
+    els.schemaFeatureList.classList.add("empty");
+    els.schemaFeatureList.textContent = "当前数据集没有支持的可编辑 feature。";
+    return;
+  }
+  els.schemaFeatureList.innerHTML = editableFeatures.map((feature) => {
+    const shape = Array.isArray(feature.shape) ? `[${feature.shape.join(", ")}]` : "[]";
+    const keyNames = schemaFeatureKeyNames(feature);
+    const canEditKeys = feature.can_drop_keys && keyNames.length > 0;
+    const noKeys = `<div class="schema-feature-reason">此 feature 没有可编辑 key。</div>`;
+    const keyCheckRows = canEditKeys ? keyNames.map((name) => `
+      <label class="checkbox-row">
+        <input type="checkbox" data-schema-key="${escapeAttr(name)}">
+        <span class="schema-key-name">${escapeHtml(name)}</span>
+      </label>
+    `).join("") : noKeys;
+    const keyRenameRows = canEditKeys ? keyNames.map((name) => `
+      <div class="schema-key-row" data-schema-key-row="${escapeAttr(name)}">
+        <label class="checkbox-row">
+          <input type="checkbox" data-schema-key="${escapeAttr(name)}">
+          <span class="schema-key-name">${escapeHtml(name)}</span>
+        </label>
+        <input type="text" data-schema-key-rename placeholder="新 key 名称">
+      </div>
+    `).join("") : noKeys;
+    const keyOrderRows = canEditKeys ? keyNames.map((name, index) => `
+      <div class="schema-order-row" data-schema-order-key="${escapeAttr(name)}">
+        <span class="schema-order-index">${index + 1}</span>
+        <span class="schema-key-name">${escapeHtml(name)}</span>
+        <span class="schema-order-actions">
+          <button type="button" class="schema-order-button" data-schema-order-move="up" title="上移">↑</button>
+          <button type="button" class="schema-order-button" data-schema-order-move="down" title="下移">↓</button>
+        </span>
+      </div>
+    `).join("") : noKeys;
+    const actionOptions = [
+      ["", "选择操作"],
+      ["drop_feature", "删除 feature"],
+      ["drop_feature_keys", "删除选定 key"],
+      ["rename_feature", "重命名 feature"],
+      ["rename_feature_keys", "重命名选定 key"],
+      ["reorder_feature_keys", "对已有 key 进行排序"],
+    ];
+    return `
+      <div class="schema-feature-card" data-schema-feature="${escapeAttr(feature.name)}">
+        <div class="schema-feature-head">
+          <div class="schema-feature-title">
+            <strong>${escapeHtml(feature.name)}</strong>
+            <span>${escapeHtml(feature.dtype || "-")} ${escapeHtml(shape)}</span>
+          </div>
+          <select class="schema-action-select" data-schema-action>
+            ${actionOptions.map(([value, label]) => {
+              const disabled = value && value.endsWith("_keys") && !canEditKeys ? "disabled" : "";
+              return `<option value="${escapeAttr(value)}" ${disabled}>${escapeHtml(label)}</option>`;
+            }).join("")}
+          </select>
+        </div>
+        ${feature.reason ? `<div class="schema-feature-reason">${escapeHtml(feature.reason)}</div>` : ""}
+        <div class="schema-action-controls hidden" data-action-controls="drop_feature">
+          <div class="schema-feature-reason">将删除整个 feature、数据列、全局 stats 和 episode stats。</div>
+        </div>
+        <div class="schema-action-controls hidden" data-action-controls="drop_feature_keys">
+          <div class="schema-key-list">${keyCheckRows}</div>
+        </div>
+        <div class="schema-action-controls hidden" data-action-controls="rename_feature">
+          <div class="schema-rename-row">
+            <input type="text" data-schema-rename-feature placeholder="新 feature 名称">
+          </div>
+        </div>
+        <div class="schema-action-controls hidden" data-action-controls="rename_feature_keys">
+          <div class="schema-key-list">${keyRenameRows}</div>
+        </div>
+        <div class="schema-action-controls hidden" data-action-controls="reorder_feature_keys">
+          <div class="schema-order-list" data-schema-key-order>${keyOrderRows}</div>
+        </div>
+      </div>
+    `;
+  }).join("");
+  for (const select of els.schemaFeatureList.querySelectorAll("[data-schema-action]")) {
+    select.addEventListener("change", () => refreshSchemaActionVisibility(select.closest("[data-schema-feature]")));
+    refreshSchemaActionVisibility(select.closest("[data-schema-feature]"));
+  }
+  for (const button of els.schemaFeatureList.querySelectorAll("[data-schema-order-move]")) {
+    button.addEventListener("click", () => moveSchemaOrderRow(button));
+  }
+  for (const list of els.schemaFeatureList.querySelectorAll(".schema-order-list[data-schema-key-order]")) {
+    updateSchemaOrderIndexes(list);
+  }
+}
+
+function moveSchemaOrderRow(button) {
+  const row = button.closest("[data-schema-order-key]");
+  const list = button.closest(".schema-order-list[data-schema-key-order]");
+  if (!row || !list) return;
+  if (button.dataset.schemaOrderMove === "up" && row.previousElementSibling) {
+    list.insertBefore(row, row.previousElementSibling);
+  } else if (button.dataset.schemaOrderMove === "down" && row.nextElementSibling) {
+    list.insertBefore(row.nextElementSibling, row);
+  }
+  updateSchemaOrderIndexes(list);
+}
+
+function updateSchemaOrderIndexes(list) {
+  const rows = Array.from(list.querySelectorAll("[data-schema-order-key]"));
+  rows.forEach((row, index) => {
+    const indexEl = row.querySelector(".schema-order-index");
+    if (indexEl) indexEl.textContent = String(index + 1);
+    const up = row.querySelector('[data-schema-order-move="up"]');
+    const down = row.querySelector('[data-schema-order-move="down"]');
+    if (up) up.disabled = index === 0;
+    if (down) down.disabled = index === rows.length - 1;
+  });
+}
+
+async function runSchemaDryRun() {
+  if (!state.summary) return setSchemaResultError("请先加载数据集。");
+  const operations = buildSchemaOperations();
+  if (!operations.length) return setSchemaResultError("没有待执行的 schema 操作。");
+  setSchemaResultLoading("正在预估 schema 修改...");
+  try {
+    const result = await api("/api/schema-edit/dry-run", {
+      method: "POST",
+      body: JSON.stringify({ path: state.summary.root, operations }),
+    });
+    renderSchemaResult(result, "dry-run");
+  } catch (error) {
+    setSchemaResultError(error.message);
+  }
+}
+
+async function applySchemaPlan() {
+  if (!state.summary) return setSchemaResultError("请先加载数据集。");
+  const operations = buildSchemaOperations();
+  if (!operations.length) return setSchemaResultError("没有待执行的 schema 操作。");
+  const outputPath = (els.editOutputPath?.value || "").trim();
+  if (!outputPath) return setSchemaResultError("请在页面顶部选择输出目录。");
+  setSchemaResultLoading("正在生成 schema 输出数据集...");
+  try {
+    const result = await api("/api/schema-edit/apply", {
+      method: "POST",
+      body: JSON.stringify({
+        path: state.summary.root,
+        output_path: outputPath,
+        overwrite: els.editOverwrite?.checked || false,
+        operations,
+      }),
+    });
+    renderSchemaResult(result, "apply");
+    fillStatsDefaults(result.output_path);
+  } catch (error) {
+    setSchemaResultError(error.message);
+  }
+}
+
+function setSchemaResultLoading(message) {
+  if (!els.schemaEditResult) return;
+  els.schemaEditResult.classList.remove("empty");
+  els.schemaEditResult.innerHTML = `<div class="result-loading">${escapeHtml(message)}</div>`;
+}
+
+function setSchemaResultError(message) {
+  if (!els.schemaEditResult) return;
+  els.schemaEditResult.classList.remove("empty");
+  els.schemaEditResult.innerHTML = `<div class="result-section result-error"><h4>Schema 操作失败</h4><p>${escapeHtml(message)}</p></div>`;
+}
+
+function renderSchemaResult(result, mode) {
+  if (!els.schemaEditResult) return;
+  const plan = result.dry_run || result;
+  const statusOk = mode === "apply" ? result.ok : plan.valid;
+  const sourcePath = state.summary?.root || "";
+  const selectedOutputPath = (els.editOutputPath?.value || "").trim();
+  const outputPath = result.output_path || selectedOutputPath || "尚未选择输出目录";
+  const modeNote = mode === "apply" ? "已写入新数据集" : "仅预估，不写入文件";
+  els.schemaEditResult.classList.remove("empty");
+  els.schemaEditResult.innerHTML = `
+    <div class="result-header">
+      <div>
+        <h4>${mode === "apply" ? "Schema 输出结果" : "Schema 预估结果"}</h4>
+        <p>${escapeHtml(modeNote)}</p>
+        <p><strong>源数据集：</strong>${escapeHtml(sourcePath)}</p>
+        <p><strong>输出目录：</strong>${escapeHtml(outputPath)}</p>
+      </div>
+      <span class="result-status ${statusOk ? "ok" : "fail"}">${statusOk ? "OK" : "Failed"}</span>
+    </div>
+    ${formatIssueList("错误", result.errors || plan.errors || [], "error")}
+    ${formatIssueList("警告", result.warnings || plan.warnings || [], "warning")}
+    ${formatSchemaPlan(plan)}
+    ${result.validation ? formatValidationResult(result.validation, "输出数据集校验") : ""}
+  `;
+}
+
+function formatSchemaPlan(plan) {
+  const normalized = plan.normalized_plan || {};
+  const affected = plan.affected || {};
+  const keyDrops = Object.entries(normalized.drop_feature_keys || {});
+  const keyRenames = Object.entries(normalized.rename_feature_keys || {});
+  const keyReorders = Object.entries(normalized.reorder_feature_keys || {});
+  const dropFeatures = normalized.drop_features || [];
+  const renames = Object.entries(normalized.rename_features || {});
+  const operations = [
+    ...keyDrops.map(([feature, entry]) => `删除 ${escapeHtml(feature)} keys: ${escapeHtml((entry.drop_keys || []).join(", "))} (${escapeHtml((entry.old_shape || []).join(","))} -> ${escapeHtml((entry.new_shape || []).join(","))})`),
+    ...keyRenames.map(([feature, entry]) => `重命名 ${escapeHtml(feature)} keys: ${escapeHtml(Object.entries(entry.mapping || {}).map(([source, target]) => `${source} -> ${target}`).join(", "))}`),
+    ...keyReorders.map(([feature, entry]) => `排序 ${escapeHtml(feature)} keys: ${escapeHtml((entry.order || []).join(", "))}`),
+    ...dropFeatures.map((feature) => `删除 feature: ${escapeHtml(feature)}`),
+    ...renames.map(([source, target]) => `重命名 feature: ${escapeHtml(source)} -> ${escapeHtml(target)}`),
+  ];
+  return `
+    <div class="result-section">
+      <h4>影响范围</h4>
+      <div class="result-grid">
+        <div><strong>${escapeHtml(affected.data_shards ?? "-")}</strong><span>data shards</span></div>
+        <div><strong>${escapeHtml(affected.episode_metadata_shards ?? "-")}</strong><span>episode stats shards</span></div>
+        <div><strong>${escapeHtml(affected.video_files_reencoded ?? 0)}</strong><span>video re-encode</span></div>
+      </div>
+    </div>
+    <div class="result-section">
+      <h4>操作</h4>
+      ${operations.length ? operations.map((item) => `<div>${item}</div>`).join("") : `<div class="result-empty">没有 schema 操作。</div>`}
+    </div>
+  `;
+}
+
+function fillStatsDefaults(rootOverride) {
+  const root = rootOverride || state.summary?.root || "";
+  if (!root) return;
+  const name = datasetName(root);
+  if (els.statsRoot) els.statsRoot.value = root;
+  if (els.statsRepoId) els.statsRepoId.value = name;
+  if (els.statsNewRepoId) els.statsNewRepoId.value = `${name}_recomputed_stats`;
+  if (els.statsNewRoot) {
+    const separator = root.includes("\\") ? "\\" : "/";
+    const trimmed = root.replace(/[\\/]+$/, "");
+    const parent = trimmed.split(/[\\/]/).slice(0, -1).join(separator);
+    els.statsNewRoot.value = `${parent}${separator}${name}_recomputed_stats`;
+  }
+}
+
+async function checkStatsEnv() {
+  if (!els.statsEnvReport) return;
+  els.statsEnvReport.classList.remove("empty");
+  els.statsEnvReport.textContent = "正在检测 CLI...";
+  try {
+    const result = await api("/api/stats/env");
+    els.statsEnvReport.innerHTML = formatStatsEnv(result);
+  } catch (error) {
+    els.statsEnvReport.textContent = error.message;
+  }
+}
+
+function buildStatsRequest() {
+  return {
+    root: (els.statsRoot?.value || "").trim(),
+    repo_id: (els.statsRepoId?.value || "").trim(),
+    new_root: (els.statsNewRoot?.value || "").trim() || null,
+    new_repo_id: (els.statsNewRepoId?.value || "").trim() || null,
+    skip_image_video: !!els.statsSkipImageVideo?.checked,
+    relative_action: !!els.statsRelativeAction?.checked,
+    relative_exclude_joints: (els.statsExcludeJoints?.value || "").split(",").map((item) => item.trim()).filter(Boolean),
+    chunk_size: Number(els.statsChunkSize?.value || 50),
+    num_workers: Number(els.statsNumWorkers?.value || 0),
+    overwrite: !!els.statsOverwrite?.checked,
+  };
+}
+
+async function previewStatsCommand() {
+  if (!els.statsCommandPreview) return;
+  els.statsCommandPreview.textContent = "正在预览命令...";
+  try {
+    const result = await api("/api/stats/preview", {
+      method: "POST",
+      body: JSON.stringify(buildStatsRequest()),
+    });
+    els.statsCommandPreview.textContent = `${result.valid ? "VALID" : "INVALID"}\n${(result.errors || []).join("\n")}\n\n${result.display_command || ""}`;
+  } catch (error) {
+    els.statsCommandPreview.textContent = error.message;
+  }
+}
+
+async function submitStatsJob() {
+  if (!els.statsCommandPreview) return;
+  els.statsCommandPreview.textContent = "正在提交任务...";
+  try {
+    const result = await api("/api/stats/jobs", {
+      method: "POST",
+      body: JSON.stringify(buildStatsRequest()),
+    });
+    els.statsCommandPreview.textContent = `已提交 ${result.job_id}\n${result.display_command || ""}`;
+    await loadStatsJobs();
+  } catch (error) {
+    els.statsCommandPreview.textContent = error.message;
+  }
+}
+
+async function loadStatsJobs() {
+  if (!els.statsJobList) return;
+  try {
+    state.statsJobs = await api("/api/stats/jobs");
+    renderStatsJobs();
+  } catch (error) {
+    els.statsJobList.textContent = error.message;
+  }
+}
+
+function renderStatsJobs() {
+  if (!els.statsJobList) return;
+  if (!state.statsJobs.length) {
+    els.statsJobList.classList.add("empty");
+    els.statsJobList.textContent = "暂无统计任务。";
+    return;
+  }
+  els.statsJobList.classList.remove("empty");
+  els.statsJobList.innerHTML = state.statsJobs.map((job) => `
+    <div class="stats-job-row">
+      <strong>${escapeHtml(job.job_id)}</strong>
+      <div class="stats-job-meta">
+        <span>${escapeHtml(job.status || "-")}</span>
+        <span>${escapeHtml(job.repo_id || "-")}</span>
+        <span>${escapeHtml(job.created_at || "-")}</span>
+      </div>
+      <small>${escapeHtml(job.display_command || "")}</small>
+    </div>
+  `).join("");
+}
+
+function formatStatsEnv(result) {
+  const rows = [
+    ["available", result.available ? "yes" : "no"],
+    ["executable", result.executable || "-"],
+    ["lerobot", result.lerobot_version || "-"],
+    ["recompute_stats", result.supports_recompute_stats ? "yes" : "no"],
+    ["fields", (result.supported_fields || []).join(", ")],
+  ];
+  return rows.map(([label, value]) => `
+    <div class="tool-report-row">
+      <strong>${escapeHtml(label)}</strong>
+      <span>${escapeHtml(value)}</span>
+    </div>
+  `).join("") + (result.help_error ? `<pre class="log">${escapeHtml(result.help_error)}</pre>` : "");
 }
 
 function datasetStatRows(stats) {
@@ -4240,6 +4808,9 @@ document.querySelectorAll(".nav-button").forEach((button) => {
 document.querySelectorAll(".root-nav-button").forEach((button) => {
   button.addEventListener("click", () => setRoot(button.dataset.root));
 });
+document.querySelectorAll(".edit-section-tab").forEach((button) => {
+  button.addEventListener("click", () => setEditSection(button.dataset.editSection));
+});
 
 els.loadDataset.addEventListener("click", openDataset);
 els.datasetPath.addEventListener("keydown", (event) => {
@@ -4283,6 +4854,22 @@ if (els.loadOperationLogs) els.loadOperationLogs.addEventListener("click", loadO
 els.strictValidateDataset.addEventListener("click", strictValidateCurrentDataset);
 els.runEditDryRun.addEventListener("click", runEditDryRun);
 els.applyEditPlan.addEventListener("click", applyEditPlan);
+if (els.editOutputName) {
+  els.editOutputName.addEventListener("input", updateEditOutputPathFromName);
+  els.editOutputName.addEventListener("blur", () => {
+    const name = safeOutputName(els.editOutputName.value);
+    els.editOutputName.value = name;
+    updateEditOutputPathFromName();
+  });
+}
+if (els.refreshSchema) els.refreshSchema.addEventListener("click", loadSchemaEditor);
+if (els.clearSchemaPlan) els.clearSchemaPlan.addEventListener("click", clearSchemaPlan);
+if (els.runSchemaDryRun) els.runSchemaDryRun.addEventListener("click", runSchemaDryRun);
+if (els.applySchemaPlan) els.applySchemaPlan.addEventListener("click", applySchemaPlan);
+if (els.checkStatsEnv) els.checkStatsEnv.addEventListener("click", checkStatsEnv);
+if (els.previewStatsCommand) els.previewStatsCommand.addEventListener("click", previewStatsCommand);
+if (els.submitStatsJob) els.submitStatsJob.addEventListener("click", submitStatsJob);
+if (els.refreshStatsJobs) els.refreshStatsJobs.addEventListener("click", loadStatsJobs);
 els.addCurrentDatasetToMerge.addEventListener("click", addCurrentDatasetToMerge);
 // addMergePathBtn uses onclick in HTML for robustness
 els.clearMergeList.addEventListener("click", clearMergeList);

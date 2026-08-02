@@ -167,10 +167,14 @@ def _is_torchcodec_runtime_failure(errors: list[str], tracebacks: list[str]) -> 
     )
     codec_runtime_markers = (
         "ffmpeg shared libraries",
+        "full-shared",
         "libavutil.so",
         "libavcodec.so",
         "libavformat.so",
         "libavdevice.so",
+        "libtorchcodec_core",
+        ".dll",
+        "could not find module",
         "cannot open shared object file",
     )
     return any(marker in text for marker in torchcodec_markers) and any(marker in text for marker in codec_runtime_markers)

@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>LeRobot Dataset v3.0 Viewer</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260614-help-panel">
+  <link rel="stylesheet" href="/static/styles.css?v=20260802-overview-tasks-after-stats">
 </head>
 <body>
   <div class="shell">
@@ -102,15 +102,16 @@
             <div class="section-kicker">Features</div>
             <div id="featureList" class="feature-list empty">暂无特征信息</div>
           </section>
-          <section class="surface">
-            <div class="section-kicker">Tasks</div>
-            <div id="taskList" class="task-list empty">暂无任务信息</div>
-          </section>
         </div>
 
         <section class="surface dataset-stats-surface">
           <div class="section-kicker">Dataset Statistics</div>
           <div id="datasetStats" class="dataset-stats empty">暂无统计信息</div>
+        </section>
+
+        <section class="surface task-surface">
+          <div class="section-kicker">Tasks</div>
+          <div id="taskList" class="task-list empty">暂无任务信息</div>
         </section>
       </section>
 
@@ -235,9 +236,10 @@
             <p>这里处理整个数据集级别的待应用操作。具体 episode 的删除和裁剪标记仍在 Episode 播放页完成。</p>
           </div>
           <div class="edit-run-controls">
+            <input id="editOutputName" type="text" placeholder="新数据集名称，例如 lerobot_pusht_schema_v1">
             <div class="output-path-picker">
-              <input id="editOutputPath" type="text" readonly placeholder="选择输出目录">
-              <button id="selectEditOutputPath" type="button" onclick="window._openEditOutputBrowser && window._openEditOutputBrowser()">选择输出目录</button>
+              <input id="editOutputPath" type="text" readonly placeholder="先选择父目录，系统会自动创建新数据集目录">
+              <button id="selectEditOutputPath" type="button" onclick="window._openEditOutputBrowser && window._openEditOutputBrowser()">选择父目录</button>
             </div>
             <label class="checkbox-row">
               <input id="editOverwrite" type="checkbox">
@@ -249,18 +251,27 @@
                 LeRobot 全量遍历
               </label>
               <button id="strictValidateDataset" type="button">严格校验当前数据集</button>
-              <button id="runEditDryRun" type="button">预估修改结果</button>
-              <button id="applyEditPlan" type="button">生成新数据集</button>
             </div>
           </div>
         </section>
 
-        <div class="edit-grid">
+        <nav class="edit-section-tabs" aria-label="数据集编辑工作区">
+          <button class="edit-section-tab active" type="button" data-edit-section="episodes">Episode 编辑</button>
+          <button class="edit-section-tab" type="button" data-edit-section="schema">Feature Schema</button>
+          <button class="edit-section-tab" type="button" data-edit-section="stats">统计重算</button>
+          <button class="edit-section-tab" type="button" data-edit-section="merge">数据集合并</button>
+        </nav>
+
+        <div class="edit-grid edit-workspace active" data-edit-panel="episodes">
           <section class="surface">
             <div class="section-kicker">Pending Operations</div>
             <div class="edit-mode-bar">
               <button id="modeEdit2" type="button" class="mode-option mode-delete active">删除</button>
               <button id="modeExport2" type="button" class="mode-option mode-export">导出</button>
+            </div>
+            <div class="schema-toolbar">
+              <button id="runEditDryRun" type="button">预估修改结果</button>
+              <button id="applyEditPlan" type="button">生成新数据集</button>
             </div>
             <div id="editOperationList" class="edit-operation-list empty">暂无待应用修改</div>
           </section>
@@ -271,7 +282,58 @@
           </section>
         </div>
 
-        <div class="merge-grid">
+        <div class="schema-grid edit-workspace" data-edit-panel="schema">
+          <section class="surface">
+            <div class="section-kicker">Feature Schema</div>
+            <div class="schema-toolbar">
+              <button id="refreshSchema" type="button">刷新 schema</button>
+              <button id="clearSchemaPlan" type="button">清空 schema 计划</button>
+              <button id="runSchemaDryRun" type="button">预估 schema 修改</button>
+              <button id="applySchemaPlan" type="button">生成 schema 输出</button>
+            </div>
+            <div id="schemaFeatureList" class="schema-feature-list empty">加载数据集后显示可编辑 feature。</div>
+          </section>
+
+          <section class="surface">
+            <div class="section-kicker">Schema Result</div>
+            <div id="schemaEditResult" class="edit-output empty">尚未运行 schema 预估。</div>
+          </section>
+        </div>
+
+        <div class="stats-grid edit-workspace" data-edit-panel="stats">
+          <section class="surface">
+            <div class="section-kicker">Recompute Stats</div>
+            <div class="stats-form">
+              <input id="statsRoot" type="text" placeholder="输入数据集路径">
+              <input id="statsRepoId" type="text" placeholder="repo_id">
+              <input id="statsNewRoot" type="text" placeholder="输出目录">
+              <input id="statsNewRepoId" type="text" placeholder="输出 repo_id">
+              <label class="checkbox-row"><input id="statsSkipImageVideo" type="checkbox" checked> 跳过图像/视频统计</label>
+              <label class="checkbox-row"><input id="statsRelativeAction" type="checkbox"> Relative action</label>
+              <input id="statsExcludeJoints" type="text" placeholder="不转相对动作的 joints，例如 gripper,joint_6">
+              <div class="inline-field-grid">
+                <input id="statsChunkSize" type="number" min="1" step="1" value="50" placeholder="chunk size">
+                <input id="statsNumWorkers" type="number" min="0" step="1" value="0" placeholder="workers">
+              </div>
+              <label class="checkbox-row"><input id="statsOverwrite" type="checkbox"> 允许覆盖输出</label>
+            </div>
+            <div class="schema-toolbar">
+              <button id="checkStatsEnv" type="button">检测 CLI</button>
+              <button id="previewStatsCommand" type="button">预览命令</button>
+              <button id="submitStatsJob" type="button">提交任务</button>
+              <button id="refreshStatsJobs" type="button">刷新任务</button>
+            </div>
+          </section>
+
+          <section class="surface">
+            <div class="section-kicker">Stats Jobs</div>
+            <div id="statsEnvReport" class="edit-output empty">尚未检测 CLI。</div>
+            <pre id="statsCommandPreview" class="log">尚未预览命令。</pre>
+            <div id="statsJobList" class="backtest-history empty">暂无统计任务。</div>
+          </section>
+        </div>
+
+        <div class="merge-grid edit-workspace" data-edit-panel="merge">
           <section class="surface">
             <div class="section-kicker">Dataset Merge</div>
             <h3>合并数据集</h3>
@@ -644,7 +706,7 @@
   </div>
 </div>
 
-  <script src="/static/app.js?v=20260614-help-panel"></script>
+  <script src="/static/app.js?v=20260802-overview-tasks-after-stats"></script>
 
 </body>
 </html>
