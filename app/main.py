@@ -35,6 +35,19 @@ from app.backtesting import (
     unload_profile_adapter,
 )
 from app.backtest_store import export_action_csv, export_action_zip, export_backtest_run, list_backtest_runs, load_backtest_run
+from app.collection import (
+    CollectionTaskCreateRequest,
+    collection_runtime_status,
+    collection_task_log,
+    create_collection_task,
+    delete_collection_task,
+    end_collection_episode,
+    finish_collection_task,
+    get_collection_task,
+    list_collection_tasks,
+    retry_collection_episode,
+    start_collection_episode,
+)
 from app.editing import (
     EditApplyRequest,
     EditDryRunRequest,
@@ -1091,6 +1104,96 @@ def stats_job_cancel_endpoint(job_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         log_failure("stats_job_cancel", job_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/collection/runtime")
+def collection_runtime() -> dict[str, Any]:
+    return collection_runtime_status()
+
+
+@app.get("/api/collection/tasks")
+def collection_tasks_list() -> list[dict[str, Any]]:
+    return list_collection_tasks()
+
+
+@app.post("/api/collection/tasks")
+def collection_task_create(request: CollectionTaskCreateRequest) -> dict[str, Any]:
+    try:
+        return create_collection_task(request)
+    except Exception as exc:
+        log_failure("collection_task_create", request.repo_id if hasattr(request, "repo_id") else "", exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/collection/tasks/{task_id}")
+def collection_task_get(task_id: str) -> dict[str, Any]:
+    try:
+        return get_collection_task(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.delete("/api/collection/tasks/{task_id}")
+def collection_task_delete_endpoint(task_id: str) -> dict[str, Any]:
+    try:
+        return delete_collection_task(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log_failure("collection_task_delete", task_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/collection/tasks/{task_id}/log")
+def collection_task_log_endpoint(task_id: str, tail: int = Query(200, ge=1, le=5000)) -> dict[str, Any]:
+    try:
+        return collection_task_log(task_id, tail=tail)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/collection/tasks/{task_id}/start-episode")
+def collection_episode_start_endpoint(task_id: str) -> dict[str, Any]:
+    try:
+        return start_collection_episode(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log_failure("collection_episode_start", task_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/collection/tasks/{task_id}/end-episode")
+def collection_episode_end_endpoint(task_id: str) -> dict[str, Any]:
+    try:
+        return end_collection_episode(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log_failure("collection_episode_end", task_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/collection/tasks/{task_id}/retry-episode")
+def collection_episode_retry_endpoint(task_id: str) -> dict[str, Any]:
+    try:
+        return retry_collection_episode(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log_failure("collection_episode_retry", task_id, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/collection/tasks/{task_id}/finish")
+def collection_task_finish_endpoint(task_id: str) -> dict[str, Any]:
+    try:
+        return finish_collection_task(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        log_failure("collection_task_finish", task_id, exc)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

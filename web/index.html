@@ -7,7 +7,7 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>LeRobot Dataset v3.0 Viewer</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260802-overview-tasks-after-stats">
+  <link rel="stylesheet" href="/static/styles.css?v=20260802-collection-trim-help">
 </head>
 <body>
   <div class="shell">
@@ -20,7 +20,16 @@
         </div>
       </div>
 
-      <section class="load-panel">
+      <label class="workspace-switcher" for="workspaceSelect">
+        <span>工作区</span>
+        <select id="workspaceSelect">
+          <option value="data" selected>LeRobot 数据</option>
+          <option value="collect">数据采集</option>
+          <option value="model">模型工作台</option>
+        </select>
+      </label>
+
+      <section id="datasetLoadPanel" class="load-panel">
         <label for="datasetPath">数据集根目录</label>
         <div class="load-row">
           <div class="path-field">
@@ -33,15 +42,10 @@
         <div id="loadError" class="error"></div>
       </section>
 
-      <section class="history-panel">
+      <section id="datasetHistoryPanel" class="history-panel">
         <div class="side-title">最近打开</div>
         <div id="historyList" class="history-list empty">暂无历史记录</div>
       </section>
-
-      <nav class="root-nav">
-        <button class="root-nav-button active" data-root="data">LeRobot 数据</button>
-        <button class="root-nav-button" data-root="model">模型工作台</button>
-      </nav>
 
       <nav class="nav sub-nav active" data-root-nav="data">
         <button class="nav-button active" data-root="data" data-view="overviewView">总览</button>
@@ -56,6 +60,10 @@
         <button class="nav-button" data-root="model" data-view="trainingRecipeView">训练配方</button>
         <button class="nav-button" data-root="model" data-view="trainingQueueView">训练队列</button>
         <button class="nav-button" data-root="model" data-view="trainingPipelineView">训练流水线</button>
+      </nav>
+
+      <nav class="nav sub-nav" data-root-nav="collect">
+        <button class="nav-button" data-root="collect" data-view="collectionView">采集工作台</button>
       </nav>
 
       <section id="episodeSideSection" class="side-section">
@@ -366,6 +374,187 @@
           <section class="surface">
             <div class="section-kicker">Merge Result</div>
             <div id="mergeResult" class="edit-output empty">尚未检查合并。</div>
+          </section>
+        </div>
+      </section>
+
+      <section id="collectionView" class="view">
+        <section class="surface collect-hero">
+          <div>
+            <div class="section-kicker">Data Collection</div>
+            <h3>Web 端 LeRobot 数据采集</h3>
+            <p>创建采集任务后，通过 ZMQ 接入图像和数值 stream，按主时间流对齐并记录 episode。</p>
+          </div>
+          <div class="collect-status-strip">
+            <span id="collectionRuntimeStatus" class="status-pill">未检测</span>
+            <span id="collectionActiveTaskPill" class="status-pill">未创建任务</span>
+          </div>
+        </section>
+
+        <nav class="collect-tabs" aria-label="数据采集工作区">
+          <button class="collect-tab active" type="button" data-collect-tab="setup">采集任务</button>
+          <button class="collect-tab" type="button" data-collect-tab="recording">Episode 录制</button>
+          <button class="collect-tab" type="button" data-collect-tab="history">采集历史</button>
+        </nav>
+
+        <div class="collect-panel active" data-collect-panel="setup">
+          <section class="surface">
+            <div class="section-kicker">Task Setup</div>
+            <div class="collect-form-grid">
+              <input id="collectDatasetName" type="text" value="lerobot_collect_demo" placeholder="新数据集名称">
+              <input id="collectRepoId" type="text" value="local/lerobot_collect_demo" placeholder="repo_id，例如 local/pick_block">
+              <div class="output-path-picker">
+                <input id="collectOutputParent" type="text" placeholder="输出父目录">
+                <button type="button" onclick="window._openCollectOutputBrowser && window._openCollectOutputBrowser()">选择父目录</button>
+              </div>
+              <input id="collectOutputPath" type="text" readonly placeholder="最终输出目录">
+              <div class="collect-task-field-row">
+                <label class="field-stack">
+                  <span>Episode 总数</span>
+                  <input id="collectEpisodes" type="number" min="1" step="1" value="10" placeholder="例如 10">
+                </label>
+                <label class="field-stack">
+                  <span>目标 FPS</span>
+                  <input id="collectFps" type="number" min="1" step="1" value="30" placeholder="例如 30">
+                </label>
+                <label class="field-stack">
+                  <span>默认 Task</span>
+                  <input id="collectTaskText" type="text" value="pick the object" placeholder="例如 pick the object">
+                </label>
+              </div>
+              <label class="checkbox-row"><input id="collectOverwrite" type="checkbox"> 覆盖已有输出目录</label>
+            </div>
+          </section>
+
+          <section class="surface">
+            <div class="section-kicker">Stream Mapping</div>
+            <div class="schema-toolbar">
+              <button id="addCollectionStream" type="button">添加数据流</button>
+              <button id="addCollectionCameraPreset" type="button">添加摄像头</button>
+              <button id="addCollectionVectorPreset" type="button">添加向量</button>
+            </div>
+            <div class="collect-table-wrap">
+              <table class="collect-stream-table">
+                <thead>
+                  <tr>
+                    <th>启用</th>
+                    <th>Source Topic</th>
+                    <th>LeRobot Feature</th>
+                    <th>类型</th>
+                    <th>Extractor</th>
+                    <th>消息格式</th>
+                    <th>dtype</th>
+                    <th>shape</th>
+                    <th>key 名称</th>
+                    <th>Hz</th>
+                    <th>必需</th>
+                    <th>主时间</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="collectionStreamRows"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="surface">
+            <div class="section-kicker">时间对齐</div>
+            <p class="inline-help">选择一条主时间流作为 episode 帧时间轴，其他 stream 按 timestamp 靠近到这条时间轴；超过最大误差的样本按缺失处理策略处理。</p>
+            <div class="collect-form-grid">
+              <label class="field-stack">
+                <span>主时间流</span>
+                <select id="collectReferenceStream"></select>
+              </label>
+              <label class="field-stack">
+                <span>时间戳来源</span>
+                <select id="collectTimestampSource">
+                  <option value="message">使用消息 timestamp</option>
+                  <option value="receive_time">使用接收时间</option>
+                </select>
+              </label>
+              <label class="field-stack">
+                <span>最大容许误差 ms</span>
+                <input id="collectMaxSlopMs" type="number" min="0" step="1" value="15" placeholder="例如 15">
+              </label>
+              <label class="field-stack">
+                <span>对齐后时间范围</span>
+                <select id="collectTrimPolicy">
+                  <option value="intersection">推荐：只保留共同有效时间段</option>
+                  <option value="reference_full">保留主时间流完整长度</option>
+                </select>
+                <small class="field-hint">共同有效时间段：所有必需 stream 都有可匹配样本；主时间完整：保留主时间流全部帧，其他 stream 缺失时按下方策略处理。</small>
+              </label>
+              <label class="field-stack">
+                <span>数值补齐策略</span>
+                <select id="collectNumericPolicy">
+                  <option value="nearest">数值 nearest</option>
+                  <option value="linear">数值 linear</option>
+                </select>
+              </label>
+              <label class="field-stack">
+                <span>缺失样本处理</span>
+                <select id="collectMissingPolicy">
+                  <option value="error">缺失时报错</option>
+                  <option value="drop_frame">丢弃缺失帧</option>
+                  <option value="hold_previous">沿用上一帧</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section class="surface">
+            <div class="section-kicker">ZMQ 接入</div>
+            <div class="collect-form-grid">
+              <select id="collectTransportType">
+                <option value="zmq_sub">SUB 订阅</option>
+                <option value="zmq_pull">PULL 接收</option>
+              </select>
+              <input id="collectEndpoint" type="text" value="tcp://127.0.0.1:5555" placeholder="ZMQ endpoint">
+              <div class="schema-toolbar">
+                <button id="checkCollectionRuntime" type="button">检测 ZMQ 环境</button>
+                <button id="createCollectionTask" type="button">创建采集任务</button>
+                <button id="refreshCollectionTasks" type="button">刷新任务</button>
+              </div>
+            </div>
+            <div id="collectionSetupResult" class="edit-output empty">创建采集任务后显示任务摘要。</div>
+          </section>
+        </div>
+
+        <div class="collect-panel" data-collect-panel="recording">
+          <section class="surface collect-record-card">
+            <div>
+              <div class="section-kicker">Current Episode</div>
+              <h3 id="collectionEpisodeTitle">未创建采集任务</h3>
+              <p id="collectionEpisodeMeta">创建任务后在这里控制 episode 采集。</p>
+            </div>
+            <div class="collect-record-actions">
+              <button id="startCollectionEpisode" type="button">开始采集此次 episode</button>
+              <button id="endCollectionEpisode" type="button">结束此次 episode</button>
+              <button id="retryCollectionEpisode" type="button" class="danger-secondary">重新采集此次 episode</button>
+              <button id="finishCollectionTask" type="button">完成全部采集</button>
+              <button id="abandonCollectionTask" type="button" class="danger-secondary">放弃采集</button>
+            </div>
+          </section>
+
+          <section class="surface">
+            <div class="section-kicker">Stream Monitor</div>
+            <div id="collectionStreamMonitor" class="collect-monitor empty">尚无采集任务。</div>
+          </section>
+
+          <section class="surface">
+            <div class="section-kicker">Episode List</div>
+            <div id="collectionEpisodeList" class="backtest-history empty">尚无 episode 记录。</div>
+          </section>
+        </div>
+
+        <div class="collect-panel" data-collect-panel="history">
+          <section class="surface">
+            <div class="section-kicker">Collection Tasks</div>
+            <div id="collectionTaskList" class="backtest-history empty">暂无采集任务。</div>
+          </section>
+          <section class="surface">
+            <div class="section-kicker">Task Log</div>
+            <pre id="collectionTaskLog" class="log">选择任务后显示日志。</pre>
           </section>
         </div>
       </section>
@@ -706,7 +895,7 @@
   </div>
 </div>
 
-  <script src="/static/app.js?v=20260802-overview-tasks-after-stats"></script>
+  <script src="/static/app.js?v=20260802-collection-trim-help"></script>
 
 </body>
 </html>

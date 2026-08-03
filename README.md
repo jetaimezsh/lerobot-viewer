@@ -12,6 +12,7 @@
 | **选择导出** | 选择特定 episode 或区间，导出为独立新数据集 |
 | **数据集合并** | 合并多个 schema 兼容的数据集（含视频），自动合并 task 表 |
 | **严格校验** | 按 LeRobot v3.0 规范严格校验，支持官方 `LeRobotDataset` 加载验证 |
+| **数据采集** | Web 端创建采集任务，通过 ZMQ 接入图像/数值 stream，按主时间流对齐 episode |
 | **模型档案** | 持久化 profile，管理 checkpoint、设备、运行期参数、检查/加载/卸载 |
 | **模型回测** | 离线 action 推理对比（MAE/RMSE/维度级误差），Linux 推理，Windows 管理 |
 | **模型训练** | v4.1 训练配方、持久化训练队列、日志查看、完成后自动生成回测 profile |
@@ -26,6 +27,8 @@ lerobot-viewer/
 │   ├── main.py          # FastAPI 应用、路径补全、历史记录
 │   ├── editing.py       # 编辑/选择导出/合并引擎、视频处理
 │   ├── validation.py    # v3.0 严格校验、官方 LeRobotDataset 加载验证
+│   ├── collection.py    # Web 端采集任务配置、ZMQ 接入契约、episode 状态机
+│   ├── collection_store.py # 采集任务和日志持久化
 │   ├── profile_store.py # 模型 profile 持久化 CRUD
 │   ├── model_templates.py # 内置 profile 模板
 │   ├── adapters/        # LeRobot 官方 / mock 回测适配器
@@ -86,19 +89,18 @@ dataset/
 
 ### 依赖包
 
-```text
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
-pandas==2.2.3
-pyarrow==18.1.0
-numpy==2.2.1
-pydantic==2.10.4
-```
-
-可选安装（模型回测 / 官方校验）：
+推荐直接安装仓库中的完整依赖：
 
 ```bash
-pip install lerobot torch safetensors
+pip install -r requirements.txt
+```
+
+当前 `requirements.txt` 已包含 FastAPI、Pandas/PyArrow、LeRobot dataset 支持、pytest 和数据采集所需的 `pyzmq`。如果只做前端浏览，也建议保持完整安装，避免官方校验、schema 编辑或采集页面缺少依赖。
+
+可选安装（真实模型回测 / 训练通常还需要）：
+
+```bash
+pip install torch safetensors
 ```
 
 视频编辑需要 ffmpeg：
@@ -141,10 +143,22 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 
 ## 使用方式
 
-页面现在分为两个根工作台：
+页面顶部工作区下拉框现在包含三个根工作区：
 
 - **LeRobot 数据**：负责数据集加载、episode 播放、数据编辑、选择导出、合并和系统环境检测。
+- **数据采集**：负责创建 Web 端采集任务、配置 stream 到 LeRobot feature 的映射、时间对齐策略和 episode 录制状态。
 - **模型工作台**：负责模型档案、回测任务、训练配方、训练队列和训练流水线。
+
+### 数据采集
+
+1. 进入 **数据采集 / 采集工作台**。
+2. 在"采集任务"中填写新数据集名称、repo_id、输出父目录、episode 总数、目标 FPS 和默认 task。
+3. 在 Stream Mapping 表格中声明每个 ZMQ source topic 对应的 LeRobot feature、类型、消息格式、dtype、shape 和 key 名称。
+4. 在"时间对齐"中选择主时间流、timestamp 来源、最大容许误差和缺失样本处理策略。
+5. 在"ZMQ 接入"中选择 `SUB` 或 `PULL`，填写 endpoint，点击"创建采集任务"。
+6. 进入"Episode 录制"后可开始、结束、重新采集当前 episode，或完成/放弃整个采集任务。
+
+ZMQ 消息契约保持通用：每条消息由 topic、header JSON 和 payload bytes 组成。具体 payload 如何解释由 Stream Mapping 中的类型、Extractor 和消息格式决定。
 
 ### 数据集浏览
 

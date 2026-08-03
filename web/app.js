@@ -51,6 +51,10 @@ const state = {
   selectedTrainingRecipeId: null,
   trainingJobs: [],
   trainingPipelines: [],
+  collectionTab: "setup",
+  collectionStreams: [],
+  collectionTasks: [],
+  activeCollectionTask: null,
   folderBrowserPath: "",
   folderBrowserParent: null,
   folderBrowserRequestId: 0,
@@ -61,6 +65,9 @@ const ACTIVE_BACKTEST_JOB_KEY = "lerobotViewer.activeBacktestJobId";
 const BACKTEST_ENV_VARS_KEY = "lerobotViewer.backtestEnvVars";
 
 const els = {
+  workspaceSelect: document.getElementById("workspaceSelect"),
+  datasetLoadPanel: document.getElementById("datasetLoadPanel"),
+  datasetHistoryPanel: document.getElementById("datasetHistoryPanel"),
   datasetPath: document.getElementById("datasetPath"),
   loadDataset: document.getElementById("loadDataset"),
   loadError: document.getElementById("loadError"),
@@ -150,6 +157,43 @@ const els = {
   statsEnvReport: document.getElementById("statsEnvReport"),
   statsCommandPreview: document.getElementById("statsCommandPreview"),
   statsJobList: document.getElementById("statsJobList"),
+  collectionRuntimeStatus: document.getElementById("collectionRuntimeStatus"),
+  collectionActiveTaskPill: document.getElementById("collectionActiveTaskPill"),
+  collectDatasetName: document.getElementById("collectDatasetName"),
+  collectRepoId: document.getElementById("collectRepoId"),
+  collectOutputParent: document.getElementById("collectOutputParent"),
+  collectOutputPath: document.getElementById("collectOutputPath"),
+  collectEpisodes: document.getElementById("collectEpisodes"),
+  collectFps: document.getElementById("collectFps"),
+  collectTaskText: document.getElementById("collectTaskText"),
+  collectOverwrite: document.getElementById("collectOverwrite"),
+  collectTransportType: document.getElementById("collectTransportType"),
+  collectEndpoint: document.getElementById("collectEndpoint"),
+  checkCollectionRuntime: document.getElementById("checkCollectionRuntime"),
+  createCollectionTask: document.getElementById("createCollectionTask"),
+  refreshCollectionTasks: document.getElementById("refreshCollectionTasks"),
+  collectionSetupResult: document.getElementById("collectionSetupResult"),
+  addCollectionStream: document.getElementById("addCollectionStream"),
+  addCollectionCameraPreset: document.getElementById("addCollectionCameraPreset"),
+  addCollectionVectorPreset: document.getElementById("addCollectionVectorPreset"),
+  collectionStreamRows: document.getElementById("collectionStreamRows"),
+  collectReferenceStream: document.getElementById("collectReferenceStream"),
+  collectTimestampSource: document.getElementById("collectTimestampSource"),
+  collectMaxSlopMs: document.getElementById("collectMaxSlopMs"),
+  collectTrimPolicy: document.getElementById("collectTrimPolicy"),
+  collectNumericPolicy: document.getElementById("collectNumericPolicy"),
+  collectMissingPolicy: document.getElementById("collectMissingPolicy"),
+  collectionEpisodeTitle: document.getElementById("collectionEpisodeTitle"),
+  collectionEpisodeMeta: document.getElementById("collectionEpisodeMeta"),
+  startCollectionEpisode: document.getElementById("startCollectionEpisode"),
+  endCollectionEpisode: document.getElementById("endCollectionEpisode"),
+  retryCollectionEpisode: document.getElementById("retryCollectionEpisode"),
+  finishCollectionTask: document.getElementById("finishCollectionTask"),
+  abandonCollectionTask: document.getElementById("abandonCollectionTask"),
+  collectionStreamMonitor: document.getElementById("collectionStreamMonitor"),
+  collectionEpisodeList: document.getElementById("collectionEpisodeList"),
+  collectionTaskList: document.getElementById("collectionTaskList"),
+  collectionTaskLog: document.getElementById("collectionTaskLog"),
   toolStatusReport: document.getElementById("toolStatusReport"),
   operationLogReport: document.getElementById("operationLogReport"),
   addCurrentDatasetToMerge: document.getElementById("addCurrentDatasetToMerge"),
@@ -298,6 +342,16 @@ window._openEditOutputBrowser = function () {
       const suggestion = await suggestEditOutputDirectory(dir);
       if (els.editOutputName) els.editOutputName.value = suggestion.name;
       if (els.editOutputPath) els.editOutputPath.value = suggestion.path;
+    });
+  } catch (_) {}
+};
+window._openCollectOutputBrowser = function () {
+  try {
+    if (typeof openFolderBrowser !== "function") return;
+    const startPath = els.collectOutputParent?.value || dirnamePath(els.collectOutputPath?.value || "") || state.summary?.root || "/";
+    openFolderBrowser({ value: startPath }, function (dir) {
+      if (els.collectOutputParent) els.collectOutputParent.value = dir;
+      updateCollectionOutputPath();
     });
   } catch (_) {}
 };
@@ -558,19 +612,25 @@ function rootForView(viewId) {
 
 function setRoot(root, switchView = true) {
   state.currentRoot = root;
-  document.querySelectorAll(".root-nav-button").forEach((button) => {
-    button.classList.toggle("active", button.dataset.root === root);
-  });
+  if (els.workspaceSelect && els.workspaceSelect.value !== root) els.workspaceSelect.value = root;
   document.querySelectorAll("[data-root-nav]").forEach((nav) => {
     nav.classList.toggle("active", nav.dataset.rootNav === root);
   });
+  const dataOnly = root === "data";
+  if (els.datasetLoadPanel) els.datasetLoadPanel.classList.toggle("hidden", !dataOnly);
+  if (els.datasetHistoryPanel) els.datasetHistoryPanel.classList.toggle("hidden", !dataOnly);
   if (els.episodeSideSection) {
-    els.episodeSideSection.classList.toggle("hidden", root !== "data");
+    els.episodeSideSection.classList.toggle("hidden", !dataOnly);
   }
   if (switchView) {
     const currentRoot = rootForView(state.currentView);
     if (currentRoot !== root) {
-      setView(root === "model" ? "modelManagerView" : "overviewView");
+      const defaultViews = {
+        data: "overviewView",
+        collect: "collectionView",
+        model: "modelManagerView",
+      };
+      setView(defaultViews[root] || "overviewView");
     }
   }
 }
@@ -611,6 +671,13 @@ function setView(viewId) {
     loadModels();
     loadTrainingPipelines();
     renderPipelineSetup();
+  }
+  if (viewId === "collectionView") {
+    ensureCollectionDefaults();
+    renderCollectionStreams();
+    updateCollectionOutputPath();
+    checkCollectionRuntime();
+    loadCollectionTasks();
   }
 }
 
@@ -1326,6 +1393,475 @@ function formatStatsEnv(result) {
       <span>${escapeHtml(value)}</span>
     </div>
   `).join("") + (result.help_error ? `<pre class="log">${escapeHtml(result.help_error)}</pre>` : "");
+}
+
+function ensureCollectionDefaults() {
+  if (state.collectionStreams.length) return;
+  state.collectionStreams = [
+    collectionStreamDraft({
+      source: "/camera/a",
+      feature: "observation.images.camera_a",
+      kind: "image",
+      extractor: "encoded_image",
+      encoding: "jpeg",
+      dtype: "uint8",
+      shape: "480,640,3",
+      names: "",
+      hz: 30,
+      reference: true,
+    }),
+    collectionStreamDraft({
+      source: "/force",
+      feature: "observation.force",
+      kind: "vector",
+      extractor: "json_fields",
+      encoding: "json",
+      dtype: "float32",
+      shape: "3",
+      names: "x,y,z",
+      hz: 100,
+    }),
+  ];
+}
+
+function collectionStreamDraft(overrides = {}) {
+  return {
+    id: `stream_${Math.random().toString(16).slice(2)}`,
+    enabled: true,
+    source: "",
+    feature: "",
+    kind: "vector",
+    extractor: "array",
+    encoding: "array",
+    dtype: "float32",
+    shape: "1",
+    names: "",
+    hz: "",
+    required: true,
+    reference: false,
+    ...overrides,
+  };
+}
+
+const collectionEncodingOptions = [
+  ["jpeg", "JPEG 图片"],
+  ["png", "PNG 图片"],
+  ["rgb8", "RGB 原始图像"],
+  ["bgr8", "BGR 原始图像"],
+  ["json", "JSON"],
+  ["array", "数组"],
+  ["number", "单个数值"],
+];
+
+function collectionDefaultEncoding(stream) {
+  if (stream.extractor === "encoded_image") return stream.encoding === "png" ? "png" : "jpeg";
+  if (stream.extractor === "raw_image") return stream.encoding === "bgr8" ? "bgr8" : "rgb8";
+  if (stream.extractor === "json_field" || stream.extractor === "json_fields") return "json";
+  if (stream.kind === "scalar" || stream.kind === "bool") return "number";
+  return "array";
+}
+
+function applyCollectionStreamFormatDefaults(stream) {
+  if (stream.kind === "image" && !["encoded_image", "raw_image"].includes(stream.extractor)) {
+    stream.extractor = "encoded_image";
+  }
+  if (stream.kind !== "image" && ["encoded_image", "raw_image"].includes(stream.extractor)) {
+    stream.extractor = stream.kind === "scalar" || stream.kind === "bool" ? "json_field" : "array";
+  }
+  stream.encoding = collectionDefaultEncoding(stream);
+}
+
+function setCollectionTab(tab) {
+  state.collectionTab = tab || "setup";
+  document.querySelectorAll(".collect-tab").forEach((button) => {
+    button.classList.toggle("active", button.dataset.collectTab === state.collectionTab);
+  });
+  document.querySelectorAll("[data-collect-panel]").forEach((panel) => {
+    panel.classList.toggle("active", panel.dataset.collectPanel === state.collectionTab);
+  });
+}
+
+function renderCollectionStreams() {
+  if (!els.collectionStreamRows) return;
+  ensureCollectionDefaults();
+  els.collectionStreamRows.innerHTML = state.collectionStreams.map((stream) => `
+    <tr data-collection-stream="${escapeAttr(stream.id)}">
+      <td><input type="checkbox" data-field="enabled" ${stream.enabled ? "checked" : ""}></td>
+      <td><input type="text" data-field="source" value="${escapeAttr(stream.source)}" placeholder="/camera/a"></td>
+      <td><input type="text" data-field="feature" value="${escapeAttr(stream.feature)}" placeholder="observation.images.camera_a"></td>
+      <td>
+        <select data-field="kind">
+          ${collectionOption("image", "image", stream.kind)}
+          ${collectionOption("vector", "vector", stream.kind)}
+          ${collectionOption("scalar", "scalar", stream.kind)}
+          ${collectionOption("bool", "bool", stream.kind)}
+        </select>
+      </td>
+      <td>
+        <select data-field="extractor">
+          ${collectionOption("encoded_image", "encoded_image", stream.extractor)}
+          ${collectionOption("raw_image", "raw_image", stream.extractor)}
+          ${collectionOption("array", "array", stream.extractor)}
+          ${collectionOption("json_field", "json_field", stream.extractor)}
+          ${collectionOption("json_fields", "json_fields", stream.extractor)}
+          ${collectionOption("topics", "topics", stream.extractor)}
+        </select>
+      </td>
+      <td>
+        <select data-field="encoding">
+          ${collectionEncodingOptions.map(([value, label]) => collectionOption(value, label, stream.encoding)).join("")}
+        </select>
+      </td>
+      <td><input type="text" data-field="dtype" value="${escapeAttr(stream.dtype)}" placeholder="float32"></td>
+      <td><input type="text" data-field="shape" value="${escapeAttr(stream.shape)}" placeholder="3 或 480,640,3"></td>
+      <td><input type="text" data-field="names" value="${escapeAttr(stream.names)}" placeholder="x,y,z"></td>
+      <td><input type="number" data-field="hz" min="0" step="1" value="${escapeAttr(stream.hz)}"></td>
+      <td><input type="checkbox" data-field="required" ${stream.required ? "checked" : ""}></td>
+      <td><input type="radio" name="collectionReferenceStream" data-field="reference" ${stream.reference ? "checked" : ""}></td>
+      <td><button type="button" data-collection-remove="${escapeAttr(stream.id)}">删除</button></td>
+    </tr>
+  `).join("");
+  updateCollectionReferenceOptions();
+}
+
+function collectionOption(value, label, selected) {
+  return `<option value="${escapeAttr(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(label)}</option>`;
+}
+
+function syncCollectionStreamsFromDom() {
+  if (!els.collectionStreamRows) return;
+  for (const row of els.collectionStreamRows.querySelectorAll("[data-collection-stream]")) {
+    const stream = state.collectionStreams.find((item) => item.id === row.dataset.collectionStream);
+    if (!stream) continue;
+    for (const control of row.querySelectorAll("[data-field]")) {
+      const field = control.dataset.field;
+      if (control.type === "checkbox") {
+        stream[field] = control.checked;
+      } else if (control.type === "radio") {
+        if (control.checked) {
+          state.collectionStreams.forEach((item) => item.reference = false);
+          stream.reference = true;
+        }
+      } else {
+        stream[field] = control.value;
+      }
+    }
+  }
+  if (!state.collectionStreams.some((stream) => stream.reference && stream.enabled) && state.collectionStreams.length) {
+    const firstEnabled = state.collectionStreams.find((stream) => stream.enabled);
+    if (firstEnabled) firstEnabled.reference = true;
+  }
+  updateCollectionReferenceOptions();
+}
+
+function handleCollectionStreamChange(event) {
+  syncCollectionStreamsFromDom();
+  const field = event.target?.dataset?.field;
+  if (!["kind", "extractor"].includes(field)) return;
+  const row = event.target.closest("[data-collection-stream]");
+  const stream = state.collectionStreams.find((item) => item.id === row?.dataset.collectionStream);
+  if (!stream) return;
+  applyCollectionStreamFormatDefaults(stream);
+  renderCollectionStreams();
+}
+
+function updateCollectionReferenceOptions() {
+  if (!els.collectReferenceStream) return;
+  const enabled = state.collectionStreams.filter((stream) => stream.enabled);
+  const reference = enabled.find((stream) => stream.reference) || enabled[0];
+  els.collectReferenceStream.innerHTML = enabled.map((stream) => {
+    const label = `${stream.source || "-"} -> ${stream.feature || "-"}`;
+    const value = stream.source || stream.feature;
+    return `<option value="${escapeAttr(value)}" ${reference && value === (reference.source || reference.feature) ? "selected" : ""}>${escapeHtml(label)}</option>`;
+  }).join("");
+}
+
+function addCollectionStream(kind) {
+  syncCollectionStreamsFromDom();
+  const presets = {
+    image: {
+      source: "/camera/new",
+      feature: "observation.images.new_camera",
+      kind: "image",
+      extractor: "encoded_image",
+      encoding: "jpeg",
+      dtype: "uint8",
+      shape: "480,640,3",
+      names: "",
+      hz: 30,
+    },
+    vector: {
+      source: "/vector/new",
+      feature: "observation.vector",
+      kind: "vector",
+      extractor: "array",
+      encoding: "array",
+      dtype: "float32",
+      shape: "3",
+      names: "x,y,z",
+      hz: 100,
+    },
+  };
+  state.collectionStreams.push(collectionStreamDraft(presets[kind] || {}));
+  renderCollectionStreams();
+}
+
+function removeCollectionStream(id) {
+  syncCollectionStreamsFromDom();
+  state.collectionStreams = state.collectionStreams.filter((stream) => stream.id !== id);
+  if (!state.collectionStreams.some((stream) => stream.reference) && state.collectionStreams[0]) {
+    state.collectionStreams[0].reference = true;
+  }
+  renderCollectionStreams();
+}
+
+function parseCollectionList(value) {
+  return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function parseCollectionShape(value) {
+  return parseCollectionList(value).map((item) => Number(item)).filter((item) => Number.isFinite(item));
+}
+
+function updateCollectionOutputPath() {
+  if (!els.collectOutputPath) return;
+  const parent = (els.collectOutputParent?.value || "").trim();
+  const name = safeOutputName(els.collectDatasetName?.value || "");
+  els.collectOutputPath.value = parent && name ? joinPath(parent, name) : "";
+}
+
+function buildCollectionRequest() {
+  syncCollectionStreamsFromDom();
+  const reference = state.collectionStreams.find((stream) => stream.reference && stream.enabled) || state.collectionStreams.find((stream) => stream.enabled);
+  const streams = state.collectionStreams.map((stream) => {
+    const names = parseCollectionList(stream.names);
+    const extractor = { type: stream.extractor };
+    if (stream.extractor === "json_field") extractor.field = names[0] || "value";
+    if (stream.extractor === "json_fields") extractor.fields = names;
+    if (stream.extractor === "topics") extractor.sources = parseCollectionList(stream.source);
+    return {
+      enabled: !!stream.enabled,
+      source: String(stream.source || "").trim(),
+      feature: String(stream.feature || "").trim(),
+      kind: stream.kind,
+      encoding: String(stream.encoding || "").trim(),
+      dtype: String(stream.dtype || "").trim(),
+      shape: parseCollectionShape(stream.shape),
+      names,
+      hz: stream.hz ? Number(stream.hz) : null,
+      required: !!stream.required,
+      extractor,
+    };
+  });
+  return {
+    dataset_name: (els.collectDatasetName?.value || "").trim(),
+    repo_id: (els.collectRepoId?.value || "").trim(),
+    output_parent: (els.collectOutputParent?.value || "").trim(),
+    output_path: (els.collectOutputPath?.value || "").trim() || null,
+    episodes: Number(els.collectEpisodes?.value || 0),
+    task: (els.collectTaskText?.value || "").trim(),
+    fps: Number(els.collectFps?.value || 0),
+    overwrite: !!els.collectOverwrite?.checked,
+    transport: {
+      type: els.collectTransportType?.value || "zmq_sub",
+      endpoint: (els.collectEndpoint?.value || "").trim(),
+      topics: [],
+    },
+    streams,
+    alignment: {
+      mode: "reference_stream",
+      reference_source: els.collectReferenceStream?.value || reference?.source || "",
+      reference_feature: reference?.feature || null,
+      timestamp_source: els.collectTimestampSource?.value || "message",
+      max_slop_ms: Number(els.collectMaxSlopMs?.value || 15),
+      trim: els.collectTrimPolicy?.value || "intersection",
+      image_policy: "nearest",
+      numeric_policy: els.collectNumericPolicy?.value || "nearest",
+      missing_policy: els.collectMissingPolicy?.value || "error",
+    },
+  };
+}
+
+async function checkCollectionRuntime() {
+  if (!els.collectionRuntimeStatus) return;
+  try {
+    const result = await api("/api/collection/runtime");
+    els.collectionRuntimeStatus.textContent = result.pyzmq_available ? "ZMQ 可用" : "缺少 pyzmq";
+  } catch (error) {
+    if (els.collectionRuntimeStatus) els.collectionRuntimeStatus.textContent = "检测失败";
+  }
+}
+
+async function createCollectionTaskFromForm() {
+  if (!els.collectionSetupResult) return;
+  updateCollectionOutputPath();
+  els.collectionSetupResult.classList.remove("empty");
+  els.collectionSetupResult.textContent = "正在创建采集任务...";
+  try {
+    const task = await api("/api/collection/tasks", {
+      method: "POST",
+      body: JSON.stringify(buildCollectionRequest()),
+    });
+    state.activeCollectionTask = task;
+    els.collectionSetupResult.innerHTML = formatCollectionTaskResult(task);
+    renderActiveCollectionTask();
+    await loadCollectionTasks();
+    setCollectionTab("recording");
+  } catch (error) {
+    els.collectionSetupResult.innerHTML = `<div class="result-section result-error"><h4>创建失败</h4><p>${escapeHtml(error.message)}</p></div>`;
+  }
+}
+
+function formatCollectionTaskResult(task) {
+  return `
+    <div class="result-header">
+      <div>
+        <h4>采集任务已创建</h4>
+        <p><strong>任务 ID：</strong>${escapeHtml(task.task_id)}</p>
+        <p><strong>输出目录：</strong>${escapeHtml(task.output_path || "-")}</p>
+      </div>
+      <span class="result-status ok">${escapeHtml(task.status || "-")}</span>
+    </div>
+  `;
+}
+
+async function loadCollectionTasks() {
+  if (!els.collectionTaskList) return;
+  try {
+    state.collectionTasks = await api("/api/collection/tasks");
+    if (!state.activeCollectionTask && state.collectionTasks.length) state.activeCollectionTask = state.collectionTasks[0];
+    renderCollectionTaskList();
+    renderActiveCollectionTask();
+  } catch (error) {
+    els.collectionTaskList.textContent = error.message;
+  }
+}
+
+function renderCollectionTaskList() {
+  if (!els.collectionTaskList) return;
+  if (!state.collectionTasks.length) {
+    els.collectionTaskList.classList.add("empty");
+    els.collectionTaskList.textContent = "暂无采集任务。";
+    return;
+  }
+  els.collectionTaskList.classList.remove("empty");
+  els.collectionTaskList.innerHTML = state.collectionTasks.map((task) => `
+    <div class="history-item ${state.activeCollectionTask?.task_id === task.task_id ? "active" : ""}" data-collection-task="${escapeAttr(task.task_id)}">
+      <strong>${escapeHtml(task.dataset_name || task.task_id)}</strong>
+      <span>${escapeHtml(task.status || "-")} · ${escapeHtml(String((task.recorded_episodes || []).length))}/${escapeHtml(String(task.episodes || 0))} episodes</span>
+      <small>${escapeHtml(task.output_path || "-")}</small>
+    </div>
+  `).join("");
+}
+
+function renderActiveCollectionTask() {
+  const task = state.activeCollectionTask;
+  if (els.collectionActiveTaskPill) els.collectionActiveTaskPill.textContent = task ? `${task.status} · ${task.current_episode}/${task.episodes}` : "未创建任务";
+  if (els.collectionEpisodeTitle) els.collectionEpisodeTitle.textContent = task ? `Episode ${task.current_episode} / ${task.episodes}` : "未创建采集任务";
+  if (els.collectionEpisodeMeta) {
+    els.collectionEpisodeMeta.textContent = task ? `${task.task || "-"} · 主时间流 ${(task.config?.alignment?.reference_source || "-")} · 输出 ${task.output_path || "-"}` : "创建任务后在这里控制 episode 采集。";
+  }
+  renderCollectionStreamMonitor(task);
+  renderCollectionEpisodes(task);
+}
+
+function renderCollectionStreamMonitor(task) {
+  if (!els.collectionStreamMonitor) return;
+  const rows = task?.stream_status || [];
+  if (!rows.length) {
+    els.collectionStreamMonitor.classList.add("empty");
+    els.collectionStreamMonitor.textContent = "尚无 stream 状态。";
+    return;
+  }
+  els.collectionStreamMonitor.classList.remove("empty");
+  els.collectionStreamMonitor.innerHTML = `
+    <table class="collect-monitor-table">
+      <thead><tr><th>Stream</th><th>Feature</th><th>类型</th><th>状态</th><th>样本</th><th>Hz</th><th>最新时间戳</th><th>延迟</th></tr></thead>
+      <tbody>
+        ${rows.map((row) => `
+          <tr>
+            <td>${escapeHtml(row.source || "-")}</td>
+            <td>${escapeHtml(row.feature || "-")}</td>
+            <td>${escapeHtml(row.kind || "-")}</td>
+            <td>${escapeHtml(row.status || "-")}</td>
+            <td>${escapeHtml(String(row.samples ?? 0))}</td>
+            <td>${escapeHtml(row.actual_hz ?? "-")}</td>
+            <td>${escapeHtml(row.last_timestamp ?? "-")}</td>
+            <td>${escapeHtml(row.latency_ms ?? "-")}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderCollectionEpisodes(task) {
+  if (!els.collectionEpisodeList) return;
+  const episodes = task?.recorded_episodes || [];
+  if (!episodes.length) {
+    els.collectionEpisodeList.classList.add("empty");
+    els.collectionEpisodeList.textContent = "尚无 episode 记录。";
+    return;
+  }
+  els.collectionEpisodeList.classList.remove("empty");
+  els.collectionEpisodeList.innerHTML = episodes.map((episode) => `
+    <div class="history-item">
+      <strong>Episode ${escapeHtml(episode.episode_index)}</strong>
+      <span>${escapeHtml(episode.status || "-")} · ${escapeHtml(episode.finished_at || "-")}</span>
+      <small>${escapeHtml(episode.note || "")}</small>
+    </div>
+  `).join("");
+}
+
+async function runCollectionTaskAction(action) {
+  const task = state.activeCollectionTask;
+  if (!task) {
+    if (els.collectionSetupResult) els.collectionSetupResult.textContent = "请先创建或选择采集任务。";
+    return;
+  }
+  try {
+    state.activeCollectionTask = await api(`/api/collection/tasks/${encodeURIComponent(task.task_id)}/${action}`, { method: "POST" });
+    renderActiveCollectionTask();
+    await loadCollectionTasks();
+  } catch (error) {
+    if (els.collectionTaskLog) els.collectionTaskLog.textContent = error.message;
+  }
+}
+
+async function abandonCollectionTask() {
+  const task = state.activeCollectionTask;
+  if (!task) {
+    if (els.collectionTaskLog) els.collectionTaskLog.textContent = "请先创建或选择采集任务。";
+    return;
+  }
+  const confirmed = window.confirm(`确认放弃采集并删除任务 ${task.dataset_name || task.task_id}？`);
+  if (!confirmed) return;
+  try {
+    await api(`/api/collection/tasks/${encodeURIComponent(task.task_id)}`, { method: "DELETE" });
+    state.activeCollectionTask = null;
+    if (els.collectionSetupResult) {
+      els.collectionSetupResult.classList.add("empty");
+      els.collectionSetupResult.textContent = "采集任务已删除，可以重新创建。";
+    }
+    if (els.collectionTaskLog) els.collectionTaskLog.textContent = "采集任务已删除。";
+    await loadCollectionTasks();
+    renderActiveCollectionTask();
+    setCollectionTab("setup");
+  } catch (error) {
+    if (els.collectionTaskLog) els.collectionTaskLog.textContent = error.message;
+  }
+}
+
+async function selectCollectionTask(taskId) {
+  try {
+    state.activeCollectionTask = await api(`/api/collection/tasks/${encodeURIComponent(taskId)}`);
+    renderCollectionTaskList();
+    renderActiveCollectionTask();
+    const log = await api(`/api/collection/tasks/${encodeURIComponent(taskId)}/log`);
+    if (els.collectionTaskLog) els.collectionTaskLog.textContent = log.text || "暂无日志。";
+  } catch (error) {
+    if (els.collectionTaskLog) els.collectionTaskLog.textContent = error.message;
+  }
 }
 
 function datasetStatRows(stats) {
@@ -4805,11 +5341,12 @@ function escapeAttr(value) {
 document.querySelectorAll(".nav-button").forEach((button) => {
   button.addEventListener("click", () => setView(button.dataset.view));
 });
-document.querySelectorAll(".root-nav-button").forEach((button) => {
-  button.addEventListener("click", () => setRoot(button.dataset.root));
-});
+if (els.workspaceSelect) els.workspaceSelect.addEventListener("change", () => setRoot(els.workspaceSelect.value));
 document.querySelectorAll(".edit-section-tab").forEach((button) => {
   button.addEventListener("click", () => setEditSection(button.dataset.editSection));
+});
+document.querySelectorAll(".collect-tab").forEach((button) => {
+  button.addEventListener("click", () => setCollectionTab(button.dataset.collectTab));
 });
 
 els.loadDataset.addEventListener("click", openDataset);
@@ -4870,6 +5407,33 @@ if (els.checkStatsEnv) els.checkStatsEnv.addEventListener("click", checkStatsEnv
 if (els.previewStatsCommand) els.previewStatsCommand.addEventListener("click", previewStatsCommand);
 if (els.submitStatsJob) els.submitStatsJob.addEventListener("click", submitStatsJob);
 if (els.refreshStatsJobs) els.refreshStatsJobs.addEventListener("click", loadStatsJobs);
+if (els.collectDatasetName) els.collectDatasetName.addEventListener("input", updateCollectionOutputPath);
+if (els.collectOutputParent) els.collectOutputParent.addEventListener("input", updateCollectionOutputPath);
+if (els.checkCollectionRuntime) els.checkCollectionRuntime.addEventListener("click", checkCollectionRuntime);
+if (els.createCollectionTask) els.createCollectionTask.addEventListener("click", createCollectionTaskFromForm);
+if (els.refreshCollectionTasks) els.refreshCollectionTasks.addEventListener("click", loadCollectionTasks);
+if (els.addCollectionStream) els.addCollectionStream.addEventListener("click", () => addCollectionStream("vector"));
+if (els.addCollectionCameraPreset) els.addCollectionCameraPreset.addEventListener("click", () => addCollectionStream("image"));
+if (els.addCollectionVectorPreset) els.addCollectionVectorPreset.addEventListener("click", () => addCollectionStream("vector"));
+if (els.collectionStreamRows) {
+  els.collectionStreamRows.addEventListener("input", syncCollectionStreamsFromDom);
+  els.collectionStreamRows.addEventListener("change", handleCollectionStreamChange);
+  els.collectionStreamRows.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-collection-remove]");
+    if (button) removeCollectionStream(button.dataset.collectionRemove);
+  });
+}
+if (els.startCollectionEpisode) els.startCollectionEpisode.addEventListener("click", () => runCollectionTaskAction("start-episode"));
+if (els.endCollectionEpisode) els.endCollectionEpisode.addEventListener("click", () => runCollectionTaskAction("end-episode"));
+if (els.retryCollectionEpisode) els.retryCollectionEpisode.addEventListener("click", () => runCollectionTaskAction("retry-episode"));
+if (els.finishCollectionTask) els.finishCollectionTask.addEventListener("click", () => runCollectionTaskAction("finish"));
+if (els.abandonCollectionTask) els.abandonCollectionTask.addEventListener("click", abandonCollectionTask);
+if (els.collectionTaskList) {
+  els.collectionTaskList.addEventListener("click", (event) => {
+    const item = event.target.closest("[data-collection-task]");
+    if (item) selectCollectionTask(item.dataset.collectionTask);
+  });
+}
 els.addCurrentDatasetToMerge.addEventListener("click", addCurrentDatasetToMerge);
 // addMergePathBtn uses onclick in HTML for robustness
 els.clearMergeList.addEventListener("click", clearMergeList);

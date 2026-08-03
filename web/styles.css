@@ -335,24 +335,28 @@ h3 {
   gap: 8px;
 }
 
-.root-nav {
+.workspace-switcher {
   display: grid;
-  grid-template-columns: 1fr 1fr;
   gap: 8px;
+  margin-top: 6px;
+  background: var(--sidebar-soft);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 12px;
 }
 
-.root-nav-button {
+.workspace-switcher span {
+  color: #b9c9d4;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.workspace-switcher select {
   width: 100%;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.13);
-  color: #d9e8ee;
-  text-align: center;
-}
-
-.root-nav-button:hover,
-.root-nav-button.active {
   background: #edf5f7;
+  border-color: rgba(255, 255, 255, 0.18);
   color: #13212a;
+  font-weight: 800;
 }
 
 .sub-nav {
@@ -1018,6 +1022,132 @@ h3 {
   gap: 8px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.collect-hero,
+.collect-record-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.collect-status-strip,
+.collect-record-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.collect-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 16px 0;
+}
+
+.collect-tab {
+  min-height: 42px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: #334155;
+  font-weight: 800;
+}
+
+.collect-tab:hover,
+.collect-tab.active {
+  border-color: var(--accent);
+  background: #edf7f8;
+  color: var(--accent-strong);
+}
+
+.collect-panel {
+  display: none;
+  gap: 16px;
+}
+
+.collect-panel.active {
+  display: grid;
+}
+
+.collect-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.collect-form-grid .output-path-picker,
+.collect-form-grid .schema-toolbar,
+.collect-form-grid > input[readonly],
+.collect-task-field-row {
+  grid-column: 1 / -1;
+}
+
+.collect-task-field-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 180px) minmax(120px, 180px) minmax(260px, 1fr);
+  gap: 10px;
+  align-items: end;
+}
+
+.collect-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.collect-stream-table,
+.collect-monitor-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 1180px;
+  background: #fff;
+}
+
+.collect-stream-table th,
+.collect-stream-table td,
+.collect-monitor-table th,
+.collect-monitor-table td {
+  border-bottom: 1px solid var(--line);
+  padding: 8px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.collect-stream-table th,
+.collect-monitor-table th {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.collect-stream-table input[type="text"],
+.collect-stream-table input[type="number"],
+.collect-stream-table select {
+  min-width: 120px;
+  width: 100%;
+}
+
+.collect-stream-table input[type="checkbox"],
+.collect-stream-table input[type="radio"] {
+  width: 16px;
+  height: 16px;
+}
+
+.collect-monitor {
+  overflow-x: auto;
+}
+
+.danger-secondary {
+  border-color: rgba(197, 48, 48, 0.35);
+  background: #fff5f5;
+  color: #a61b1b;
+}
+
+.danger-secondary:hover {
+  background: #ffe3e3;
 }
 
 .merge-grid {
@@ -1860,6 +1990,31 @@ h3 {
   margin: 8px 0 6px;
   color: var(--muted);
   font-weight: 800;
+}
+
+.field-stack {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.field-stack span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.field-hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.field-stack input,
+.field-stack select {
+  width: 100%;
 }
 
 .inline-help {
@@ -2782,6 +2937,24 @@ h3 {
 
   .edit-section-tabs {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .collect-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .collect-hero,
+  .collect-record-card {
+    display: grid;
+  }
+
+  .collect-status-strip,
+  .collect-record-actions {
+    justify-content: flex-start;
+  }
+
+  .collect-task-field-row {
+    grid-template-columns: 1fr;
   }
 
   .summary-grid,

@@ -40,7 +40,7 @@ from app.backtesting import (
     run_backtest,
     run_episode_backtest,
     submit_backtest_job,
-    test_profile_on_frame,
+    test_profile_on_frame as run_profile_frame_check,
 )
 from app.profile_store import create_profile, delete_profile, load_profile, update_profile
 from app.adapters.lerobot_official import LeRobotOfficialAdapter, make_processors_compat, policy_action_to_array
@@ -154,7 +154,7 @@ def check_mock_backtest_metrics() -> None:
             assert_equal(result["action_dim"], 2, "mock action dimension")
             assert_equal(result["metrics"]["worst_frame"], 2, "mock worst frame")
             assert_equal(len(result["series"]), 2, "mock action series count")
-            quick = test_profile_on_frame(
+            quick = run_profile_frame_check(
                 profile_id,
                 ProfileTestRequest(dataset_path=str(dataset), episode_index=0, frame_index=1),
                 lambda path: cache,
