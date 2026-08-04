@@ -30,6 +30,14 @@ const state = {
   editOperations: [],
   schemaFeatures: [],
   statsJobs: [],
+  rewardLabels: [],
+  rewardFeature: "",
+  rewardDtype: "float32",
+  rewardDefaultValue: 0,
+  rewardEditValue: 1,
+  rewardTableWindowStart: 0,
+  rewardTableWindowEnd: 0,
+  rewardActiveFrame: null,
   trimDraftStart: null,
   trimDraftEnd: null,
   models: [],
@@ -140,6 +148,26 @@ const els = {
   applySchemaPlan: document.getElementById("applySchemaPlan"),
   schemaFeatureList: document.getElementById("schemaFeatureList"),
   schemaEditResult: document.getElementById("schemaEditResult"),
+  rewardFeatureName: document.getElementById("rewardFeatureName"),
+  rewardDtype: document.getElementById("rewardDtype"),
+  rewardDefaultValue: document.getElementById("rewardDefaultValue"),
+  rewardEditValue: document.getElementById("rewardEditValue"),
+  rewardApplyFrame: document.getElementById("rewardApplyFrame"),
+  rewardApplyRange: document.getElementById("rewardApplyRange"),
+  rewardClearEpisode: document.getElementById("rewardClearEpisode"),
+  rewardPendingBadge: document.getElementById("rewardPendingBadge"),
+  rewardTableMeta: document.getElementById("rewardTableMeta"),
+  rewardFrameTable: document.getElementById("rewardFrameTable"),
+  rewardExportFeature: document.getElementById("rewardExportFeature"),
+  rewardExportDtype: document.getElementById("rewardExportDtype"),
+  rewardExportDefault: document.getElementById("rewardExportDefault"),
+  rewardExportPathHint: document.getElementById("rewardExportPathHint"),
+  rewardResetExisting: document.getElementById("rewardResetExisting"),
+  rewardDryRun: document.getElementById("rewardDryRun"),
+  rewardApply: document.getElementById("rewardApply"),
+  rewardClearAll: document.getElementById("rewardClearAll"),
+  rewardLabelList: document.getElementById("rewardLabelList"),
+  rewardLabelResult: document.getElementById("rewardLabelResult"),
   statsRoot: document.getElementById("statsRoot"),
   statsRepoId: document.getElementById("statsRepoId"),
   statsNewRoot: document.getElementById("statsNewRoot"),
@@ -389,12 +417,52 @@ window._openTrainingOutputBrowser = function () {
 };
 
 const palette = ["#087f8c", "#b76e00", "#2f6fbb", "#7a5195", "#2f9e44", "#c92a2a", "#5f6c72", "#805ad5"];
+const DEBUG_UI = true;
+const REWARD_TABLE_MAX_ROWS = 240;
+
+function uiLog(event, details = {}) {
+  if (!DEBUG_UI) return;
+  console.info(`[lerobot-viewer] ${event}`, details);
+}
+
+function uiWarn(event, details = {}) {
+  console.warn(`[lerobot-viewer] ${event}`, details);
+}
+
+function bind(el, eventName, handler, label) {
+  if (!el) {
+    uiWarn("dom.missing-listener", { label, eventName });
+    return;
+  }
+  el.addEventListener(eventName, handler);
+}
+
+window.addEventListener("error", (event) => {
+  uiWarn("window.error", {
+    message: event.message,
+    source: event.filename,
+    line: event.lineno,
+    column: event.colno,
+  });
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  uiWarn("window.unhandledrejection", {
+    reason: event.reason?.message || String(event.reason),
+    stack: event.reason?.stack || "",
+  });
+});
 
 async function api(path, options = {}) {
+  const started = performance.now();
   const response = await fetch(path, {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
+  const elapsedMs = Math.round(performance.now() - started);
+  if (elapsedMs > 500) {
+    uiWarn("api.slow", { path, status: response.status, elapsedMs });
+  }
   if (!response.ok) {
     let message = response.statusText;
     try {
@@ -407,6 +475,7 @@ async function api(path, options = {}) {
     } catch (_) {
       message = await response.text();
     }
+    uiWarn("api.error", { path, status: response.status, elapsedMs, message });
     throw new Error(message);
   }
   return response.json();
@@ -646,6 +715,10 @@ function setView(viewId) {
     button.classList.toggle("active", button.dataset.view === viewId);
   });
   if (viewId === "episodeView") requestAnimationFrame(drawChart);
+  if (viewId === "datasetEditView") {
+    renderEditOperations();
+    renderEpisodes();
+  }
   if (viewId === "modelManagerView") {
     loadModelEnv();
     loadProfileTemplates();
@@ -689,6 +762,11 @@ function setEditSection(section) {
   document.querySelectorAll("[data-edit-panel]").forEach((panel) => {
     panel.classList.toggle("active", panel.dataset.editPanel === state.editSection);
   });
+  if (state.editSection === "episodes") {
+    renderEditOperations();
+    renderEpisodes();
+  }
+  if (state.editSection === "reward") renderRewardLabelList();
 }
 
 function goToModelBacktest() {
@@ -735,10 +813,12 @@ async function loadHistory() {
 }
 
 async function openDataset() {
-  els.loadError.textContent = "";
-  const path = els.datasetPath.value.trim();
+  if (els.loadError) els.loadError.textContent = "";
+  const path = (els.datasetPath?.value || "").trim();
+  uiLog("dataset.open.start", { path });
   if (!path) {
-    els.loadError.textContent = "请输入 dataset 根目录";
+    if (els.loadError) els.loadError.textContent = "请输入 dataset 根目录";
+    uiWarn("dataset.open.empty-path");
     return;
   }
   try {
@@ -751,6 +831,7 @@ async function openDataset() {
     state.episodes = await api(`/api/datasets/${state.datasetId}/episodes`);
     state.episode = null;
     clearEditPlan();
+    clearRewardLabels(false);
     renderSummary();
     renderFeatures();
     renderTasks();
@@ -762,8 +843,14 @@ async function openDataset() {
     resetEpisodeView();
     await loadHistory();
     setView("overviewView");
+    uiLog("dataset.open.done", {
+      datasetId: state.datasetId,
+      episodes: state.episodes.length,
+      root: state.summary?.root,
+    });
   } catch (error) {
-    els.loadError.textContent = error.message;
+    uiWarn("dataset.open.failed", { path, message: error.message, stack: error.stack || "" });
+    if (els.loadError) els.loadError.textContent = error.message;
   }
 }
 
@@ -1923,6 +2010,39 @@ function renderTasks() {
   }).join("");
 }
 
+function editOperationKind(operation) {
+  if (!operation) return "";
+  switch (operation.type) {
+    case "delete_episode":
+      return "删除";
+    case "trim_episode":
+      return "裁剪";
+    case "select_episode":
+      return "导出";
+    case "select_episode_range":
+      return "导出区间";
+    default:
+      return operation.type || "已标记";
+  }
+}
+
+function editOperationCss(operation) {
+  if (!operation) return "";
+  if (operation.type === "select_episode" || operation.type === "select_episode_range") {
+    return "episode-mark-export";
+  }
+  return "episode-mark-edit";
+}
+
+function editOperationDetail(operation) {
+  if (!operation) return "";
+  if ((operation.type === "trim_episode" || operation.type === "select_episode_range")
+      && operation.start_time != null && operation.end_time != null) {
+    return `${fmt(operation.start_time)}s - ${fmt(operation.end_time)}s`;
+  }
+  return "";
+}
+
 function renderEpisodes() {
   if (!state.episodes.length) {
     els.episodeList.classList.add("empty");
@@ -1936,9 +2056,17 @@ function renderEpisodes() {
     const length = episode.length ?? "-";
     const task = Array.isArray(episode.tasks) ? episode.tasks.join(", ") : "";
     const videoCount = Array.isArray(episode.videos) ? episode.videos.length : 0;
+    const mark = findEpisodeMark(Number(index));
+    const markDetail = editOperationDetail(mark);
+    const markBadge = mark
+      ? `<span class="episode-mark ${editOperationCss(mark)}">${escapeHtml(editOperationKind(mark))}${markDetail ? ` ${escapeHtml(markDetail)}` : ""}</span>`
+      : "";
     return `
       <button class="episode-item ${Number(index) === currentIndex ? "active" : ""}" data-episode="${index}">
-        <strong>Episode ${index}</strong>
+        <span class="episode-item-head">
+          <strong>Episode ${index}</strong>
+          ${markBadge}
+        </span>
         <small>${length} frames · ${videoCount} views${task ? ` · ${escapeHtml(task)}` : ""}</small>
       </button>
     `;
@@ -1994,6 +2122,7 @@ function resetEpisodeView() {
   els.episodeInfo.innerHTML = "选择 episode 后显示 episode 信息。";
   els.episodeInfo.classList.add("empty");
   els.currentValues.innerHTML = "选择 episode 后显示当前 state/action。";
+  renderRewardFrameTable();
   renderEpisodeNavigation();
   drawChart();
 }
@@ -2058,6 +2187,7 @@ async function loadEpisode(index) {
   renderEpisodeInfo(detail);
   renderEditPanel();
   renderEpisodeNavigation();
+  renderRewardFrameTable();
   setView("episodeView");
   drawChart();
   updateCurrentValues();
@@ -2301,16 +2431,17 @@ function drawChart() {
 
 function currentFrameIndex() {
   if (!state.elapsed.length) return 0;
-  let best = 0;
-  let bestDiff = Infinity;
-  for (let i = 0; i < state.elapsed.length; i++) {
-    const diff = Math.abs(state.elapsed[i] - state.currentElapsed);
-    if (diff < bestDiff) {
-      best = i;
-      bestDiff = diff;
-    }
+  let left = 0;
+  let right = state.elapsed.length - 1;
+  const target = state.currentElapsed;
+  while (left < right) {
+    const mid = Math.floor((left + right) / 2);
+    if (state.elapsed[mid] < target) left = mid + 1;
+    else right = mid;
   }
-  return best;
+  if (left <= 0) return 0;
+  const previous = left - 1;
+  return Math.abs(state.elapsed[previous] - target) <= Math.abs(state.elapsed[left] - target) ? previous : left;
 }
 
 function updateCurrentValues() {
@@ -2328,6 +2459,398 @@ function updateCurrentValues() {
   els.currentTime.textContent = `${fmt(state.currentElapsed)}s`;
   els.timeSlider.value = String(Math.min(state.currentElapsed, state.duration));
   updateTrimDraftLabel();
+  highlightRewardTableCurrentFrame(!state.playing);
+}
+
+function syncRewardConfigFromInputs(source = "episode") {
+  const featureInput = source === "export" ? els.rewardExportFeature : els.rewardFeatureName;
+  const defaultInput = source === "export" ? els.rewardExportDefault : els.rewardDefaultValue;
+  const dtypeInput = source === "export" ? els.rewardExportDtype : els.rewardDtype;
+  const feature = (featureInput?.value || state.rewardFeature || "").trim();
+  const dtype = dtypeInput?.value || state.rewardDtype || "float32";
+  const defaultValue = Number(defaultInput?.value || 0);
+  state.rewardFeature = feature;
+  state.rewardDtype = dtype;
+  state.rewardDefaultValue = Number.isFinite(defaultValue) ? defaultValue : 0;
+  if (els.rewardFeatureName && els.rewardFeatureName.value !== feature) els.rewardFeatureName.value = feature;
+  if (els.rewardExportFeature && els.rewardExportFeature.value !== feature) els.rewardExportFeature.value = feature;
+  if (els.rewardDtype && els.rewardDtype.value !== dtype) els.rewardDtype.value = dtype;
+  if (els.rewardExportDtype && els.rewardExportDtype.value !== dtype) els.rewardExportDtype.value = dtype;
+  if (els.rewardDefaultValue && Number(els.rewardDefaultValue.value || 0) !== state.rewardDefaultValue) {
+    els.rewardDefaultValue.value = String(state.rewardDefaultValue);
+  }
+  if (els.rewardExportDefault && Number(els.rewardExportDefault.value || 0) !== state.rewardDefaultValue) {
+    els.rewardExportDefault.value = String(state.rewardDefaultValue);
+  }
+  const editValue = Number(els.rewardEditValue?.value || state.rewardEditValue || 0);
+  state.rewardEditValue = Number.isFinite(editValue) ? editValue : 0;
+}
+
+function rewardBaseSeries() {
+  const feature = state.rewardFeature || "";
+  if (!feature) return null;
+  return state.series.find((item) => item.name === feature)
+    || state.series.find((item) => item.name === `${feature}[0]`);
+}
+
+function rewardValueForFrame(frameIndex) {
+  const baseSeries = rewardBaseSeries();
+  let value = baseSeries ? Number(baseSeries.values[frameIndex]) : state.rewardDefaultValue;
+  if (!Number.isFinite(value)) value = state.rewardDefaultValue;
+  const episodeIndex = currentEpisodeIndex();
+  if (episodeIndex === null) return value;
+  for (const label of state.rewardLabels) {
+    if (Number(label.episode_index) !== episodeIndex) continue;
+    if (frameIndex >= Number(label.start_frame) && frameIndex < Number(label.end_frame)) {
+      value = Number(label.value);
+    }
+  }
+  return value;
+}
+
+function rewardFrameEdited(frameIndex) {
+  const episodeIndex = currentEpisodeIndex();
+  if (episodeIndex === null) return false;
+  return state.rewardLabels.some((label) =>
+    Number(label.episode_index) === episodeIndex
+    && frameIndex >= Number(label.start_frame)
+    && frameIndex < Number(label.end_frame)
+  );
+}
+
+function rewardTableSeries() {
+  const feature = (state.rewardFeature || "").toLowerCase();
+  const selected = new Set(state.selectedSeries);
+  const rows = state.series
+    .filter((item) => {
+      const name = String(item.name || "");
+      const lower = name.toLowerCase();
+      return !feature || (lower !== feature && lower !== `${feature}[0]`);
+    })
+    .map((item) => {
+      const lower = item.name.toLowerCase();
+      let rank = 4;
+      if (lower.includes("action")) rank = 0;
+      else if (lower.includes("state")) rank = 1;
+      else if (lower.includes("reward")) rank = 2;
+      else if (lower.includes("observation")) rank = 3;
+      if (selected.has(item.name)) rank -= 2;
+      return { item, rank };
+    })
+    .sort((a, b) => a.rank - b.rank || a.item.name.localeCompare(b.item.name))
+    .map((entry) => entry.item);
+  return rows.slice(0, 32);
+}
+
+function rewardTableWindow(centerFrame = currentFrameIndex()) {
+  const total = state.elapsed.length;
+  const size = Math.min(REWARD_TABLE_MAX_ROWS, total);
+  const center = clampNumber(Number(centerFrame) || 0, 0, Math.max(total - 1, 0));
+  const start = clampNumber(Math.floor(center - size / 2), 0, Math.max(total - size, 0));
+  return { start, end: start + size, total };
+}
+
+function renderRewardFrameTable(options = {}) {
+  if (!els.rewardFrameTable || !els.rewardTableMeta) return;
+  const started = performance.now();
+  const reason = options.reason || "render";
+  syncRewardConfigFromInputs();
+  if (!state.episode || !state.elapsed.length) {
+    els.rewardTableMeta.textContent = "选择 episode 后显示逐帧数据。";
+    els.rewardFrameTable.innerHTML = "";
+    state.rewardTableWindowStart = 0;
+    state.rewardTableWindowEnd = 0;
+    state.rewardActiveFrame = null;
+    updateRewardBadges();
+    renderRewardLabelList();
+    return;
+  }
+  const series = rewardTableSeries();
+  const episodeIndex = currentEpisodeIndex();
+  const labels = rewardLabelsForEpisode(episodeIndex);
+  const windowSpec = rewardTableWindow(options.centerFrame);
+  state.rewardTableWindowStart = windowSpec.start;
+  state.rewardTableWindowEnd = windowSpec.end;
+  els.rewardTableMeta.textContent = state.rewardFeature
+    ? `Episode ${episodeIndex} · ${state.elapsed.length} frames · 当前渲染 ${windowSpec.start}-${windowSpec.end - 1} · 显示 ${series.length} 个辅助数值列 · 本集 ${labels.length} 个标注区间`
+    : `Episode ${episodeIndex} · ${state.elapsed.length} frames · 当前渲染 ${windowSpec.start}-${windowSpec.end - 1} · 先看 state/action 上下文；填写 feature 名称后出现可编辑标注列`;
+  const headers = [
+    `<th class="sticky-col">frame</th>`,
+    `<th class="sticky-col sticky-time">time</th>`,
+    state.rewardFeature ? `<th class="sticky-col sticky-reward">${escapeHtml(state.rewardFeature)}</th>` : "",
+    ...series.map((item) => `<th>${escapeHtml(item.name)}</th>`),
+  ].filter(Boolean).join("");
+  const rows = [];
+  for (let frameIndex = windowSpec.start; frameIndex < windowSpec.end; frameIndex += 1) {
+    const elapsed = state.elapsed[frameIndex];
+    const reward = rewardValueForFrame(frameIndex);
+    const edited = rewardFrameEdited(frameIndex);
+    rows.push(`
+      <tr data-reward-frame="${frameIndex}">
+        <td class="sticky-col">${frameIndex}</td>
+        <td class="sticky-col sticky-time">${fmt(elapsed)}</td>
+        ${state.rewardFeature ? `
+          <td class="sticky-col sticky-reward">
+            <input type="number" step="0.001" data-reward-cell="${frameIndex}" value="${escapeAttr(formatRewardInputValue(reward))}">
+            ${edited ? `<span class="reward-label-edited">*</span>` : ""}
+          </td>
+        ` : ""}
+        ${series.map((item) => `<td>${escapeHtml(fmt(item.values[frameIndex], 5))}</td>`).join("")}
+      </tr>
+    `);
+  }
+  els.rewardFrameTable.innerHTML = `<thead><tr>${headers}</tr></thead><tbody>${rows.join("")}</tbody>`;
+  for (const input of els.rewardFrameTable.querySelectorAll("[data-reward-cell]")) {
+    input.addEventListener("change", () => {
+      const frameIndex = Number(input.dataset.rewardCell);
+      const value = Number(input.value);
+      if (!Number.isFinite(value)) return;
+      setRewardLabelRange(frameIndex, frameIndex + 1, value);
+    });
+  }
+  highlightRewardTableCurrentFrame(false);
+  updateRewardBadges();
+  renderRewardLabelList();
+  const elapsedMs = Math.round(performance.now() - started);
+  const payload = {
+    reason,
+    episodeIndex,
+    totalFrames: state.elapsed.length,
+    renderedRows: windowSpec.end - windowSpec.start,
+    columns: series.length + (state.rewardFeature ? 3 : 2),
+    windowStart: windowSpec.start,
+    windowEnd: windowSpec.end,
+    elapsedMs,
+  };
+  if (elapsedMs > 200) uiWarn("reward-table.render.slow", payload);
+  else uiLog("reward-table.render", payload);
+}
+
+function formatRewardInputValue(value) {
+  if (!Number.isFinite(Number(value))) return "0";
+  return Number(Number(value).toFixed(6)).toString();
+}
+
+function highlightRewardTableCurrentFrame(scroll = true) {
+  if (!els.rewardFrameTable) return;
+  const frameIndex = currentFrameIndex();
+  if (frameIndex < state.rewardTableWindowStart || frameIndex >= state.rewardTableWindowEnd) {
+    renderRewardFrameTable({ centerFrame: frameIndex, reason: "sync-current-frame" });
+    return;
+  }
+  if (state.rewardActiveFrame !== null && state.rewardActiveFrame !== frameIndex) {
+    const previous = els.rewardFrameTable.querySelector(`[data-reward-frame="${state.rewardActiveFrame}"]`);
+    if (previous) previous.classList.remove("active");
+  }
+  const activeRow = els.rewardFrameTable.querySelector(`[data-reward-frame="${frameIndex}"]`);
+  if (activeRow) activeRow.classList.add("active");
+  state.rewardActiveFrame = frameIndex;
+  if (scroll && activeRow) {
+    const wrap = activeRow.closest(".reward-frame-table-wrap");
+    if (wrap) {
+      const top = activeRow.offsetTop - wrap.clientHeight / 2;
+      wrap.scrollTop = Math.max(0, top);
+    }
+  }
+}
+
+function rewardLabelsForEpisode(episodeIndex) {
+  if (episodeIndex === null || episodeIndex === undefined) return [];
+  return state.rewardLabels.filter((label) => Number(label.episode_index) === Number(episodeIndex));
+}
+
+function setRewardLabelRange(startFrame, endFrame, value) {
+  const episodeIndex = currentEpisodeIndex();
+  if (episodeIndex === null || !state.elapsed.length) return;
+  const start = clampNumber(Math.floor(Number(startFrame)), 0, state.elapsed.length - 1);
+  const end = clampNumber(Math.ceil(Number(endFrame)), start + 1, state.elapsed.length);
+  state.rewardLabels.push({
+    episode_index: episodeIndex,
+    start_frame: start,
+    end_frame: end,
+    value: Number(value),
+  });
+  renderRewardFrameTable();
+}
+
+function rewardRangeFromTrimDraft() {
+  if (!state.elapsed.length) return null;
+  const startTime = state.trimDraftStart ?? state.currentElapsed;
+  const endTime = state.trimDraftEnd ?? state.currentElapsed;
+  let startFrame = state.elapsed.findIndex((elapsed) => elapsed >= startTime - 1e-9);
+  if (startFrame < 0) startFrame = currentFrameIndex();
+  let endFrame = state.elapsed.findIndex((elapsed) => elapsed >= endTime - 1e-9);
+  if (endFrame < 0) endFrame = state.elapsed.length;
+  if (endFrame <= startFrame) endFrame = startFrame + 1;
+  return {
+    start_frame: clampNumber(startFrame, 0, state.elapsed.length - 1),
+    end_frame: clampNumber(endFrame, startFrame + 1, state.elapsed.length),
+  };
+}
+
+function applyRewardToCurrentFrame() {
+  syncRewardConfigFromInputs();
+  setRewardLabelRange(currentFrameIndex(), currentFrameIndex() + 1, state.rewardEditValue);
+}
+
+function applyRewardToCurrentRange() {
+  syncRewardConfigFromInputs();
+  const range = rewardRangeFromTrimDraft();
+  if (!range) return;
+  setRewardLabelRange(range.start_frame, range.end_frame, state.rewardEditValue);
+}
+
+function clearRewardEpisodeLabels() {
+  const episodeIndex = currentEpisodeIndex();
+  if (episodeIndex === null) return;
+  state.rewardLabels = state.rewardLabels.filter((label) => Number(label.episode_index) !== episodeIndex);
+  renderRewardFrameTable();
+}
+
+function clearRewardLabels(render = true) {
+  state.rewardLabels = [];
+  if (render) {
+    renderRewardFrameTable();
+    renderRewardLabelList();
+    setRewardResultEmpty("reward 标注已清空。");
+  }
+}
+
+function updateRewardBadges() {
+  const text = `${state.rewardLabels.length} 个标注`;
+  if (els.rewardPendingBadge) els.rewardPendingBadge.textContent = text;
+}
+
+function renderRewardLabelList() {
+  if (!els.rewardLabelList) return;
+  updateRewardBadges();
+  if (!state.rewardLabels.length) {
+    els.rewardLabelList.classList.add("empty");
+    els.rewardLabelList.textContent = "暂无 reward 标注。";
+    return;
+  }
+  els.rewardLabelList.classList.remove("empty");
+  const rows = state.rewardLabels
+    .map((label, index) => ({ ...label, index }))
+    .sort((a, b) => Number(a.episode_index) - Number(b.episode_index) || Number(a.start_frame) - Number(b.start_frame));
+  els.rewardLabelList.innerHTML = rows.map((label) => `
+    <div class="edit-operation-item">
+      <strong>Episode ${escapeHtml(label.episode_index)} · frames ${escapeHtml(label.start_frame)}-${escapeHtml(label.end_frame)}</strong>
+      <span>${escapeHtml(state.rewardFeature)} = ${escapeHtml(formatRewardInputValue(label.value))}</span>
+      <button type="button" data-reward-remove="${label.index}">删除</button>
+    </div>
+  `).join("");
+  for (const button of els.rewardLabelList.querySelectorAll("[data-reward-remove]")) {
+    button.addEventListener("click", () => {
+      state.rewardLabels.splice(Number(button.dataset.rewardRemove), 1);
+      renderRewardFrameTable();
+    });
+  }
+}
+
+function buildRewardRequest(includeOutput = false) {
+  syncRewardConfigFromInputs("export");
+  const payload = {
+    path: state.summary?.root || "",
+    feature: state.rewardFeature,
+    dtype: state.rewardDtype || "float32",
+    default_value: state.rewardDefaultValue,
+    reset_existing: !!els.rewardResetExisting?.checked,
+    labels: state.rewardLabels.map((label) => ({
+      episode_index: Number(label.episode_index),
+      start_frame: Number(label.start_frame),
+      end_frame: Number(label.end_frame),
+      value: Number(label.value),
+    })),
+  };
+  if (includeOutput) {
+    payload.output_path = (els.editOutputPath?.value || "").trim();
+    payload.overwrite = !!els.editOverwrite?.checked;
+  }
+  return payload;
+}
+
+async function runRewardDryRun() {
+  if (!state.summary) return setRewardResultError("请先加载数据集。");
+  syncRewardConfigFromInputs("export");
+  if (!state.rewardFeature) return setRewardResultError("请先填写要新增或更新的 feature 名称。");
+  setRewardResultLoading("正在预估 feature 标注...");
+  try {
+    const result = await api("/api/reward-label/dry-run", {
+      method: "POST",
+      body: JSON.stringify(buildRewardRequest(false)),
+    });
+    renderRewardResult(result, "dry-run");
+  } catch (error) {
+    setRewardResultError(error.message);
+  }
+}
+
+async function applyRewardLabels() {
+  if (!state.summary) return setRewardResultError("请先加载数据集。");
+  const payload = buildRewardRequest(true);
+  if (!payload.feature) return setRewardResultError("请先填写要新增或更新的 feature 名称。");
+  if (!payload.output_path) return setRewardResultError("请先在页面顶部选择输出目录。");
+  setRewardResultLoading("正在生成 feature 标注输出数据集...");
+  try {
+    const result = await api("/api/reward-label/apply", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    renderRewardResult(result, "apply");
+    fillStatsDefaults(result.output_path);
+  } catch (error) {
+    setRewardResultError(error.message);
+  }
+}
+
+function setRewardResultLoading(message) {
+  if (!els.rewardLabelResult) return;
+  els.rewardLabelResult.classList.remove("empty");
+  els.rewardLabelResult.innerHTML = `<div class="result-loading">${escapeHtml(message)}</div>`;
+}
+
+function setRewardResultError(message) {
+  if (!els.rewardLabelResult) return;
+  els.rewardLabelResult.classList.remove("empty");
+  els.rewardLabelResult.innerHTML = `<div class="result-section result-error"><h4>Feature 标注失败</h4><p>${escapeHtml(message)}</p></div>`;
+}
+
+function setRewardResultEmpty(message) {
+  if (!els.rewardLabelResult) return;
+  els.rewardLabelResult.classList.add("empty");
+  els.rewardLabelResult.textContent = message;
+}
+
+function renderRewardResult(result, mode) {
+  if (!els.rewardLabelResult) return;
+  const plan = result.dry_run || result;
+  const affected = plan.affected || {};
+  const statusOk = mode === "apply" ? result.ok : plan.valid;
+  els.rewardLabelResult.classList.remove("empty");
+  els.rewardLabelResult.innerHTML = `
+    <div class="result-header">
+      <div>
+        <h4>${mode === "apply" ? "Feature 标注输出结果" : "Feature 标注预估结果"}</h4>
+        <p><strong>feature：</strong>${escapeHtml(plan.feature?.name || state.rewardFeature)}</p>
+        <p><strong>dtype：</strong>${escapeHtml(plan.feature?.dtype || state.rewardDtype)}</p>
+        <p><strong>输出目录：</strong>${escapeHtml(result.output_path || (els.editOutputPath?.value || "") || "尚未选择")}</p>
+      </div>
+      <span class="result-status ${statusOk ? "ok" : "fail"}">${statusOk ? "OK" : "Failed"}</span>
+    </div>
+    ${formatIssueList("错误", result.errors || plan.errors || [], "error")}
+    ${formatIssueList("警告", result.warnings || plan.warnings || [], "warning")}
+    <div class="result-section">
+      <h4>影响范围</h4>
+      <div class="result-grid">
+        <div><strong>${escapeHtml(affected.labels ?? "-")}</strong><span>label ranges</span></div>
+        <div><strong>${escapeHtml(affected.episodes ?? "-")}</strong><span>episodes</span></div>
+        <div><strong>${escapeHtml(affected.frames ?? "-")}</strong><span>frames</span></div>
+        <div><strong>${escapeHtml(affected.data_shards ?? "-")}</strong><span>data shards</span></div>
+      </div>
+    </div>
+    ${result.validation ? formatValidationResult(result.validation, "输出数据集校验") : ""}
+  `;
 }
 
 function clearEditPlan() {
@@ -2335,6 +2858,7 @@ function clearEditPlan() {
   state.trimDraftStart = null;
   state.trimDraftEnd = null;
   renderEditPanel();
+  renderEpisodes();
   if (els.editDryRunOutput) els.editDryRunOutput.textContent = "尚未运行预估。";
   if (els.toolStatusReport) {
     els.toolStatusReport.classList.add("empty");
@@ -2396,6 +2920,7 @@ function setEditMode(mode) {
   state.editMode = mode;
   state.editOperations = [];
   renderEditOperations();
+  renderEpisodes();
   updateEditOperationBadge();
   if (els.editDryRunOutput) els.editDryRunOutput.textContent = "模式已切换，已标记操作已清空。";
   refreshModeButtons();
@@ -2413,9 +2938,10 @@ function refreshModeButtons() {
 }
 
 function upsertEditOperation(operation) {
-  state.editOperations = state.editOperations.filter((item) => item.episode_index !== operation.episode_index);
+  state.editOperations = state.editOperations.filter((item) => Number(item.episode_index) !== Number(operation.episode_index));
   state.editOperations.push(operation);
   renderEditOperations();
+  renderEpisodes();
   if (els.editDryRunOutput) els.editDryRunOutput.textContent = "标记已变化，请重新运行预估。";
 }
 
@@ -2466,6 +2992,7 @@ function renderEditOperations() {
       const key = button.dataset.removeOperation;
       state.editOperations = state.editOperations.filter((item) => operationKey(item) !== key);
       renderEditOperations();
+      renderEpisodes();
       if (els.editDryRunOutput) els.editDryRunOutput.textContent = "编辑计划已变化，请重新运行预估。";
       refreshMarkButtons();
       updateTrimDraftLabel();
@@ -2490,12 +3017,13 @@ function getRangeOpType() {
 }
 
 function findEpisodeMark(episodeIndex) {
-  return state.editOperations.find((op) => op.episode_index === episodeIndex);
+  return state.editOperations.find((op) => Number(op.episode_index) === Number(episodeIndex));
 }
 
 function removeEpisodeMark(episodeIndex) {
-  state.editOperations = state.editOperations.filter((op) => op.episode_index !== episodeIndex);
+  state.editOperations = state.editOperations.filter((op) => Number(op.episode_index) !== Number(episodeIndex));
   renderEditOperations();
+  renderEpisodes();
   if (els.editDryRunOutput) els.editDryRunOutput.textContent = "标记已变化，请重新运行预估。";
   updateTrimDraftLabel();
 }
@@ -5008,13 +5536,17 @@ function clearMergeList() {
 
 // ── Folder Browser for dataset directory selection ─────────────────────
 function openFolderBrowser(targetInput, onSelect) {
-  if (!els.folderBrowser) return;
+  if (!els.folderBrowser) {
+    uiWarn("folder-browser.missing");
+    return;
+  }
   els.folderBrowser.style.display = "flex";
   state._fbOnSelect = onSelect;
   state._fbTarget = targetInput;
   if (els.folderBrowserNewName) els.folderBrowserNewName.value = "";
   setFolderBrowserCreateError("");
   const startDir = (targetInput && targetInput.value) ? targetInput.value.trim() : "/";
+  uiLog("folder-browser.open", { startDir });
   navigateFolderBrowser(startDir);
 }
 
@@ -5040,6 +5572,11 @@ async function navigateFolderBrowser(dir) {
     state.folderBrowserParent = result.parent || null;
     els.folderBrowserCurrent.textContent = state.folderBrowserPath;
     els.folderBrowserPath.value = state.folderBrowserPath;
+    uiLog("folder-browser.list.done", {
+      requested: dir,
+      path: state.folderBrowserPath,
+      items: items.length,
+    });
     if (els.folderBrowserUp) {
       els.folderBrowserUp.disabled = !state.folderBrowserParent;
       els.folderBrowserUp.dataset.path = state.folderBrowserParent || "";
@@ -5057,6 +5594,7 @@ async function navigateFolderBrowser(dir) {
     els.folderBrowserList.innerHTML = html;
   } catch (error) {
     if (requestId !== state.folderBrowserRequestId) return;
+    uiWarn("folder-browser.list.failed", { dir, message: error.message });
     els.folderBrowserList.innerHTML = "<span class=\"fb-empty\">" + escapeHtml(error.message) + "</span>";
   } finally {
     if (requestId === state.folderBrowserRequestId) setFolderBrowserBusy(false);
@@ -5349,17 +5887,17 @@ document.querySelectorAll(".collect-tab").forEach((button) => {
   button.addEventListener("click", () => setCollectionTab(button.dataset.collectTab));
 });
 
-els.loadDataset.addEventListener("click", openDataset);
-els.datasetPath.addEventListener("keydown", (event) => {
+bind(els.loadDataset, "click", openDataset, "loadDataset");
+bind(els.datasetPath, "keydown", (event) => {
   if (event.key === "Enter") openDataset();
-});
-els.datasetPath.addEventListener("input", schedulePathSuggestions);
-els.datasetPath.addEventListener("focus", schedulePathSuggestions);
-els.datasetPath.addEventListener("blur", () => setTimeout(hideSuggestions, 120));
+}, "datasetPath");
+bind(els.datasetPath, "input", schedulePathSuggestions, "datasetPath");
+bind(els.datasetPath, "focus", schedulePathSuggestions, "datasetPath");
+bind(els.datasetPath, "blur", () => setTimeout(hideSuggestions, 120), "datasetPath");
 if (els.browseRoot) els.browseRoot.addEventListener("click", () => {
   window._openRootBrowser && window._openRootBrowser();
 });
-els.installRequirements.addEventListener("click", async () => {
+bind(els.installRequirements, "click", async () => {
   els.installOutput.style.display = "block";
   els.installOutput.textContent = "正在安装...";
   try {
@@ -5369,28 +5907,28 @@ els.installRequirements.addEventListener("click", async () => {
   } catch (error) {
     els.installOutput.textContent = error.message;
   }
-});
-els.playPause.addEventListener("click", () => state.playing ? pause() : play());
-els.prevEpisode.addEventListener("click", () => loadAdjacentEpisode(-1));
-els.nextEpisode.addEventListener("click", () => loadAdjacentEpisode(1));
-els.speed.addEventListener("change", () => {
+}, "installRequirements");
+bind(els.playPause, "click", () => state.playing ? pause() : play(), "playPause");
+bind(els.prevEpisode, "click", () => loadAdjacentEpisode(-1), "prevEpisode");
+bind(els.nextEpisode, "click", () => loadAdjacentEpisode(1), "nextEpisode");
+bind(els.speed, "change", () => {
   for (const video of state.videos) video.playbackRate = Number(els.speed.value);
-});
-els.timeSlider.addEventListener("input", () => setElapsed(Number(els.timeSlider.value)));
-els.markEpisode.addEventListener("click", markCurrentEpisode);
-els.markRange.addEventListener("click", markCurrentRange);
-els.setTrimStart.addEventListener("click", () => setTrimPoint("start"));
-els.setTrimEnd.addEventListener("click", () => setTrimPoint("end"));
-els.sendEpisodeToBacktest.addEventListener("click", sendCurrentEpisodeToBacktest);
+}, "speed");
+bind(els.timeSlider, "input", () => setElapsed(Number(els.timeSlider.value)), "timeSlider");
+bind(els.markEpisode, "click", markCurrentEpisode, "markEpisode");
+bind(els.markRange, "click", markCurrentRange, "markRange");
+bind(els.setTrimStart, "click", () => setTrimPoint("start"), "setTrimStart");
+bind(els.setTrimEnd, "click", () => setTrimPoint("end"), "setTrimEnd");
+bind(els.sendEpisodeToBacktest, "click", sendCurrentEpisodeToBacktest, "sendEpisodeToBacktest");
 if (els.modeEdit) els.modeEdit.addEventListener("click", () => setEditMode("edit"));
 if (els.modeExport) els.modeExport.addEventListener("click", () => setEditMode("export"));
 if (els.modeEdit2) els.modeEdit2.addEventListener("click", () => setEditMode("edit"));
 if (els.modeExport2) els.modeExport2.addEventListener("click", () => setEditMode("export"));
-els.checkEditTools.addEventListener("click", checkEditTools);
+bind(els.checkEditTools, "click", checkEditTools, "checkEditTools");
 if (els.loadOperationLogs) els.loadOperationLogs.addEventListener("click", loadOperationLogs);
-els.strictValidateDataset.addEventListener("click", strictValidateCurrentDataset);
-els.runEditDryRun.addEventListener("click", runEditDryRun);
-els.applyEditPlan.addEventListener("click", applyEditPlan);
+bind(els.strictValidateDataset, "click", strictValidateCurrentDataset, "strictValidateDataset");
+bind(els.runEditDryRun, "click", runEditDryRun, "runEditDryRun");
+bind(els.applyEditPlan, "click", applyEditPlan, "applyEditPlan");
 if (els.editOutputName) {
   els.editOutputName.addEventListener("input", updateEditOutputPathFromName);
   els.editOutputName.addEventListener("blur", () => {
@@ -5403,6 +5941,19 @@ if (els.refreshSchema) els.refreshSchema.addEventListener("click", loadSchemaEdi
 if (els.clearSchemaPlan) els.clearSchemaPlan.addEventListener("click", clearSchemaPlan);
 if (els.runSchemaDryRun) els.runSchemaDryRun.addEventListener("click", runSchemaDryRun);
 if (els.applySchemaPlan) els.applySchemaPlan.addEventListener("click", applySchemaPlan);
+if (els.rewardFeatureName) els.rewardFeatureName.addEventListener("change", () => renderRewardFrameTable());
+if (els.rewardDtype) els.rewardDtype.addEventListener("change", () => renderRewardFrameTable());
+if (els.rewardDefaultValue) els.rewardDefaultValue.addEventListener("change", () => renderRewardFrameTable());
+if (els.rewardEditValue) els.rewardEditValue.addEventListener("change", () => syncRewardConfigFromInputs());
+if (els.rewardExportFeature) els.rewardExportFeature.addEventListener("change", () => renderRewardFrameTable());
+if (els.rewardExportDtype) els.rewardExportDtype.addEventListener("change", () => renderRewardFrameTable());
+if (els.rewardExportDefault) els.rewardExportDefault.addEventListener("change", () => renderRewardFrameTable());
+if (els.rewardApplyFrame) els.rewardApplyFrame.addEventListener("click", applyRewardToCurrentFrame);
+if (els.rewardApplyRange) els.rewardApplyRange.addEventListener("click", applyRewardToCurrentRange);
+if (els.rewardClearEpisode) els.rewardClearEpisode.addEventListener("click", clearRewardEpisodeLabels);
+if (els.rewardDryRun) els.rewardDryRun.addEventListener("click", runRewardDryRun);
+if (els.rewardApply) els.rewardApply.addEventListener("click", applyRewardLabels);
+if (els.rewardClearAll) els.rewardClearAll.addEventListener("click", () => clearRewardLabels(true));
 if (els.checkStatsEnv) els.checkStatsEnv.addEventListener("click", checkStatsEnv);
 if (els.previewStatsCommand) els.previewStatsCommand.addEventListener("click", previewStatsCommand);
 if (els.submitStatsJob) els.submitStatsJob.addEventListener("click", submitStatsJob);
@@ -5434,11 +5985,11 @@ if (els.collectionTaskList) {
     if (item) selectCollectionTask(item.dataset.collectionTask);
   });
 }
-els.addCurrentDatasetToMerge.addEventListener("click", addCurrentDatasetToMerge);
+bind(els.addCurrentDatasetToMerge, "click", addCurrentDatasetToMerge, "addCurrentDatasetToMerge");
 // addMergePathBtn uses onclick in HTML for robustness
-els.clearMergeList.addEventListener("click", clearMergeList);
-els.validateMerge.addEventListener("click", validateMergePlan);
-els.applyMerge.addEventListener("click", applyMergePlan);
+bind(els.clearMergeList, "click", clearMergeList, "clearMergeList");
+bind(els.validateMerge, "click", validateMergePlan, "validateMerge");
+bind(els.applyMerge, "click", applyMergePlan, "applyMerge");
 
 if (els.folderBrowserClose) els.folderBrowserClose.addEventListener("click", closeFolderBrowser);
 if (els.folderBrowserSelect) els.folderBrowserSelect.addEventListener("click", () => {
@@ -5485,10 +6036,10 @@ if (els.episodeSort) els.episodeSort.addEventListener("change", () => {
   state.episodeSort = els.episodeSort.value || "index-asc";
   renderEpisodes();
 });
-els.checkModelEnv.addEventListener("click", loadModelEnv);
-els.refreshModels.addEventListener("click", loadModels);
+bind(els.checkModelEnv, "click", loadModelEnv, "checkModelEnv");
+bind(els.refreshModels, "click", loadModels, "refreshModels");
 if (els.profileTemplate) els.profileTemplate.addEventListener("change", () => applySelectedTemplate(true));
-els.registerModel.addEventListener("click", registerCurrentModel);
+bind(els.registerModel, "click", registerCurrentModel, "registerModel");
 if (els.profileSave) els.profileSave.addEventListener("click", saveCurrentProfile);
 if (els.profileInspect) els.profileInspect.addEventListener("click", () => runProfileEditorAction("inspect"));
 if (els.profileLoad) els.profileLoad.addEventListener("click", () => runProfileEditorAction("load"));
@@ -5513,7 +6064,7 @@ if (els.checkpointPath) els.checkpointPath.addEventListener("input", async () =>
     } catch (_) {}
   }, 200);
 });
-els.modelList.addEventListener("click", handleModelAction);
+bind(els.modelList, "click", handleModelAction, "modelList");
 if (els.backtestSelectionTable) {
   els.backtestSelectionTable.addEventListener("click", (event) => {
     const key = event.target?.dataset?.backtestRemove;
@@ -5521,8 +6072,8 @@ if (els.backtestSelectionTable) {
   });
 }
 if (els.clearBacktestSelection) els.clearBacktestSelection.addEventListener("click", clearBacktestSelection);
-els.runBacktest.addEventListener("click", runSelectedBacktest);
-els.clearBacktest.addEventListener("click", clearBacktestResult);
+bind(els.runBacktest, "click", runSelectedBacktest, "runBacktest");
+bind(els.clearBacktest, "click", clearBacktestResult, "clearBacktest");
 if (els.refreshBacktestJobs) els.refreshBacktestJobs.addEventListener("click", loadBacktestJobs);
 if (els.refreshBacktestHistory) els.refreshBacktestHistory.addEventListener("click", loadBacktestHistory);
 if (els.backtestHistory) els.backtestHistory.addEventListener("click", handleBacktestHistoryClick);

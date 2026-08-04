@@ -6,6 +6,7 @@ import os
 import platform
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -76,6 +77,12 @@ from app.schema_editing import (
     inspect_editable_schema,
     validate_schema_edit_plan,
 )
+from app.reward_labeling import (
+    RewardLabelApplyRequest,
+    RewardLabelRequest,
+    apply_reward_label_plan,
+    validate_reward_label_plan,
+)
 from app.stats_jobs import (
     cancel_stats_job,
     get_stats_job,
@@ -114,10 +121,38 @@ from app.validation import validate_lerobot_v3_dataset
 APP_ROOT = Path(__file__).resolve().parent.parent
 WEB_ROOT = APP_ROOT / "web"
 HISTORY_PATH = APP_ROOT / ".viewer_history.json"
+SERVER_DEBUG_LOG_PATH = APP_ROOT / "logs" / "server-debug.log"
 MAX_HISTORY_ITEMS = 20
 
 app = FastAPI(title="LeRobot Dataset v3.0 Local Viewer")
 app.mount("/static", StaticFiles(directory=WEB_ROOT), name="static")
+
+
+def debug_print(message: str) -> None:
+    print(message, flush=True)
+    try:
+        SERVER_DEBUG_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with SERVER_DEBUG_LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(f"{datetime.now().isoformat(timespec='seconds')} {message}\n")
+    except OSError:
+        pass
+
+
+@app.middleware("http")
+async def log_request_timing(request, call_next):
+    started = time.perf_counter()
+    response = None
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        path = request.url.path
+        status = getattr(response, "status_code", "error")
+        if path.startswith("/api/") or elapsed_ms > 500:
+            debug_print(
+                f"[lerobot-viewer] {request.method} {path} status={status} elapsed_ms={elapsed_ms:.1f}",
+            )
 
 
 class OpenDatasetRequest(BaseModel):
@@ -1037,6 +1072,58 @@ def schema_edit_apply(request: SchemaEditApplyRequest) -> dict[str, Any]:
         raise
     except Exception as exc:
         log_failure("schema_edit_apply", request.path, exc, {"output_path": request.output_path})
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/reward-label/dry-run")
+def reward_label_dry_run(request: RewardLabelRequest) -> dict[str, Any]:
+    try:
+        cache = cache_for_path(request.path)
+        result = validate_reward_label_plan(cache, request)
+        log_operation(
+            "reward_label_dry_run",
+            "success" if result.get("valid") else "failed",
+            target=str(cache.root),
+            details={
+                "feature": request.feature,
+                "labels": len(request.labels),
+                "default_value": request.default_value,
+            },
+            error="; ".join(result.get("errors", [])) if result.get("errors") else None,
+        )
+        return result
+    except Exception as exc:
+        log_failure("reward_label_dry_run", request.path, exc)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/reward-label/apply")
+def reward_label_apply(request: RewardLabelApplyRequest) -> dict[str, Any]:
+    try:
+        cache = cache_for_path(request.path)
+        result = apply_reward_label_plan(cache, request, resolve_dataset_path(request.output_path))
+        log_operation(
+            "reward_label_apply",
+            "success" if result.get("ok") else "failed",
+            target=str(cache.root),
+            details={
+                "output_path": request.output_path,
+                "overwrite": request.overwrite,
+                "feature": request.feature,
+                "labels": len(request.labels),
+                "processed_data_shards": result.get("processed_data_shards"),
+                "processed_episode_metadata_shards": result.get("processed_episode_metadata_shards"),
+                "validation_valid": (result.get("validation") or {}).get("valid"),
+            },
+            error=str(result) if not result.get("ok") else None,
+        )
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result)
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log_failure("reward_label_apply", request.path, exc, {"output_path": request.output_path})
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
